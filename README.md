@@ -2,6 +2,25 @@
 
 右上角点开的浮窗式摘要面板：**面板是容器，Git 只是第一个分区**。以后加功能 = 加一个分区，不用碰外壳。
 
+## 安装
+
+### 通过插件市场（推荐）
+
+1. **插件** → **更多**（实验性插件）→ 打开 **自定义插件市场**；
+2. 打开 **发现** → **添加索引源**，填入：
+
+   ```
+   https://raw.githubusercontent.com/mchenziyi/dsh-summary-panel/main/site/index.json
+   ```
+
+3. 在市场里找到 **摘要面板（Summary Panel）** 并安装。
+
+索引文件在仓库的 `site/index.json`，按 DSH 插件市场索引格式手写；安装来源是仓库 Git 提交，不依赖 npm 发布。
+
+### 直接从 Git 安装
+
+也可以让 DSH 的插件管理器直接从仓库安装（Git URL + 提交 + 根目录），安装的是同一个组合包。
+
 ## 形态
 
 - 入口：会话头部右上角工具区（`conversation.session.header.utilities`），在 open-in-app、定时任务之后、会话日志下载之前。

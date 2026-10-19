@@ -1,0 +1,56 @@
+{
+  "format": 1,
+  "title": {
+    "en": "mchenziyi DSH plugins",
+    "zh": "mchenziyi 的 DSH 插件"
+  },
+  "description": {
+    "en": "Plugins for DeepSeek Harness by mchenziyi",
+    "zh": "mchenziyi 发布的 DeepSeek Harness 插件"
+  },
+  "plugins": [
+    {
+      "name": "@mchenziyi/dsh-summary-panel",
+      "title": {
+        "en": "Summary Panel",
+        "zh": "摘要面板"
+      },
+      "description": {
+        "en": "Floating right-side summary panel: Git, uncommitted diff, deliverables, subagents, and sources.",
+        "zh": "右上角浮窗式摘要面板：Git、未提交变更 diff、交付文件、子智能体、来源。"
+      },
+      "icon": "icons/icon.svg",
+      "author": "mchenziyi",
+      "homepage": "https://github.com/mchenziyi/dsh-summary-panel#readme",
+      "repository": {
+        "url": "https://github.com/mchenziyi/dsh-summary-panel"
+      },
+      "metadata": {
+        "keywords": [
+          "dsh",
+          "summary-panel",
+          "git",
+          "diff",
+          "subagents"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.2.0"
+      },
+      "versions": [
+        {
+          "version": "0.2.0",
+          "publishTimestamp": 1792398779,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/mchenziyi/dsh-summary-panel",
+            "commit": "73d49584ac1c7fd72273e453e4ad6907fd6377a5"
+          },
+          "engines": {
+            "dsh": ">=0.2.0-rc.2"
+          }
+        }
+      ]
+    }
+  ]
+}
