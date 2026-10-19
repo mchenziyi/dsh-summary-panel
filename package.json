@@ -1,0 +1,50 @@
+{
+  "name": "@mchenziyi/dsh-summary-panel",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Floating right-side summary panel for DSH: Git, uncommitted diff, deliverables, subagents, and sources.",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "author": "mchenziyi",
+  "homepage": "https://github.com/mchenziyi/dsh-summary-panel#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mchenziyi/dsh-summary-panel.git"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "summary-panel",
+    "git",
+    "diff"
+  ],
+  "engines": {
+    "dsh": ">=0.2.0-rc.2"
+  }
+}
