@@ -165,12 +165,13 @@ api.showTaskDetail({
   rect: { left: 240, top: 120, right: 340, bottom: 140 },
 });
 const detailText = await renderTree(panelEntry.component, {});
-for (const needle of ['登录功能说明', '已上线', '验收通过']) {
+for (const needle of ['登录功能说明', '已上线']) {
   if (!detailText.includes(needle)) failures.push(`missing popover detail: ${needle}`);
 }
 api.closeTaskDetail();
 const closedText = await renderTree(panelEntry.component, {});
 if (closedText.includes('登录功能说明')) failures.push('popover did not close');
+if (detailText.includes('验收通过')) failures.push('popover should stay minimal');
 for (const needle of expected) if (!text.includes(needle)) failures.push(`missing text: ${needle}`);
 if (text.includes('classify')) failures.push('collapsed feature branch leaked into the list');
 if (text.includes('backup/')) failures.push('collapsed branch block leaked into the list');

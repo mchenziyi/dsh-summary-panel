@@ -426,12 +426,16 @@ window.__ModuleLoader__.load({
 .sp-task-status-blocked{color:var(--dsw-alias-state-warn-primary)}
 .sp-task-status-done{color:var(--dsw-alias-state-success-primary)}
 .sp-task-status-deferred{color:var(--dsw-alias-label-secondary)}
-.sp-detail-pop{position:fixed;z-index:85;display:flex;flex-direction:column;gap:8px;padding:10px;border-radius:10px;background:color-mix(in srgb,var(--dsw-alias-bg-overlay) 95%,transparent);backdrop-filter:blur(10px);border:1px solid var(--dsw-alias-border-l1);box-shadow:0 8px 24px rgba(0,0,0,.14);overflow:auto;font-size:11.5px;color:var(--dsw-alias-label-primary)}
-.sp-detail-pop-head{display:flex;align-items:flex-start;gap:8px}
-.sp-detail-pop-title{flex:1;min-width:0;font-size:12.5px;font-weight:600;line-height:1.35;overflow-wrap:anywhere}
-.sp-detail-pop-fields{display:flex;flex-direction:column;gap:6px;min-height:0}
-.sp-detail-pop-history{display:flex;flex-direction:column;gap:3px}
-.sp-detail-pop-foot{display:flex;justify-content:flex-end;padding-top:6px;border-top:1px solid var(--dsw-alias-border-l1)}
+.sp-detail-pop{position:fixed;z-index:85;display:flex;flex-direction:column;gap:5px;padding:8px 9px;border-radius:8px;background:var(--dsw-specific-menu,var(--dsw-alias-bg-overlay));backdrop-filter:var(--dsw-menu-backdrop-filter,blur(10px));border:1px solid color-mix(in srgb,var(--dsw-alias-border-l1) 65%,transparent);box-shadow:0 4px 16px rgba(0,0,0,.08);overflow:auto;font-size:11px;color:var(--dsw-alias-label-primary)}
+.sp-detail-pop-head{display:flex;align-items:baseline;gap:6px}
+.sp-detail-pop-title{flex:1;min-width:0;font-size:12px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
+.sp-detail-pop .sp-task-status{font-size:9.5px;padding:0;background:transparent;line-height:1.2}
+.sp-detail-pop-fields{display:flex;flex-direction:column;gap:4px;min-height:0}
+.sp-detail-pop .sp-detail-label{font-size:10px}
+.sp-detail-pop .sp-detail-value{font-size:11px;line-height:1.4;overflow-wrap:anywhere}
+.sp-detail-pop-foot{display:flex;justify-content:flex-end;padding-top:1px}
+.sp-detail-pop-foot .sp-link{font-size:10.5px;opacity:.85}
+.sp-detail-pop-foot .sp-link:hover{opacity:1}
 .sp-detail-root{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:12.5px}
 .sp-detail-toolbar{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none}
 .sp-detail-toolbar>svg{color:var(--dsw-alias-brand-primary);flex:none}
@@ -2134,11 +2138,11 @@ window.__ModuleLoader__.load({
     }
 
     function popoverStyle(rect) {
-      const width = 300;
+      const width = 260;
       const margin = 8;
       const viewportWidth = typeof window !== 'undefined' && typeof window.innerWidth === 'number' ? window.innerWidth : 1024;
       const viewportHeight = typeof window !== 'undefined' && typeof window.innerHeight === 'number' ? window.innerHeight : 768;
-      const maxHeight = Math.min(380, viewportHeight - margin * 2);
+      const maxHeight = Math.min(320, viewportHeight - margin * 2);
       let left = margin;
       let top = margin;
       if (rect !== null && rect !== undefined) {
@@ -2161,9 +2165,8 @@ window.__ModuleLoader__.load({
       if (typeof task.progress === 'string' && task.progress !== '') {
         fields.push(h(DetailField, { key: 'progress', label: t('tasks.detail.progress'), value: task.progress }));
       }
-      if (typeof task.result === 'string' && task.result !== '') {
-        fields.push(h(DetailField, { key: 'result', label: t('tasks.detail.result'), value: task.result }));
-      }
+      // Only the blocker is promoted: it changes what the user should do next.
+      // Result, owner, completion and archive history stay in the sidebar tab.
       if (task.blocker !== null && task.blocker !== undefined) {
         fields.push(h(DetailField, {
           key: 'blocker',
@@ -2174,21 +2177,9 @@ window.__ModuleLoader__.load({
           fields.push(h(DetailField, { key: 'unblock', label: t('tasks.detail.unblock'), value: task.blocker.unblock }));
         }
       }
-      if (typeof task.ownerSessionId === 'string' && task.ownerSessionId !== '') {
-        fields.push(h(DetailField, { key: 'owner', label: t('tasks.detail.owner'), value: task.ownerSessionId, mono: true }));
+      if (detail.archived === true && typeof task.archiveReason === 'string' && task.archiveReason !== '') {
+        fields.push(h(DetailField, { key: 'archiveReason', label: t('tasks.detail.archiveReason'), value: task.archiveReason }));
       }
-      if (typeof task.completion === 'string' && task.completion !== '') {
-        fields.push(h(DetailField, { key: 'completion', label: t('tasks.detail.completion'), value: taskCompletionText(task.completion, t) }));
-      }
-      if (detail.archived === true) {
-        if (typeof task.archiveReason === 'string' && task.archiveReason !== '') {
-          fields.push(h(DetailField, { key: 'archiveReason', label: t('tasks.detail.archiveReason'), value: task.archiveReason }));
-        }
-        if (typeof task.archivedAt === 'number' && task.archivedAt > 0) {
-          fields.push(h(DetailField, { key: 'archivedAt', label: t('tasks.detail.archivedAt'), value: relTime(task.archivedAt, t) }));
-        }
-      }
-      const history = Array.isArray(task.archiveHistory) ? task.archiveHistory : [];
       const status = task.status === undefined ? 'pending' : task.status;
       return h('div', {
         className: 'sp-detail-pop',
@@ -2200,14 +2191,6 @@ window.__ModuleLoader__.load({
           h('span', { className: 'sp-detail-pop-title' }, task.title),
           h('span', { className: 'sp-task-status sp-task-status-' + String(status) }, taskStatusText(status, t))),
         fields.length > 0 ? h('div', { className: 'sp-detail-pop-fields' }, fields) : null,
-        history.length > 0
-          ? h('div', { className: 'sp-detail-pop-history' },
-            h('div', { className: 'sp-detail-label' }, t('tasks.detail.archiveHistory')),
-            history.slice(-3).reverse().map((entry, index) => h('div', {
-              key: `${String(entry.at)}-${index}`,
-              className: 'sp-detail-change-meta',
-            }, `${relTime(entry.at, t)} · ${String(entry.reason ?? '')}`)))
-          : null,
         h('div', { className: 'sp-detail-pop-foot' },
           h('button', {
             className: 'sp-link',
