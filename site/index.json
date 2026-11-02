@@ -16,8 +16,8 @@
         "zh": "摘要面板"
       },
       "description": {
-        "en": "Floating right-side summary panel: Git, uncommitted diff, deliverables, subagents, and sources.",
-        "zh": "右上角浮窗式摘要面板：Git、未提交变更 diff、交付文件、子智能体、来源。"
+        "en": "Floating DSH summary panel with an agent-maintained task tree, Git status, uncommitted diffs, deliverables, subagents, and sources.",
+        "zh": "右上角浮窗式摘要面板：AI 自动维护的任务树，以及 Git、未提交变更 diff、交付文件、子智能体、来源。"
       },
       "icon": "icons/icon.svg",
       "author": "mchenziyi",
@@ -31,13 +31,29 @@
           "summary-panel",
           "git",
           "diff",
-          "subagents"
+          "subagents",
+          "task-tree",
+          "tasks",
+          "agent",
+          "todo"
         ]
       },
       "dist-tags": {
-        "latest": "0.2.0"
+        "latest": "0.3.3"
       },
       "versions": [
+        {
+          "version": "0.3.3",
+          "publishTimestamp": 1793589871,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/mchenziyi/dsh-summary-panel",
+            "commit": "411d6176b84103d518c2045876670e74e538f8c8"
+          },
+          "engines": {
+            "dsh": ">=0.2.0-rc.2"
+          }
+        },
         {
           "version": "0.2.0",
           "publishTimestamp": 1792398779,
