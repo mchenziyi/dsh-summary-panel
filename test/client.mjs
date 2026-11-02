@@ -152,6 +152,25 @@ if (panelEntry === undefined) throw new Error('summary panel overlay was not reg
 const text = await renderTree(panelEntry.component, {});
 const expected = ['Git', 'main', '分支 (3)', '最近提交', '输出内容', '子智能体', '来源', '子智能体会话', 'Researcher', '返回父会话', '当前任务', 'Host 半', '存储与工具', '登录功能', '修复 Token 过期'];
 const failures = [];
+
+// Clicking a task opens the lightweight popover outside the list, and closing
+// it removes the detail text again.
+api.showTaskDetail({
+  task: {
+    id: 't7', title: '登录功能', status: 'done', summary: '登录功能说明', progress: '已上线',
+    result: '验收通过', blocker: null, ownerSessionId: null, completion: 'user-confirmed',
+    updatedAt: 1, archiveHistory: [],
+  },
+  archived: false,
+  rect: { left: 240, top: 120, right: 340, bottom: 140 },
+});
+const detailText = await renderTree(panelEntry.component, {});
+for (const needle of ['登录功能说明', '已上线', '验收通过']) {
+  if (!detailText.includes(needle)) failures.push(`missing popover detail: ${needle}`);
+}
+api.closeTaskDetail();
+const closedText = await renderTree(panelEntry.component, {});
+if (closedText.includes('登录功能说明')) failures.push('popover did not close');
 for (const needle of expected) if (!text.includes(needle)) failures.push(`missing text: ${needle}`);
 if (text.includes('classify')) failures.push('collapsed feature branch leaked into the list');
 if (text.includes('backup/')) failures.push('collapsed branch block leaked into the list');

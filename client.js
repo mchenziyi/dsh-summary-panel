@@ -68,6 +68,7 @@ window.__ModuleLoader__.load({
       'tasks.detail.updated': '更新于 {time}',
       'tasks.detail.archivedTitle': '已归档任务',
       'tasks.detail.archivedEmpty': '暂无归档任务',
+      'tasks.detail.openTab': '在右栏打开',
       'tasks.detail.archived': '已归档 {n}',
       'tasks.detail.archiveReason': '归档原因',
       'tasks.detail.archivedAt': '归档于 {time}',
@@ -188,6 +189,7 @@ window.__ModuleLoader__.load({
       'tasks.detail.updated': 'Updated {time}',
       'tasks.detail.archivedTitle': 'Archived task',
       'tasks.detail.archivedEmpty': 'No archived tasks',
+      'tasks.detail.openTab': 'Open in sidebar',
       'tasks.detail.archived': 'Archived {n}',
       'tasks.detail.archiveReason': 'Archive reason',
       'tasks.detail.archivedAt': 'Archived {time}',
@@ -406,10 +408,11 @@ window.__ModuleLoader__.load({
 .sp-task-icon-pending{color:var(--dsw-alias-state-idle-primary)}
 .sp-task-icon-in_progress{color:var(--dsw-static-blue-500)}
 .sp-task-icon-blocked{color:var(--dsw-alias-state-warn-primary)}
-.sp-task-icon-done{color:var(--dsw-alias-state-success-primary);opacity:.9}
+.sp-task-icon-done{color:var(--dsw-alias-state-success-primary);opacity:.8}
 .sp-task-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary)}
 .sp-task-row-parent>.sp-task-main>.sp-task-title{font-weight:600}
-.sp-task-row-done>.sp-task-main>.sp-task-title{color:var(--dsw-alias-label-secondary)}
+.sp-task-row-done>.sp-task-main>.sp-task-title{color:var(--dsw-alias-label-secondary);opacity:.86}
+.sp-task-row-done>.sp-task-arrow{opacity:.55}
 .sp-task-progress{flex:none;font-size:9.5px;line-height:1;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;opacity:.85;padding-left:2px}
 .sp-task-progress-warn{color:var(--dsw-alias-state-warn-primary);opacity:1}
 .sp-task-row-focus>.sp-task-main>.sp-task-title{font-weight:700}
@@ -423,6 +426,12 @@ window.__ModuleLoader__.load({
 .sp-task-status-blocked{color:var(--dsw-alias-state-warn-primary)}
 .sp-task-status-done{color:var(--dsw-alias-state-success-primary)}
 .sp-task-status-deferred{color:var(--dsw-alias-label-secondary)}
+.sp-detail-pop{position:fixed;z-index:85;display:flex;flex-direction:column;gap:8px;padding:10px;border-radius:10px;background:color-mix(in srgb,var(--dsw-alias-bg-overlay) 95%,transparent);backdrop-filter:blur(10px);border:1px solid var(--dsw-alias-border-l1);box-shadow:0 8px 24px rgba(0,0,0,.14);overflow:auto;font-size:11.5px;color:var(--dsw-alias-label-primary)}
+.sp-detail-pop-head{display:flex;align-items:flex-start;gap:8px}
+.sp-detail-pop-title{flex:1;min-width:0;font-size:12.5px;font-weight:600;line-height:1.35;overflow-wrap:anywhere}
+.sp-detail-pop-fields{display:flex;flex-direction:column;gap:6px;min-height:0}
+.sp-detail-pop-history{display:flex;flex-direction:column;gap:3px}
+.sp-detail-pop-foot{display:flex;justify-content:flex-end;padding-top:6px;border-top:1px solid var(--dsw-alias-border-l1)}
 .sp-detail-root{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:12.5px}
 .sp-detail-toolbar{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none}
 .sp-detail-toolbar>svg{color:var(--dsw-alias-brand-primary);flex:none}
@@ -474,6 +483,9 @@ window.__ModuleLoader__.load({
     // Frame-level hover bubble: rendered beside the panel (not inside it) so
     // the panel's rounded overflow can never clip it.
     const tipStore = createStore({ visible: false, title: '', text: '', note: '', rect: null });
+    // Lightweight task detail popover: shown beside the row (outside the list)
+    // so the tree never grows an inline card.
+    const detailStore = createStore({ visible: false, task: null, archived: false, rect: null });
     function hideTip() {
       tipStore.set({ visible: false, title: '', text: '', note: '', rect: null });
     }
@@ -1479,11 +1491,32 @@ window.__ModuleLoader__.load({
           });
         }, 250);
       };
-      const openTask = (task) => {
+      const openTask = (task, event) => {
         clearHover();
-        api.openTask(sessionId, task.id);
+        let rect = null;
+        try {
+          rect = event.currentTarget.getBoundingClientRect();
+        } catch {
+          rect = null;
+        }
+        api.showTaskDetail({ task, archived: false, rect });
       };
-      const toggle = (taskId) => setExpanded((current) => Object.assign({}, current, { [taskId]: current[taskId] !== true }));
+      const toggle = (taskId) => {
+        api.closeTaskDetail();
+        setExpanded((current) => Object.assign({}, current, { [taskId]: current[taskId] !== true }));
+      };
+
+      React.useEffect(() => {
+        const current = detailStore.get();
+        if (current.visible !== true || current.archived === true || current.task === null) return;
+        const latest = tasks.find((task) => task.id === current.task.id);
+        if (latest === undefined) {
+          detailStore.set({ visible: false, task: null, archived: false, rect: null });
+          return;
+        }
+        if (latest.updatedAt === current.task.updatedAt) return;
+        detailStore.set(Object.assign({}, current, { task: latest }));
+      }, [tasks]);
 
       const rows = [];
       const walk = (task, depth) => {
@@ -1522,7 +1555,7 @@ window.__ModuleLoader__.load({
             type: 'button',
             className: 'sp-task-main',
             title: typeof task.title === 'string' ? task.title : '',
-            onClick: () => openTask(task),
+            onClick: (event) => openTask(task, event),
             onMouseEnter: enterRow(task),
             onMouseLeave: clearHover,
           },
@@ -2100,6 +2133,88 @@ window.__ModuleLoader__.load({
       };
     }
 
+    function popoverStyle(rect) {
+      const width = 300;
+      const margin = 8;
+      const viewportWidth = typeof window !== 'undefined' && typeof window.innerWidth === 'number' ? window.innerWidth : 1024;
+      const viewportHeight = typeof window !== 'undefined' && typeof window.innerHeight === 'number' ? window.innerHeight : 768;
+      const maxHeight = Math.min(380, viewportHeight - margin * 2);
+      let left = margin;
+      let top = margin;
+      if (rect !== null && rect !== undefined) {
+        left = rect.left - width - 10;
+        if (left < margin) left = rect.left;
+        top = rect.top - 4;
+      }
+      left = Math.min(Math.max(margin, left), Math.max(margin, viewportWidth - width - margin));
+      top = Math.min(Math.max(margin, top), Math.max(margin, viewportHeight - maxHeight - margin));
+      return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px`, width: `${width}px`, maxHeight: `${maxHeight}px` };
+    }
+
+    function TaskDetailPopover({ detail, t, api, sessionId }) {
+      const task = detail.task;
+      if (task === null || task === undefined) return null;
+      const fields = [];
+      if (typeof task.summary === 'string' && task.summary !== '') {
+        fields.push(h(DetailField, { key: 'summary', label: t('tasks.detail.summary'), value: task.summary }));
+      }
+      if (typeof task.progress === 'string' && task.progress !== '') {
+        fields.push(h(DetailField, { key: 'progress', label: t('tasks.detail.progress'), value: task.progress }));
+      }
+      if (typeof task.result === 'string' && task.result !== '') {
+        fields.push(h(DetailField, { key: 'result', label: t('tasks.detail.result'), value: task.result }));
+      }
+      if (task.blocker !== null && task.blocker !== undefined) {
+        fields.push(h(DetailField, {
+          key: 'blocker',
+          label: t('tasks.detail.blocker'),
+          value: task.blocker.reason === '' ? '—' : task.blocker.reason,
+        }));
+        if (typeof task.blocker.unblock === 'string' && task.blocker.unblock !== '') {
+          fields.push(h(DetailField, { key: 'unblock', label: t('tasks.detail.unblock'), value: task.blocker.unblock }));
+        }
+      }
+      if (typeof task.ownerSessionId === 'string' && task.ownerSessionId !== '') {
+        fields.push(h(DetailField, { key: 'owner', label: t('tasks.detail.owner'), value: task.ownerSessionId, mono: true }));
+      }
+      if (typeof task.completion === 'string' && task.completion !== '') {
+        fields.push(h(DetailField, { key: 'completion', label: t('tasks.detail.completion'), value: taskCompletionText(task.completion, t) }));
+      }
+      if (detail.archived === true) {
+        if (typeof task.archiveReason === 'string' && task.archiveReason !== '') {
+          fields.push(h(DetailField, { key: 'archiveReason', label: t('tasks.detail.archiveReason'), value: task.archiveReason }));
+        }
+        if (typeof task.archivedAt === 'number' && task.archivedAt > 0) {
+          fields.push(h(DetailField, { key: 'archivedAt', label: t('tasks.detail.archivedAt'), value: relTime(task.archivedAt, t) }));
+        }
+      }
+      const history = Array.isArray(task.archiveHistory) ? task.archiveHistory : [];
+      const status = task.status === undefined ? 'pending' : task.status;
+      return h('div', {
+        className: 'sp-detail-pop',
+        style: popoverStyle(detail.rect),
+        role: 'dialog',
+        'aria-label': typeof task.title === 'string' ? task.title : t('tasks.detail.title'),
+      },
+        h('div', { className: 'sp-detail-pop-head' },
+          h('span', { className: 'sp-detail-pop-title' }, task.title),
+          h('span', { className: 'sp-task-status sp-task-status-' + String(status) }, taskStatusText(status, t))),
+        fields.length > 0 ? h('div', { className: 'sp-detail-pop-fields' }, fields) : null,
+        history.length > 0
+          ? h('div', { className: 'sp-detail-pop-history' },
+            h('div', { className: 'sp-detail-label' }, t('tasks.detail.archiveHistory')),
+            history.slice(-3).reverse().map((entry, index) => h('div', {
+              key: `${String(entry.at)}-${index}`,
+              className: 'sp-detail-change-meta',
+            }, `${relTime(entry.at, t)} · ${String(entry.reason ?? '')}`)))
+          : null,
+        h('div', { className: 'sp-detail-pop-foot' },
+          h('button', {
+            className: 'sp-link',
+            onClick: () => api.openTask(sessionId, task.id),
+          }, t('tasks.detail.openTab'))));
+    }
+
     function Panel({ api, locale }) {
       const snapshot = useSnapshot(panelStore);
       const external = useSnapshot(sectionRegistry);
@@ -2113,10 +2228,14 @@ window.__ModuleLoader__.load({
         : null;
       const isSubagent = subagent !== null;
       const tip = useSnapshot(tipStore);
+      const detail = useSnapshot(detailStore);
 
       React.useEffect(() => {
-        if (!open) hideTip();
-      }, [open]);
+        if (!open) {
+          hideTip();
+          api.closeTaskDetail();
+        }
+      }, [open, api]);
 
       React.useEffect(() => {
         if (!open) return undefined;
@@ -2143,14 +2262,32 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         if (!open) return undefined;
         const onKeyDown = (event) => {
-          if (event.key === 'Escape') {
-            event.stopPropagation();
-            api.close();
+          if (event.key !== 'Escape') return;
+          event.stopPropagation();
+          if (detail.visible === true) {
+            api.closeTaskDetail();
+            return;
           }
+          api.close();
         };
         document.addEventListener('keydown', onKeyDown, true);
         return () => document.removeEventListener('keydown', onKeyDown, true);
-      }, [open, api]);
+      }, [open, api, detail.visible]);
+
+      React.useEffect(() => {
+        if (!open || detail.visible !== true) return undefined;
+        const onPointerDown = (event) => {
+          const target = event.target;
+          if (target !== null && target !== undefined && typeof target.closest === 'function') {
+            if (target.closest('.sp-detail-pop') !== null) return;
+            if (target.closest('.sp-task-main') !== null) return;
+            if (target.closest('.sp-task-arrow') !== null) return;
+          }
+          api.closeTaskDetail();
+        };
+        document.addEventListener('pointerdown', onPointerDown, true);
+        return () => document.removeEventListener('pointerdown', onPointerDown, true);
+      }, [open, detail.visible, api]);
 
       if (!open) return null;
 
@@ -2207,7 +2344,10 @@ window.__ModuleLoader__.load({
               'aria-label': t('panel.close'),
               onClick: () => api.close(),
             }, h(Glyph, { name: 'close', size: 14 }))),
-          h('div', { className: 'sp-body' }, banner, sections)),
+          h('div', { className: 'sp-body', onScroll: () => api.closeTaskDetail() }, banner, sections)),
+        detail.visible === true && detail.task !== null
+          ? h(TaskDetailPopover, { detail, t, api, sessionId })
+          : null,
         tip.visible === true
           ? h('div', { className: 'sp-task-tip', style: tooltipStyle(tip.rect), role: 'tooltip' },
             h('div', { className: 'sp-tip-title' }, tip.title),
@@ -2383,6 +2523,15 @@ window.__ModuleLoader__.load({
               panelStore.set({ open: false });
             } catch (error) {
               console.error('[summary-panel] failed to open the diff tab', error);
+            }
+          },
+          showTaskDetail({ task, archived = false, rect = null }) {
+            if (task === null || task === undefined || typeof task.id !== 'string') return;
+            detailStore.set({ visible: true, task, archived: archived === true, rect });
+          },
+          closeTaskDetail() {
+            if (detailStore.get().visible === true) {
+              detailStore.set({ visible: false, task: null, archived: false, rect: null });
             }
           },
           openTask(sessionId, taskId) {

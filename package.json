@@ -1,6 +1,6 @@
 {
   "name": "@mchenziyi/dsh-summary-panel",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "description": "Floating right-side summary panel for DSH: Git, uncommitted diff, deliverables, subagents, sources, and a persistent agent-maintained task tree.",
   "exports": {
