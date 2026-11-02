@@ -5,6 +5,7 @@ const hookStates = new Map();
 let currentSlots = null;
 let hookIndex = 0;
 let pendingEffects = [];
+let pendingCleanups = [];
 let dirty = false;
 
 function slotsAt(path) {
@@ -33,7 +34,14 @@ const React = {
   useEffect(fn, deps) {
     const slots = currentSlots; const index = hookIndex++;
     const previous = slots.effects[index];
-    if (previous === undefined || !depsEqual(previous.deps, deps)) { slots.effects[index] = { deps }; pendingEffects.push(fn); }
+    if (previous === undefined || !depsEqual(previous.deps, deps)) {
+      // React runs the previous cleanup before the new effect; the client relies
+      // on it to abort the request of the session it just left, so the harness
+      // has to do the same or a stale reply looks like a real one.
+      if (previous !== undefined && typeof previous.cleanup === 'function') pendingCleanups.push(previous.cleanup);
+      slots.effects[index] = { deps, cleanup: undefined };
+      pendingEffects.push({ slot: slots, index, fn });
+    }
   },
   useRef(initial) {
     const slots = currentSlots; const index = hookIndex++;
@@ -70,9 +78,17 @@ function renderNode(node, path) {
 }
 async function renderTree(Component, props, passes = 8) {
   for (let pass = 0; pass < passes; pass += 1) {
-    dirty = false; output = []; pendingEffects = []; hookIndex = 0;
+    dirty = false; output = []; pendingEffects = []; pendingCleanups = []; hookIndex = 0;
     renderNode(React.createElement(Component, props), 'root');
-    for (const effect of pendingEffects) { try { effect(); } catch (error) { errors.push(error); } }
+    for (const cleanup of pendingCleanups) { try { cleanup(); } catch (error) { errors.push(error); } }
+    for (const { slot, index, fn } of pendingEffects) {
+      try {
+        const cleanup = fn();
+        if (typeof cleanup === 'function') slot.effects[index].cleanup = cleanup;
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     await new Promise((resolve) => setTimeout(resolve, 25));
     if (!dirty) break;
   }
@@ -113,10 +129,82 @@ const samples = {
 };
 globalThis.document = { baseURI: 'http://127.0.0.1:49605/', addEventListener() {}, removeEventListener() {} };
 globalThis.window = { location: { href: 'http://127.0.0.1:49605/' }, open() {}, __ModuleLoader__: { load(registration) { globalThis.window.__captured = registration; } } };
+// Per-session payloads let one test prove that a session change never shows the
+// previous session's data. Empty by default, so the shared `samples` still serve
+// every existing case.
+const sessionSamples = new Map();
+// A hold predicate lets a test park a response and release it later, which is
+// how a late reply from the previous session is simulated.
+let holdPredicate = () => false;
+let heldResponses = [];
+function sampleFor(name, url) {
+  const sessionId = new URL(String(url)).searchParams.get('sessionId') ?? '';
+  const perSession = sessionSamples.get(sessionId);
+  if (perSession !== undefined && perSession[name] !== undefined) return perSession[name];
+  return samples[name] ?? {};
+}
 globalThis.fetch = async (url) => {
   const name = String(url).includes('/summary-panel/') ? String(url).split('/summary-panel/')[1].split('?')[0] : '';
-  return { ok: true, json: async () => samples[name] ?? {} };
+  const sessionId = new URL(String(url)).searchParams.get('sessionId') ?? '';
+  const payload = sampleFor(name, url);
+  if (holdPredicate(name, sessionId) === true) {
+    return new Promise((resolve) => {
+      heldResponses.push({ name, sessionId, release: () => resolve({ ok: true, json: async () => payload }) });
+    });
+  }
+  return { ok: true, json: async () => payload };
 };
+// Run every stored cleanup and forget the hook state: React's unmount path,
+// which is how the session header disappears on the welcome page.
+function unmountAll(prefix = 'root') {
+  for (const [key, slots] of [...hookStates.entries()]) {
+    if (!key.startsWith(prefix)) continue;
+    for (const effect of slots.effects) {
+      if (effect !== undefined && typeof effect.cleanup === 'function') {
+        try { effect.cleanup(); } catch (error) { errors.push(error); }
+      }
+    }
+    hookStates.delete(key);
+  }
+  dirty = true;
+}
+
+// Drop a component's hook state so one test can mount it afresh.
+function resetSlots(prefix = 'root') {
+  for (const key of [...hookStates.keys()]) if (key.startsWith(prefix)) hookStates.delete(key);
+}
+// The frame hands `shell.overlay` occupants a sessions snapshot hook. Each row
+// carries `retainedBy` counts; `mainView` marks the Session on screen.
+let sessionsSnapshot = { byId: {} };
+const sessionListeners = new Set();
+function setSessions(byId) {
+  sessionsSnapshot = { byId };
+  for (const listener of [...sessionListeners]) listener();
+  dirty = true;
+}
+function useSessions(selector) {
+  const [value, setValue] = React.useState(() => selector(sessionsSnapshot));
+  const latest = React.useRef(selector);
+  latest.current = selector;
+  React.useEffect(() => {
+    const listener = () => setValue(latest.current(sessionsSnapshot));
+    sessionListeners.add(listener);
+    listener();
+    return () => { sessionListeners.delete(listener); };
+  }, []);
+  return value;
+}
+function releaseHeld(filter = () => true) {
+  const released = [];
+  const keep = [];
+  for (const held of heldResponses) {
+    if (filter(held) === true) released.push(held);
+    else keep.push(held);
+  }
+  heldResponses = keep;
+  for (const held of released) held.release();
+  return released.length;
+}
 
 await import(new URL('../client.js', import.meta.url));
 const plugin = globalThis.window.__captured.factory((name) => { if (name === 'react') return React; throw new Error(`unexpected require ${name}`); });
@@ -210,6 +298,205 @@ api.refresh();
 const filledText = await renderTree(panelEntry.component, {});
 if (!filledText.includes('登录功能')) failures.push('task tree did not render after first init');
 if (!filledText.includes('修复 Token 过期')) failures.push('task children missing after first init');
+
+// ---------------------------------------------------------------------------
+// session switching: the previous session's data never survives a switch
+// ---------------------------------------------------------------------------
+
+const entryEntry = slotRegistrations.find((entry) => entry.registration.name === 'conversation.session.header.utilities');
+if (entryEntry === undefined) failures.push('entry button slot was not registered');
+const panelFor = async () => renderTree(panelEntry.component, {});
+const entryFor = async (sessionId) => renderTree(entryEntry.component, { sessionId });
+const flush = async () => { await new Promise((resolve) => setTimeout(resolve, 30)); };
+
+const sessionATasks = samples.tasks;
+const sessionAStatus = samples['tasks/status'];
+const sessionAGit = samples.git;
+const emptyTree = { available: true, worklineId: 's2', goal: null, outline: '', focus: [], updatedAt: 0, tasks: [], archived: [], archivedCount: 0 };
+const sessionBTasks = {
+  available: true,
+  worklineId: 's2',
+  goal: { original: '会话 B 的目标', current: '会话 B 的目标', changes: [] },
+  outline: '',
+  focus: [],
+  updatedAt: Date.now(),
+  tasks: [
+    { id: 'b1', parentId: null, order: 0, title: '会话 B 的任务', summary: '', status: 'in_progress', executionApproval: 'approved', requiresUserAcceptance: true, deferred: false, blocked: false, blocker: null, progress: '', result: null, ownerSessionId: null, ownerLive: false, completion: null, updatedAt: Date.now() },
+  ],
+  archived: [],
+  archivedCount: 0,
+};
+const sessionBEmptyStatus = { available: true, focus: [], updatedAt: 0 };
+const sessionBStatus = { available: true, focus: [{ id: 'b1', title: '会话 B 的任务', status: 'in_progress', blocked: false }], updatedAt: Date.now() };
+const sessionBGit = { available: true, repo: { root: '/tmp/s2', name: 'repo-b' }, branch: 'b-branch', detached: false, head: 'bbb', upstream: null, ahead: 0, behind: 0, dirty: { staged: 0, modified: 0, untracked: 0, conflicted: 0 }, branches: [], commits: [] };
+
+sessionSamples.set('s1', { tasks: sessionATasks, 'tasks/status': sessionAStatus, git: sessionAGit, sources: samples.sources, subagents: samples.subagents, context: samples.context, outputs: samples.outputs });
+sessionSamples.set('s2', { tasks: emptyTree, 'tasks/status': sessionBEmptyStatus, git: sessionBGit, sources: { scope: 'turn', turn: 0, links: [], queries: [], files: [], tools: [] }, subagents: { children: [] }, context: { subagent: null }, outputs: { deliveries: [], workingTree: null } });
+
+// Session A: the panel shows A's tree and A's git.
+await entryFor('s1');
+api.open('s1');
+const aText = await panelFor();
+if (!aText.includes('Host 半')) failures.push('session A tree missing before the switch');
+
+// A welcome page (no session id) must not keep showing A's data.
+await entryFor(null);
+const welcomeText = await panelFor();
+if (welcomeText.includes('Host 半') || welcomeText.includes('存储与工具')) {
+  failures.push('welcome page still shows the previous session tasks');
+}
+if (welcomeText.includes('main')) failures.push('welcome page still shows the previous session git data');
+
+// A -> (no session) -> B must not leak A into B either.
+await entryFor('s2');
+const fromWelcome = await panelFor();
+if (fromWelcome.includes('Host 半')) failures.push('session B reached from the welcome page shows session A tasks');
+if (fromWelcome.includes('会话 B 的任务')) failures.push('session B content appeared before its request');
+if (!fromWelcome.includes('自动建立任务树')) failures.push('session B reached from the welcome page is not empty');
+await entryFor(null);
+await entryFor('s1');
+
+// Direct A -> B while B's request is still in flight: no A data may linger.
+api.open('s1');
+await panelFor();
+holdPredicate = (name, sessionId) => sessionId === 's2';
+await entryFor('s2');
+const loadingB = await panelFor();
+if (loadingB.includes('Host 半')) failures.push('switching to B kept the previous session tasks');
+if (loadingB.includes('main')) failures.push('switching to B kept the previous session git data');
+if (loadingB.includes('会话 B 的任务')) failures.push('session B content appeared before its response');
+releaseHeld((held) => held.sessionId === 's2');
+holdPredicate = () => false;
+await flush();
+const emptyBText = await panelFor();
+if (emptyBText.includes('Host 半')) failures.push('session B empty state still shows session A tasks');
+if (!emptyBText.includes('自动建立任务树')) failures.push('session B empty state missing');
+
+// Session B creates its own task, then refreshes.
+sessionSamples.set('s2', Object.assign({}, sessionSamples.get('s2'), { tasks: sessionBTasks, 'tasks/status': sessionBStatus }));
+api.refresh();
+const builtB = await panelFor();
+if (!builtB.includes('会话 B 的任务')) failures.push('session B tree did not render after creation');
+if (builtB.includes('Host 半')) failures.push('session B tree mixed in session A tasks');
+if (builtB.includes('main') && !builtB.includes('b-branch')) failures.push('session B git kept session A branch');
+
+// A late reply for session A must not pollute session B.
+holdPredicate = (name, sessionId) => sessionId === 's1';
+api.open('s1');
+await flush();
+api.open('s2');
+await panelFor();
+releaseHeld((held) => held.sessionId === 's1');
+holdPredicate = () => false;
+await flush();
+const afterLate = await panelFor();
+if (afterLate.includes('Host 半')) failures.push('a late session A reply polluted session B');
+if (!afterLate.includes('会话 B 的任务')) failures.push('session B lost its tree after a late session A reply');
+
+// An open detail popover belongs to the session that opened it.
+await entryFor('s1');
+api.open('s1');
+await panelFor();
+api.showTaskDetail({
+  task: { id: 't1', title: 'Host 半', status: 'in_progress', summary: '会话 A 的详情', progress: '', result: null, blocker: null, ownerSessionId: null, completion: null, updatedAt: 1, archiveHistory: [] },
+  archived: false,
+  rect: { left: 240, top: 120, right: 340, bottom: 140 },
+});
+const popoverA = await panelFor();
+if (!popoverA.includes('会话 A 的详情')) failures.push('session A detail popover did not open');
+// Switch while session B is still loading: nothing on screen may still belong to
+// session A, including the popover it opened.
+holdPredicate = (name, sessionId) => sessionId === 's2';
+await entryFor('s2');
+const popoverB = await panelFor();
+if (popoverB.includes('会话 A 的详情')) failures.push('session A detail popover survived the switch to session B');
+if (popoverB.includes('Host 半')) failures.push('session A tasks survived the switch to session B (popover case)');
+releaseHeld((held) => held.sessionId === 's2');
+holdPredicate = () => false;
+await flush();
+await panelFor();
+api.closeTaskDetail();
+
+// Closing and reopening the same session keeps its data.
+api.close();
+const closedB = await panelFor();
+if (closedB !== '') failures.push('closing the panel left content behind');
+api.open('s2');
+const reopenedB = await panelFor();
+if (!reopenedB.includes('会话 B 的任务')) failures.push('reopening session B lost its tree');
+
+// Going back to session A restores A's tree, not B's.
+await entryFor('s1');
+api.open('s1');
+await panelFor();
+await flush();
+const backA = await panelFor();
+if (!backA.includes('Host 半')) failures.push('returning to session A did not restore its tree');
+if (backA.includes('会话 B 的任务')) failures.push('returning to session A kept session B tasks');
+await entryFor('s1');
+
+// ---------------------------------------------------------------------------
+// welcome page: the session header is gone, the frame still knows the truth
+// ---------------------------------------------------------------------------
+
+{
+  // The entry button lives in the session header, so it unmounts when the user
+  // clicks "new session". The panel must follow the frame's session snapshot
+  // instead of whatever session it was showing last.
+  resetSlots();
+  const panelFollowed = () => renderTree(panelEntry.component, { useSessions });
+  setSessions({ s1: { id: 's1', retainedBy: { mainView: 1 } } });
+  sessionSamples.set('s2', Object.assign({}, sessionSamples.get('s2'), { tasks: emptyTree, 'tasks/status': sessionBEmptyStatus }));
+  await entryFor('s1');
+  api.open('s1');
+  const backToA = await panelFollowed();
+  if (!backToA.includes('Host 半')) failures.push('welcome-page case: session A did not render first');
+
+  // 1. Existing session -> new-session welcome page (no header, no entry button).
+  setSessions({ s1: { id: 's1', retainedBy: {} } });
+  const welcome = await panelFollowed();
+  if (welcome.includes('Host 半') || welcome.includes('存储与工具')) failures.push('welcome page kept the previous session tasks');
+  if (welcome.includes('main')) failures.push('welcome page kept the previous session git data');
+  if (welcome.includes('Researcher')) failures.push('welcome page kept the previous session subagent data');
+
+  // 2. The welcome page turns into a real session: only that session's data.
+  setSessions({ s1: { id: 's1', retainedBy: {} }, s2: { id: 's2', retainedBy: { mainView: 1 } } });
+  const freshSession = await panelFollowed();
+  if (freshSession.includes('Host 半')) failures.push('new session showed the previous session tasks');
+  if (!freshSession.includes('自动建立任务树')) failures.push('new session did not start from its own empty tree');
+
+  // 3. That new session builds its own tree.
+  sessionSamples.set('s2', Object.assign({}, sessionSamples.get('s2'), { tasks: sessionBTasks, 'tasks/status': sessionBStatus }));
+  api.refresh();
+  const builtFresh = await panelFollowed();
+  if (!builtFresh.includes('会话 B 的任务')) failures.push('new session did not render its own tree');
+  if (builtFresh.includes('Host 半')) failures.push('new session tree mixed in the previous session');
+
+  // 4. Back to the original session: its own data returns.
+  setSessions({ s1: { id: 's1', retainedBy: { mainView: 1 } }, s2: { id: 's2', retainedBy: {} } });
+  const returned = await panelFollowed();
+  if (!returned.includes('Host 半')) failures.push('returning to the old session lost its tree');
+  if (returned.includes('会话 B 的任务')) failures.push('returning to the old session kept the new session tree');
+}
+
+// ---------------------------------------------------------------------------
+// welcome page without the frame hook: the entry unmount is the only signal
+// ---------------------------------------------------------------------------
+
+{
+  resetSlots();
+  setSessions({});
+  sessionSamples.set('s1', { tasks: sessionATasks, 'tasks/status': sessionAStatus, git: sessionAGit, sources: samples.sources, subagents: samples.subagents, context: samples.context, outputs: samples.outputs });
+  await entryFor('s1');
+  api.open('s1');
+  const shown = await renderTree(panelEntry.component, {});
+  if (!shown.includes('Host 半')) failures.push('fallback path: session A did not render');
+
+  unmountAll();
+  const afterUnmount = await renderTree(panelEntry.component, {});
+  if (afterUnmount.includes('Host 半')) failures.push('fallback path: unmounting the entry left the previous session tasks');
+  if (afterUnmount !== '') failures.push('fallback path: the panel stayed visible without a session');
+}
 
 api.openTask('s1', 't5');
 console.log('sidebar calls:', JSON.stringify(rightCalls, null, 0));

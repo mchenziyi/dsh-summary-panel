@@ -1321,4 +1321,77 @@ function titles(snapshot) {
   assert.deepEqual(http.tasks.map((task) => task.requiresUserAcceptance), [true, false]);
 }
 
+// ---------------------------------------------------------------------------
+// focus: the prompt and the tool description teach the actual sequence
+// ---------------------------------------------------------------------------
+
+{
+  // Order: take the real id, set in_progress, then focus before the first edit.
+  for (const needle of [
+    'take its real id from the tree',
+    'before the first file edit or command',
+    '**Focus, status, and claim are three different writes.**',
+    'replaces the whole focus set rather than adding to it',
+    'still needs the `focus` call',
+    'attention, not permission',
+    'not every `in_progress` task',
+    'Completing a task removes it from the focus',
+  ]) {
+    assert.equal(TASK_TREE_PROMPT.includes(needle), true, `prompt should mention: ${needle}`);
+  }
+  // The example shows the operation shape without hard-coding the id.
+  assert.equal(TASK_TREE_PROMPT.includes('{"op":"focus","ids":["<id>"]}'), true);
+  assert.equal(TASK_TREE_PROMPT.includes('always use the id `create` or `task_tree_read` returned'), true);
+}
+
+{
+  // The tool description carries the same instruction, with the example.
+  const root = tempRoot();
+  const registeredTools = new Map();
+  const ctx = {
+    effect: (factory) => factory(),
+    get(name) {
+      if (name === 'sessions') return { get: () => undefined };
+      if (name === 'tools') return { register: (definition) => { registeredTools.set(definition.name, definition); return () => {}; } };
+      return undefined;
+    },
+  };
+  mountTaskTree(ctx, { root, logger: { warn() {} }, route: () => {} });
+  const write = registeredTools.get('task_tree_write');
+  for (const needle of [
+    'Starting to execute is its own sequence',
+    'before the first file edit or command',
+    '{"op":"focus","ids":["<id>"]}',
+    'COMPLETE focus set',
+    'does not set the focus',
+    'not permission',
+    'clears it from the focus',
+  ]) {
+    assert.equal(write.description.includes(needle), true, `tool description should mention: ${needle}`);
+  }
+  const idsDescription = write.parameters.properties.ops.items.properties.ids.description;
+  assert.equal(idsDescription.includes('replaces the whole set'), true);
+  assert.equal(idsDescription.includes('[] to clear it'), true);
+}
+
+{
+  // Behaviour the instructions rely on: focus is a complete set, it grants no
+  // approval, and it does not claim the task.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: '已批任务', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', title: '讨论中的任务' },
+  ]).envelope;
+  const focused = envelopeAfter(base, [
+    { op: 'focus', ids: ['t1'] },
+    { op: 'focus', ids: ['t2'] },
+  ]).envelope;
+  assert.deepEqual(focused.workline.focus, ['t2'], 'focus replaces the set instead of adding to it');
+  assert.equal(focused.tasks[1].executionApproval, 'pending', 'focus does not approve a task');
+  assert.equal(focused.tasks[1].status, 'pending', 'focus does not start an unapproved task');
+  assert.equal(focused.tasks[1].owner, null, 'focus does not claim the task');
+  const cleared = envelopeAfter(focused, [{ op: 'focus', ids: [] }]).envelope;
+  assert.deepEqual(cleared.workline.focus, []);
+}
+
 console.log('tasks ok');

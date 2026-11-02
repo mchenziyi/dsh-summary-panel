@@ -656,17 +656,20 @@ window.__ModuleLoader__.load({
     function useSection(sessionId, id, nonce, extra = '') {
       const [state, setState] = React.useState({ status: 'loading' });
       const [local, setLocal] = React.useState(0);
+      // Which session the current payload belongs to: a refresh of the same
+      // session may keep its data on screen, a different session never does.
+      const identity = sessionId === null || sessionId === undefined ? '' : String(sessionId);
 
       React.useEffect(() => {
         if (sessionId === null || sessionId === undefined) {
-          setState({ status: 'idle' });
+          setState({ status: 'idle', identity });
           return undefined;
         }
         let cancelled = false;
         const controller = new AbortController();
-        setState((previous) => (previous.status === 'ready'
+        setState((previous) => (previous.identity === identity && previous.status === 'ready'
           ? Object.assign({}, previous, { refreshing: true })
-          : { status: 'loading' }));
+          : { status: 'loading', identity }));
         let target;
         try {
           target = new URL(`summary-panel/${id}`, document.baseURI);
@@ -683,7 +686,7 @@ window.__ModuleLoader__.load({
             return response.json();
           })
           .then((data) => {
-            if (!cancelled) setState({ status: 'ready', data, at: Date.now() });
+            if (!cancelled) setState({ status: 'ready', identity, data, at: Date.now() });
           })
           .catch((error) => {
             if (cancelled) return;
@@ -691,9 +694,9 @@ window.__ModuleLoader__.load({
             const message = error !== null && typeof error === 'object' && typeof error.message === 'string'
               ? error.message
               : String(error);
-            setState((previous) => (previous.status === 'ready'
+            setState((previous) => (previous.identity === identity && previous.status === 'ready'
               ? Object.assign({}, previous, { refreshing: false, message })
-              : { status: 'error', message }));
+              : { status: 'error', message, identity }));
           });
         return () => {
           cancelled = true;
@@ -788,6 +791,38 @@ window.__ModuleLoader__.load({
       return Object.assign({}, state, {
         retry: () => setLocal((value) => value + 1),
       });
+    }
+
+    /**
+     * The one Session the frame's main view holds, or undefined when it shows
+     * something else — for example the new-session welcome page. Each row of the
+     * sessions snapshot carries `retainedBy` reference counts.
+     */
+    function selectMainViewSession(state) {
+      const byId = state !== null && typeof state === 'object' ? state.byId : undefined;
+      if (byId === null || typeof byId !== 'object') return undefined;
+      for (const session of Object.values(byId)) {
+        if (session === null || typeof session !== 'object') continue;
+        if (Number(session.retainedBy?.mainView ?? 0) > 0) return session.id;
+      }
+      return undefined;
+    }
+
+    /**
+     * Follow the Session the frame reports for the main view.
+     *
+     * The entry button lives in the session header, so it unmounts on the
+     * welcome page and cannot report "no session" from there. The overlay keeps
+     * receiving the frame's sessions snapshot regardless, which makes it the
+     * reliable source; hosts that do not hand the slot that hook fall back to
+     * the entry-button behaviour.
+     */
+    function useMainViewSession(useSessions) {
+      // Slot props are fixed for a mounted occupant, and the hook order must not
+      // depend on them, so support is decided once per instance.
+      const supported = React.useRef(typeof useSessions === 'function').current;
+      const id = supported ? useSessions(selectMainViewSession) : undefined;
+      return { supported, id: typeof id === 'string' && id !== '' ? id : null };
     }
 
     // ------------------------------------------------------------------
@@ -2255,11 +2290,15 @@ window.__ModuleLoader__.load({
           }, t('tasks.detail.openTab'))));
     }
 
-    function Panel({ api, locale }) {
+    function Panel({ api, locale, useSessions }) {
       const snapshot = useSnapshot(panelStore);
       const external = useSnapshot(sectionRegistry);
       const t = useT(locale);
-      const sessionId = snapshot.sessionId;
+      // The frame's session wins when it is available: it also reports the
+      // welcome page, where no session exists at all. The stored session stays
+      // as the fallback for hosts without that hook.
+      const followed = useMainViewSession(useSessions);
+      const sessionId = followed.supported === true ? followed.id : snapshot.sessionId;
       const open = snapshot.open === true && sessionId !== null && sessionId !== undefined;
       const [space, setSpace] = React.useState(() => measurePanelSpace());
       const contextState = useSection(sessionId, 'context', snapshot.nonce);
@@ -2276,6 +2315,22 @@ window.__ModuleLoader__.load({
           api.closeTaskDetail();
         }
       }, [open, api]);
+
+      // Switching sessions invalidates any popover or tooltip opened for the
+      // previous one: they carry that session's task, not this one's.
+      React.useEffect(() => {
+        hideTip();
+        api.closeTaskDetail();
+      }, [sessionId, api]);
+
+      // Mirror the frame into the store, including "no session": the welcome
+      // page must clear the stored id, which the unmounted entry button can no
+      // longer do. The panel's open flag is untouched, so the user's expanded or
+      // collapsed preference survives until a session comes back.
+      React.useEffect(() => {
+        if (followed.supported !== true) return;
+        api.setActiveSession(followed.id);
+      }, [followed.supported, followed.id, api]);
 
       React.useEffect(() => {
         if (!open) return undefined;
@@ -2414,7 +2469,11 @@ window.__ModuleLoader__.load({
       const focus = statusReady && Array.isArray(statusState.data?.focus) ? statusState.data.focus : [];
       const firstFocus = focus.length > 0 ? focus[0] : null;
       React.useEffect(() => {
-        if (sessionId !== null && sessionId !== undefined) api.setActiveSession(sessionId);
+        const next = sessionId === null || sessionId === undefined || sessionId === '' ? null : sessionId;
+        api.setActiveSession(next);
+        // Unmounting (the welcome page has no session header at all) is the one
+        // moment this component cannot report an empty id through props.
+        return () => { api.clearSession(next); };
       }, [sessionId, api]);
       const openForThisSession = snapshot.open === true && snapshot.sessionId === sessionId;
       const entryTitle = firstFocus !== null && typeof firstFocus.title === 'string' && firstFocus.title !== ''
@@ -2501,12 +2560,25 @@ window.__ModuleLoader__.load({
           refresh() {
             panelStore.set({ nonce: panelStore.get().nonce + 1 });
           },
+          // A new session (or a welcome page) may report no id at all. Clearing
+          // the stored id keeps the panel from showing the previous session's
+          // data; `open` stays untouched so the user's expanded/collapsed
+          // preference survives until a real session arrives.
           setActiveSession(sessionId) {
-            if (sessionId === null || sessionId === undefined) return;
+            const next = sessionId === null || sessionId === undefined || sessionId === '' ? null : String(sessionId);
             const current = panelStore.get();
-            if (current.sessionId !== sessionId) {
-              panelStore.set({ sessionId, nonce: current.nonce + 1 });
+            if (current.sessionId !== next) {
+              panelStore.set({ sessionId: next, nonce: current.nonce + 1 });
             }
+          },
+          // The session header can disappear (welcome page) without ever
+          // reporting an empty id. Clearing only the session this caller was
+          // showing keeps a newer one from being wiped by a late unmount.
+          clearSession(expected) {
+            const current = panelStore.get();
+            if (current.sessionId === null || current.sessionId === undefined) return;
+            if (expected !== undefined && expected !== null && current.sessionId !== expected) return;
+            panelStore.set({ sessionId: null, nonce: current.nonce + 1 });
           },
           openSourceFile(address) {
             if (sidebarRight === undefined || typeof address !== 'string' || address === '') return;
