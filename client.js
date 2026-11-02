@@ -6,9 +6,9 @@
  *    beside the shipped utilities (Codex-style entry).
  *  - `shell.overlay`: the floating panel itself, anchored to the right edge.
  *
- * Built-in sections are the summary panel's own (Git, outputs, subagents,
- * sources). Other plugins may register further sections through the client
- * service `ctx.summaryPanel`.
+ * Built-in sections are the summary panel's own (Tasks, Git, outputs,
+ * subagents, sources). Other plugins may register further sections through
+ * the client service `ctx.summaryPanel`.
  */
 
 window.__ModuleLoader__.load({
@@ -24,9 +24,51 @@ window.__ModuleLoader__.load({
 
     const ZH = {
       'entry.label': '摘要',
+      'entry.focusTitle': '{label} · {title}',
       'panel.title': '摘要',
       'panel.refresh': '刷新',
       'panel.close': '关闭',
+      'section.tasks': '当前任务',
+      'tasks.empty': 'Agent 开始工作后会自动建立任务树',
+      'tasks.unavailable': '任务树依赖的存储不可用',
+      'tasks.expand': '展开',
+      'tasks.collapse': '收起',
+      'tasks.deferred': '暂缓',
+      'tasks.tabTitle': '任务',
+      'tasks.status.pending': '待开始',
+      'tasks.status.inProgress': '进行中',
+      'tasks.status.blocked': '阻塞',
+      'tasks.status.done': '已完成',
+      'tasks.tip.blocker': '阻塞原因：{reason}',
+      'tasks.detail.title': '任务',
+      'tasks.detail.noTarget': '没有指定任务',
+      'tasks.detail.missing': '任务不存在或已归档',
+      'tasks.detail.info': '任务信息',
+      'tasks.detail.goal': '目标',
+      'tasks.detail.original': '原始目标',
+      'tasks.detail.current': '当前目标',
+      'tasks.detail.outline': '目标大纲',
+      'tasks.detail.changes': '修订记录 ({n})',
+      'tasks.detail.status': '状态',
+      'tasks.detail.summary': '简介',
+      'tasks.detail.progress': '进展',
+      'tasks.detail.result': '结果',
+      'tasks.detail.blocker': '阻塞原因',
+      'tasks.detail.unblock': '解除条件',
+      'tasks.detail.owner': '占用会话',
+      'tasks.detail.ownerLive': '存活',
+      'tasks.detail.ownerGone': '已离线',
+      'tasks.detail.completion': '完成方式',
+      'tasks.detail.completionUser': '用户确认',
+      'tasks.detail.completionSelf': 'Agent 自行确认',
+      'tasks.detail.deferredReason': '暂缓原因',
+      'tasks.detail.resumeCondition': '恢复条件',
+      'tasks.detail.updated': '更新于 {time}',
+      'tasks.detail.archivedTitle': '已归档任务',
+      'tasks.detail.archivedEmpty': '暂无归档任务',
+      'tasks.detail.archived': '已归档 {n}',
+      'tasks.detail.archiveReason': '归档原因',
+      'tasks.detail.archivedAt': '归档于 {time}',
       'section.git': 'Git',
       'section.outputs': '输出内容',
       'section.subagents': '子智能体',
@@ -102,9 +144,51 @@ window.__ModuleLoader__.load({
 
     const EN = {
       'entry.label': 'Summary',
+      'entry.focusTitle': '{label} · {title}',
       'panel.title': 'Summary',
       'panel.refresh': 'Refresh',
       'panel.close': 'Close',
+      'section.tasks': 'Tasks',
+      'tasks.empty': 'The task tree appears once the agent starts working',
+      'tasks.unavailable': 'Task tree storage unavailable',
+      'tasks.expand': 'Expand',
+      'tasks.collapse': 'Collapse',
+      'tasks.deferred': 'Deferred',
+      'tasks.tabTitle': 'Task',
+      'tasks.status.pending': 'Pending',
+      'tasks.status.inProgress': 'In progress',
+      'tasks.status.blocked': 'Blocked',
+      'tasks.status.done': 'Done',
+      'tasks.tip.blocker': 'Blocked: {reason}',
+      'tasks.detail.title': 'Task',
+      'tasks.detail.noTarget': 'No task selected',
+      'tasks.detail.missing': 'Task not found or archived',
+      'tasks.detail.info': 'Task info',
+      'tasks.detail.goal': 'Goal',
+      'tasks.detail.original': 'Original goal',
+      'tasks.detail.current': 'Current goal',
+      'tasks.detail.outline': 'Outline',
+      'tasks.detail.changes': 'Revisions ({n})',
+      'tasks.detail.status': 'Status',
+      'tasks.detail.summary': 'Summary',
+      'tasks.detail.progress': 'Progress',
+      'tasks.detail.result': 'Result',
+      'tasks.detail.blocker': 'Blocker',
+      'tasks.detail.unblock': 'Unblock when',
+      'tasks.detail.owner': 'Owner session',
+      'tasks.detail.ownerLive': 'live',
+      'tasks.detail.ownerGone': 'offline',
+      'tasks.detail.completion': 'Completion',
+      'tasks.detail.completionUser': 'User confirmed',
+      'tasks.detail.completionSelf': 'Self-confirmed',
+      'tasks.detail.deferredReason': 'Deferred reason',
+      'tasks.detail.resumeCondition': 'Resume when',
+      'tasks.detail.updated': 'Updated {time}',
+      'tasks.detail.archivedTitle': 'Archived task',
+      'tasks.detail.archivedEmpty': 'No archived tasks',
+      'tasks.detail.archived': 'Archived {n}',
+      'tasks.detail.archiveReason': 'Archive reason',
+      'tasks.detail.archivedAt': 'Archived {time}',
       'section.git': 'Git',
       'section.outputs': 'Outputs',
       'section.subagents': 'Subagents',
@@ -183,25 +267,25 @@ window.__ModuleLoader__.load({
     // ------------------------------------------------------------------
 
     const CSS = `
-.sp-entry{width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--dsw-alias-label-secondary);border-radius:8px;cursor:pointer;padding:0}
+.sp-entry{position:relative;width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--dsw-alias-label-secondary);border-radius:8px;cursor:pointer;padding:0}
 .sp-entry:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 .sp-entry.sp-entry-active{background:var(--dsw-alias-interactive-bg-active);color:var(--dsw-alias-label-primary)}
-.sp-root{position:fixed;top:62px;right:14px;bottom:auto;max-height:calc(100vh - 76px);width:min(420px,calc(100vw - 28px));display:flex;pointer-events:auto;z-index:40}
-.sp-panel{display:flex;flex-direction:column;flex:1;min-height:0;max-height:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-lg);box-shadow:var(--dsw-elevation-panel);overflow:hidden;color:var(--dsw-alias-label-primary);font-size:13px}
-.sp-head{display:flex;align-items:center;gap:6px;padding:11px 10px 10px 14px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none}
+.sp-root{position:fixed;display:flex;pointer-events:auto;z-index:40}
+.sp-panel{display:flex;flex-direction:column;flex:1;min-height:0;max-height:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-lg);box-shadow:var(--dsw-elevation-panel);overflow:hidden;color:var(--dsw-alias-label-primary);font-size:12px}
+.sp-head{display:flex;align-items:center;gap:5px;padding:8px 8px 8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none}
 .sp-head-glyph{color:var(--dsw-alias-brand-primary);display:inline-flex}
-.sp-head-title{flex:1;font-size:13px;font-weight:600;letter-spacing:.01em}
+.sp-head-title{flex:1;font-size:12.5px;font-weight:600;letter-spacing:.01em}
 .sp-icon-btn{width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--dsw-alias-label-secondary);border-radius:7px;cursor:pointer;padding:0}
 .sp-icon-btn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
-.sp-body{overflow-y:auto;overscroll-behavior:contain;padding:6px 8px 12px;display:flex;flex-direction:column;gap:2px;flex:1 1 auto;min-height:0}
+.sp-body{overflow-y:auto;overscroll-behavior:contain;padding:4px 4px 10px;display:flex;flex-direction:column;gap:1px;flex:1 1 auto;min-height:0}
 .sp-card{border-radius:10px;padding:2px 0}
 .sp-card+.sp-card{border-top:1px solid var(--dsw-alias-border-l1)}
-.sp-card-head{width:100%;display:flex;align-items:center;gap:7px;padding:8px 6px;background:transparent;border:0;color:inherit;cursor:pointer;border-radius:8px;text-align:left;font:inherit}
+.sp-card-head{width:100%;display:flex;align-items:center;gap:6px;padding:6px 4px;background:transparent;border:0;color:inherit;cursor:pointer;border-radius:8px;text-align:left;font:inherit}
 .sp-card-head:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .sp-card-head>svg{color:var(--dsw-alias-label-secondary);flex:none}
-.sp-card-title{flex:1;font-size:12.5px;font-weight:600;color:var(--dsw-alias-label-primary)}
+.sp-card-title{flex:1;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}
 .sp-card-badge{font-size:11px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover);padding:1px 7px;border-radius:999px;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sp-card-body{padding:0 6px 8px;display:flex;flex-direction:column;gap:6px}
+.sp-card-body{padding:0 4px 6px;display:flex;flex-direction:column;gap:4px}
 .sp-stack{display:flex;flex-direction:column;gap:7px}
 .sp-repo{display:flex;flex-direction:column;gap:2px;padding-top:2px}
 .sp-repo-name{font-weight:600;font-size:12.5px}
@@ -245,7 +329,7 @@ window.__ModuleLoader__.load({
 .sp-counts{display:flex;gap:6px;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;flex:none}
 .sp-add{color:var(--dsw-alias-state-success-primary)}
 .sp-del{color:var(--dsw-alias-state-error-primary)}
-.sp-empty{color:var(--dsw-alias-label-secondary);font-size:12px;padding:6px 2px}
+.sp-empty{color:var(--dsw-alias-label-secondary);font-size:11.5px;padding:5px 2px}
 .sp-error{color:var(--dsw-alias-state-error-primary);font-size:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .sp-link{border:0;background:transparent;color:var(--dsw-alias-brand-primary);font-size:11.5px;cursor:pointer;padding:2px 5px;border-radius:5px;font:inherit}
 .sp-link:hover{background:var(--dsw-alias-interactive-bg-hover)}
@@ -301,6 +385,60 @@ window.__ModuleLoader__.load({
 .sp-diff-side+.sp-diff-side{border-left:1px solid var(--dsw-alias-border-l1)}
 .sp-diff-side .sp-diff-num{width:32px;padding-right:6px}
 .sp-diff-side .sp-diff-text{flex:1;min-width:0;overflow:hidden;padding-right:8px;text-overflow:clip}
+.sp-entry-dot{position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--dsw-static-blue-500);animation:sp-breathe 1.6s ease-in-out infinite;pointer-events:none}
+.sp-entry-dot-warn{background:var(--dsw-alias-state-warn-primary)}
+@keyframes sp-breathe{0%,100%{opacity:1}50%{opacity:.25}}
+@media (prefers-reduced-motion: reduce){.sp-entry-dot{animation:none;opacity:1}}
+.sp-task-tree{display:flex;flex-direction:column;gap:1px}
+.sp-task-row{display:flex;align-items:center;border-radius:6px;min-height:21px;padding-right:2px}
+.sp-task-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.sp-task-row-focus{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 9%,transparent)}
+.sp-task-row-focus:hover{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent)}
+.sp-task-row-deferred{opacity:.55}
+.sp-task-arrow{width:16px;height:20px;flex:none;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;padding:0;border-radius:4px}
+.sp-task-arrow:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.sp-task-arrow-space{width:16px;flex:none}
+.sp-task-main{flex:1;min-width:0;display:flex;align-items:center;gap:6px;border:0;background:transparent;color:inherit;font:inherit;font-size:11.5px;padding:2px 2px;cursor:pointer;text-align:left;border-radius:6px}
+.sp-task-dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--dsw-alias-state-idle-primary)}
+.sp-task-dot-pending{background:transparent;box-shadow:inset 0 0 0 1.5px var(--dsw-alias-state-idle-primary)}
+.sp-task-dot-in_progress{background:var(--dsw-static-blue-500)}
+.sp-task-dot-blocked{background:var(--dsw-alias-state-warn-primary)}
+.sp-task-dot-done{background:var(--dsw-alias-state-success-primary)}
+.sp-task-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sp-task-row-focus .sp-task-title{font-weight:700}
+.sp-task-tip{position:fixed;z-index:60;pointer-events:none;padding:7px 9px;border-radius:8px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-panel);display:flex;flex-direction:column;gap:3px}
+.sp-tip-title{font-size:12.5px;font-weight:600;overflow-wrap:anywhere}
+.sp-tip-text{font-size:11.5px;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
+.sp-tip-blocker{color:var(--dsw-alias-state-warn-primary)}
+.sp-task-status{flex:none;font-size:10.5px;padding:0 6px;border-radius:999px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.sp-task-status-pending{color:var(--dsw-alias-label-secondary)}
+.sp-task-status-in_progress{color:var(--dsw-alias-brand-primary)}
+.sp-task-status-blocked{color:var(--dsw-alias-state-warn-primary)}
+.sp-task-status-done{color:var(--dsw-alias-state-success-primary)}
+.sp-task-status-deferred{color:var(--dsw-alias-label-secondary)}
+.sp-detail-root{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:12.5px}
+.sp-detail-toolbar{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none}
+.sp-detail-toolbar>svg{color:var(--dsw-alias-brand-primary);flex:none}
+.sp-detail-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.sp-detail-body{flex:1;min-height:0;overflow-y:auto;padding:10px 12px 20px;display:flex;flex-direction:column;gap:10px}
+.sp-detail-block{display:flex;flex-direction:column;gap:6px;border:1px solid var(--dsw-alias-border-l1);border-radius:9px;padding:8px 10px}
+.sp-detail-block-title{font-size:11.5px;font-weight:600;color:var(--dsw-alias-label-secondary);letter-spacing:.02em}
+.sp-detail-block-toggle{display:flex;align-items:center;gap:6px;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11.5px;font-weight:600;padding:0;cursor:pointer;text-align:left}
+.sp-detail-field{display:flex;flex-direction:column;gap:2px;min-width:0}
+.sp-detail-label{font-size:11px;color:var(--dsw-alias-label-secondary)}
+.sp-detail-value{font-size:12.5px;white-space:pre-wrap;overflow-wrap:anywhere}
+.sp-detail-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.sp-detail-list{display:flex;flex-direction:column;gap:2px;min-width:0}
+.sp-detail-change{display:flex;flex-direction:column;gap:1px;padding:3px 0;border-top:1px solid var(--dsw-alias-border-l1)}
+.sp-detail-change:first-of-type{border-top:0}
+.sp-detail-change-meta{font-size:11px;color:var(--dsw-alias-label-secondary)}
+.sp-detail-change-diff{font-size:11.5px;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
+.sp-detail-archive-row{display:flex;flex-direction:column;gap:1px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;padding:5px 6px;border-radius:6px;cursor:pointer}
+.sp-detail-archive-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.sp-detail-archive-title{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sp-detail-archive-meta{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sp-detail-empty{padding:20px 14px;color:var(--dsw-alias-label-secondary);font-size:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.sp-detail-meta{font-size:11px;color:var(--dsw-alias-label-secondary)}
 `;
 
     // ------------------------------------------------------------------
@@ -325,7 +463,7 @@ window.__ModuleLoader__.load({
       };
     }
 
-    const panelStore = createStore({ sessionId: null, open: false, nonce: 0, anchor: null });
+    const panelStore = createStore({ sessionId: null, open: false, nonce: 0 });
 
     function createRegistry() {
       const definitions = new Map();
@@ -433,19 +571,6 @@ window.__ModuleLoader__.load({
       return `${date.getMonth() + 1}/${date.getDate()}`;
     }
 
-    function anchorOfElement(element) {
-      if (element === null || element === undefined || typeof element.getBoundingClientRect !== 'function') return null;
-      try {
-        const rect = element.getBoundingClientRect();
-        return {
-          top: Math.max(8, Math.round(rect.bottom + 8)),
-          right: Math.max(8, Math.round(window.innerWidth - rect.right)),
-        };
-      } catch {
-        return null;
-      }
-    }
-
     function baseName(path) {
       const parts = String(path).split(/[\\/]/).filter(Boolean);
       return parts.length === 0 ? String(path) : parts[parts.length - 1];
@@ -529,6 +654,90 @@ window.__ModuleLoader__.load({
       });
     }
 
+    // Polled read-only data. Failure keeps the last good payload (with a
+    // `message` for a lightweight notice) instead of blanking the section.
+    function usePolledData(options) {
+      const path = options.path;
+      const sessionId = options.sessionId;
+      const extra = options.extra;
+      const interval = options.interval ?? 0;
+      const nonce = options.nonce ?? 0;
+      const identity = options.identity === undefined || options.identity === null ? '' : String(options.identity);
+      const enabled = options.enabled !== false;
+      const extraKey = extra === undefined || extra === null ? '' : JSON.stringify(extra);
+      const [state, setState] = React.useState({ status: 'loading' });
+      const [local, setLocal] = React.useState(0);
+
+      React.useEffect(() => {
+        if (!enabled || sessionId === null || sessionId === undefined) {
+          setState((previous) => (previous.status === 'idle' && previous.identity === identity
+            ? previous
+            : { status: 'idle', identity }));
+          return undefined;
+        }
+        let cancelled = false;
+        let active = null;
+        let timer = null;
+        const tick = () => {
+          if (cancelled || active !== null) return;
+          const controller = new AbortController();
+          active = controller;
+          setState((previous) => {
+            if (previous.identity !== identity) return { status: 'loading', identity };
+            if (previous.status === 'ready') return Object.assign({}, previous, { refreshing: true });
+            return Object.assign({}, previous, { identity });
+          });
+          let target;
+          try {
+            const params = extra === undefined || extra === null ? { sessionId } : Object.assign({ sessionId }, extra);
+            target = apiUrl(path, params);
+          } catch (error) {
+            active = null;
+            setState({ status: 'error', message: String(error?.message ?? error), identity });
+            return;
+          }
+          fetch(target, { signal: controller.signal, credentials: 'same-origin' })
+            .then((response) => {
+              if (!response.ok) throw new Error(`HTTP ${response.status}`);
+              return response.json();
+            })
+            .then((data) => {
+              if (active === controller) active = null;
+              if (cancelled) return;
+              setState({ status: 'ready', data, at: Date.now(), identity });
+            })
+            .catch((error) => {
+              if (active === controller) active = null;
+              if (cancelled || controller.signal.aborted) return;
+              if (error !== null && typeof error === 'object' && error.name === 'AbortError') return;
+              const message = error !== null && typeof error === 'object' && typeof error.message === 'string'
+                ? error.message
+                : String(error);
+              setState((previous) => {
+                if (previous.identity === identity && previous.status === 'ready') {
+                  return Object.assign({}, previous, { refreshing: false, message });
+                }
+                return { status: 'error', message, identity };
+              });
+            });
+        };
+        tick();
+        if (typeof interval === 'number' && interval > 0) timer = setInterval(tick, interval);
+        return () => {
+          cancelled = true;
+          if (active !== null) {
+            active.abort();
+            active = null;
+          }
+          if (timer !== null) clearInterval(timer);
+        };
+      }, [path, sessionId, extraKey, interval, nonce, identity, enabled, local]);
+
+      return Object.assign({}, state, {
+        retry: () => setLocal((value) => value + 1),
+      });
+    }
+
     // ------------------------------------------------------------------
     // glyphs
     // ------------------------------------------------------------------
@@ -603,6 +812,13 @@ window.__ModuleLoader__.load({
         children = [
           h('path', { key: 'a', d: 'M10 14a4 4 0 0 0 6 0l2-2a4 4 0 0 0-6-6l-1 1' }),
           h('path', { key: 'b', d: 'M14 10a4 4 0 0 0-6 0l-2 2a4 4 0 0 0 6 6l1-1' }),
+        ];
+      } else if (name === 'tasks') {
+        children = [
+          h('path', { key: 'a', d: 'M10 6h10M10 12h10M10 18h10' }),
+          h('circle', { key: 'b', cx: 4.5, cy: 6, r: 1 }),
+          h('circle', { key: 'c', cx: 4.5, cy: 12, r: 1 }),
+          h('circle', { key: 'd', cx: 4.5, cy: 18, r: 1 }),
         ];
       } else {
         children = [h('path', { key: 'a', d: 'M14 7l3 3-8 8H6v-3z' })];
@@ -1033,6 +1249,217 @@ window.__ModuleLoader__.load({
     }
 
     // ------------------------------------------------------------------
+    // tasks section (floating panel)
+    // ------------------------------------------------------------------
+
+    function taskChildrenMap(tasks) {
+      const map = new Map();
+      for (const task of tasks) {
+        const parentId = task.parentId === null || task.parentId === undefined ? null : String(task.parentId);
+        if (!map.has(parentId)) map.set(parentId, []);
+        map.get(parentId).push(task);
+      }
+      for (const list of map.values()) {
+        list.sort((left, right) => {
+          const orderDiff = (left.order ?? 0) - (right.order ?? 0);
+          if (orderDiff !== 0) return orderDiff;
+          return String(left.id).localeCompare(String(right.id));
+        });
+      }
+      return map;
+    }
+
+    function taskRoots(tasks, childrenMap) {
+      const ids = new Set(tasks.map((task) => task.id));
+      const roots = tasks.filter((task) => task.parentId === null || task.parentId === undefined || !ids.has(task.parentId));
+      roots.sort((left, right) => {
+        const orderDiff = (left.order ?? 0) - (right.order ?? 0);
+        if (orderDiff !== 0) return orderDiff;
+        return String(left.id).localeCompare(String(right.id));
+      });
+      return roots;
+    }
+
+    // Expand the ancestor chain of every focus task, so focus rows are visible
+    // without expanding the rest of the tree.
+    function focusAncestors(focus, tasks) {
+      const map = new Map();
+      for (const task of tasks) map.set(task.id, task);
+      const expanded = {};
+      for (const id of focus) {
+        let cursor = map.get(id);
+        let guard = 0;
+        while (cursor !== undefined && guard < 500) {
+          guard += 1;
+          const parentId = cursor.parentId === null || cursor.parentId === undefined ? null : String(cursor.parentId);
+          if (parentId === null) break;
+          expanded[parentId] = true;
+          cursor = map.get(parentId);
+        }
+      }
+      return expanded;
+    }
+
+    function tooltipStyle(rect) {
+      const width = 220;
+      const margin = 8;
+      const viewportWidth = typeof window !== 'undefined' && typeof window.innerWidth === 'number' ? window.innerWidth : 1024;
+      const viewportHeight = typeof window !== 'undefined' && typeof window.innerHeight === 'number' ? window.innerHeight : 768;
+      let left = margin;
+      let top = margin;
+      if (rect !== null && rect !== undefined) {
+        left = Math.min(Math.max(margin, rect.left), Math.max(margin, viewportWidth - width - margin));
+        top = rect.bottom + 6;
+        if (top > viewportHeight - 120) top = Math.max(margin, rect.top - 6 - 90);
+      }
+      return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px`, width: `${width}px` };
+    }
+
+    function TasksBody({ data, state, sessionId, t, api }) {
+      const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+      const focus = Array.isArray(data.focus) ? data.focus.filter((id) => typeof id === 'string' && id !== '') : [];
+      const focusKey = focus.join('|');
+      const focusSet = new Set(focus);
+      const [expanded, setExpanded] = React.useState({});
+      const [hover, setHover] = React.useState(null);
+      const hoverTimer = React.useRef(null);
+      const initRef = React.useRef({ sessionId: null, focusKey: null });
+
+      // Default fold: first load of a session expands only focus ancestors.
+      // Polling refreshes keep the user's manual fold state; a session switch
+      // resets to the default, a new focus path is merged in additively.
+      React.useEffect(() => {
+        if (sessionId === null || sessionId === undefined) return;
+        const previous = initRef.current;
+        const sessionChanged = previous.sessionId !== sessionId;
+        if (!sessionChanged && previous.focusKey === focusKey) return;
+        const ancestors = focusAncestors(focus, tasks);
+        initRef.current = { sessionId, focusKey };
+        if (sessionChanged) setExpanded(ancestors);
+        else setExpanded((current) => Object.assign({}, current, ancestors));
+      }, [sessionId, focusKey, tasks]);
+
+      React.useEffect(() => () => {
+        if (hoverTimer.current !== null) {
+          clearTimeout(hoverTimer.current);
+          hoverTimer.current = null;
+        }
+      }, []);
+
+      if (data.available !== true) return h('div', { className: 'sp-empty' }, t('tasks.unavailable'));
+      if (tasks.length === 0) return h('div', { className: 'sp-empty' }, t('tasks.empty'));
+
+      const childrenMap = taskChildrenMap(tasks);
+      const roots = taskRoots(tasks, childrenMap);
+
+      const clearHover = () => {
+        if (hoverTimer.current !== null) {
+          clearTimeout(hoverTimer.current);
+          hoverTimer.current = null;
+        }
+        setHover(null);
+      };
+      const enterRow = (task) => (event) => {
+        if (hoverTimer.current !== null) clearTimeout(hoverTimer.current);
+        const element = event.currentTarget;
+        hoverTimer.current = setTimeout(() => {
+          hoverTimer.current = null;
+          let rect = null;
+          try {
+            rect = element.getBoundingClientRect();
+          } catch {
+            rect = null;
+          }
+          setHover({ task, rect });
+        }, 250);
+      };
+      const openTask = (task) => {
+        clearHover();
+        api.openTask(sessionId, task.id);
+      };
+      const toggle = (taskId) => setExpanded((current) => Object.assign({}, current, { [taskId]: current[taskId] !== true }));
+
+      const rows = [];
+      const walk = (task, depth) => {
+        const children = childrenMap.get(task.id) ?? [];
+        const hasChildren = children.length > 0;
+        const isOpen = expanded[task.id] === true;
+        rows.push(h('div', {
+          key: task.id,
+          className: 'sp-task-row'
+            + (focusSet.has(task.id) ? ' sp-task-row-focus' : '')
+            + (task.deferred === true ? ' sp-task-row-deferred' : ''),
+          style: { paddingLeft: `${depth * 11}px` },
+          role: 'treeitem',
+          'aria-level': depth + 1,
+          'aria-expanded': hasChildren ? isOpen : undefined,
+        },
+          hasChildren
+            ? h('button', {
+              type: 'button',
+              className: 'sp-task-arrow',
+              title: isOpen ? t('tasks.collapse') : t('tasks.expand'),
+              'aria-label': isOpen ? t('tasks.collapse') : t('tasks.expand'),
+              onClick: () => toggle(task.id),
+            }, h(Glyph, { name: isOpen ? 'chevron-down' : 'chevron-right', size: 11 }))
+            : h('span', { className: 'sp-task-arrow-space', 'aria-hidden': true }),
+          h('button', {
+            type: 'button',
+            className: 'sp-task-main',
+            title: typeof task.title === 'string' ? task.title : '',
+            onClick: () => openTask(task),
+            onMouseEnter: enterRow(task),
+            onMouseLeave: clearHover,
+          },
+            h('span', { className: 'sp-task-dot sp-task-dot-' + String(task.status ?? 'pending'), 'aria-hidden': true }),
+            h('span', { className: 'sp-task-title' }, task.title))));
+        if (isOpen) for (const child of children) walk(child, depth + 1);
+      };
+      for (const root of roots) walk(root, 0);
+
+      const tooltip = hover === null ? null : h('div', {
+        className: 'sp-task-tip',
+        style: tooltipStyle(hover.rect),
+        role: 'tooltip',
+      },
+        h('div', { className: 'sp-tip-title' }, hover.task.title),
+        typeof hover.task.summary === 'string' && hover.task.summary !== ''
+          ? h('div', { className: 'sp-tip-text' }, hover.task.summary)
+          : null,
+        hover.task.status === 'blocked' && hover.task.blocker !== null && hover.task.blocker !== undefined
+          && typeof hover.task.blocker.reason === 'string' && hover.task.blocker.reason !== ''
+          ? h('div', { className: 'sp-tip-text sp-tip-blocker' }, t('tasks.tip.blocker', { reason: hover.task.blocker.reason }))
+          : null);
+
+      return h('div', { className: 'sp-stack' },
+        state.message
+          ? h('div', { className: 'sp-error' },
+            h('span', null, t('state.error', { message: state.message })),
+            h('button', { className: 'sp-link', onClick: state.retry }, t('state.retry')))
+          : null,
+        h('div', { className: 'sp-task-tree', role: 'tree' }, rows),
+        tooltip);
+    }
+
+    function TasksSection({ sessionId, nonce, t, api }) {
+      const identity = sessionId === null || sessionId === undefined ? '' : String(sessionId);
+      const state = usePolledData({
+        path: 'summary-panel/tasks',
+        sessionId,
+        interval: 1500,
+        nonce,
+        identity,
+      });
+      const ready = state.status === 'ready' && state.identity === identity;
+      const data = ready ? state.data : undefined;
+      const cardState = ready
+        ? Object.assign({}, state, { refreshing: false })
+        : { status: state.status === 'error' ? 'error' : 'loading', message: state.message, retry: state.retry };
+      return h(SectionCard, { icon: 'tasks', title: t('section.tasks'), state: cardState, t, defaultOpen: true },
+        () => h(TasksBody, { data, state, sessionId, t, api }));
+    }
+
+    // ------------------------------------------------------------------
     // live diff tab (right sidebar)
     // ------------------------------------------------------------------
 
@@ -1270,15 +1697,289 @@ window.__ModuleLoader__.load({
     }
 
     // ------------------------------------------------------------------
+    // task detail tab (right sidebar)
+    // ------------------------------------------------------------------
+
+    function taskStatusText(status, t) {
+      if (status === 'in_progress') return t('tasks.status.inProgress');
+      if (status === 'blocked') return t('tasks.status.blocked');
+      if (status === 'done') return t('tasks.status.done');
+      return t('tasks.status.pending');
+    }
+
+    function taskCompletionText(completion, t) {
+      if (completion === 'user-confirmed') return t('tasks.detail.completionUser');
+      if (completion === 'self') return t('tasks.detail.completionSelf');
+      return '';
+    }
+
+    function detailValueText(value) {
+      if (value === null || value === undefined || value === '') return '—';
+      return String(value);
+    }
+
+    function DetailField({ label, value, mono }) {
+      return h('div', { className: 'sp-detail-field' },
+        h('div', { className: 'sp-detail-label' }, label),
+        h('div', { className: 'sp-detail-value' + (mono === true ? ' sp-detail-mono' : '') }, detailValueText(value)));
+    }
+
+    function TaskDetailBody(props) {
+      const { sessionId, useTabInfo, t, api } = props;
+      const info = typeof useTabInfo === 'function' ? useTabInfo() : undefined;
+      const tab = info === undefined ? undefined : info.tab;
+      const params = tab === undefined ? undefined : tab.navigation?.params;
+      const taskId = params !== undefined && typeof params.taskId === 'string' ? params.taskId : '';
+      const targetSession = params !== undefined && typeof params.sessionId === 'string'
+        ? params.sessionId
+        : (typeof sessionId === 'string' ? sessionId : undefined);
+      const revision = tab === undefined ? 0 : (tab.navigation?.revision ?? 0);
+      const visible = tab === undefined ? true : tab.visible !== false;
+      const identity = `${targetSession ?? ''}\u0000${taskId}`;
+      const [archivedOpen, setArchivedOpen] = React.useState(false);
+      const state = usePolledData({
+        path: 'summary-panel/tasks',
+        sessionId: targetSession,
+        interval: 3000,
+        nonce: revision,
+        identity,
+        enabled: visible && taskId !== '' && targetSession !== undefined,
+      });
+      const ready = state.status === 'ready' && state.identity === identity;
+      const data = ready ? state.data : undefined;
+      const tasks = data !== undefined && Array.isArray(data.tasks) ? data.tasks : [];
+      const archived = data !== undefined && Array.isArray(data.archived) ? data.archived : [];
+      const active = taskId === ''
+        ? undefined
+        : tasks.find((task) => task !== null && typeof task === 'object' && task.id === taskId);
+      const archivedEntry = active === undefined && taskId !== ''
+        ? archived.find((entry) => entry !== null && typeof entry === 'object' && entry.id === taskId)
+        : undefined;
+
+      let body;
+      if (taskId === '') {
+        body = h('div', { className: 'sp-detail-empty' }, t('tasks.detail.noTarget'));
+      } else if (!ready && state.status === 'error') {
+        body = h('div', { className: 'sp-detail-empty' },
+          t('state.error', { message: state.message ?? '' }),
+          h('button', { className: 'sp-link', onClick: state.retry }, t('state.retry')));
+      } else if (!ready) {
+        body = h('div', { className: 'sp-detail-empty' }, h('span', { className: 'sp-spin' }), t('state.loading'));
+      } else if (data === undefined || data.available !== true) {
+        body = h('div', { className: 'sp-detail-empty' }, t('tasks.unavailable'));
+      } else if (active === undefined && archivedEntry === undefined) {
+        body = h('div', { className: 'sp-detail-empty' }, t('tasks.detail.missing'));
+      } else {
+        const blocks = [];
+        const goal = data.goal === undefined ? null : data.goal;
+        if (goal !== null && goal !== undefined) {
+          const changes = Array.isArray(goal.changes) ? goal.changes : [];
+          blocks.push(h('section', { key: 'goal', className: 'sp-detail-block' },
+            h('div', { className: 'sp-detail-block-title' }, t('tasks.detail.goal')),
+            h(DetailField, { label: t('tasks.detail.original'), value: goal.original }),
+            h(DetailField, { label: t('tasks.detail.current'), value: goal.current }),
+            typeof data.outline === 'string' && data.outline !== ''
+              ? h(DetailField, { label: t('tasks.detail.outline'), value: data.outline })
+              : null,
+            changes.length > 0
+              ? h('div', { className: 'sp-detail-field' },
+                h('div', { className: 'sp-detail-label' }, t('tasks.detail.changes', { n: changes.length })),
+                h('div', { className: 'sp-detail-list' },
+                  changes.map((change, index) => h('div', { key: `${String(change.at)}-${index}`, className: 'sp-detail-change' },
+                    h('div', { className: 'sp-detail-change-meta' }, `${relTime(change.at, t)} · ${String(change.reason ?? '')}`),
+                    h('div', { className: 'sp-detail-change-diff' }, `${String(change.previous ?? '')} → ${String(change.next ?? '')}`)))))
+              : null));
+        }
+
+        if (active !== undefined) {
+          const fields = [];
+          fields.push(h('div', { key: 'status', className: 'sp-detail-field' },
+            h('div', { className: 'sp-detail-label' }, t('tasks.detail.status')),
+            h('div', { className: 'sp-detail-value' },
+              h('span', { className: 'sp-task-status sp-task-status-' + String(active.status ?? 'pending') }, taskStatusText(active.status, t)),
+              active.deferred === true
+                ? h('span', { className: 'sp-task-status sp-task-status-deferred' }, t('tasks.deferred'))
+                : null)));
+          if (typeof active.summary === 'string' && active.summary !== '') {
+            fields.push(h(DetailField, { key: 'summary', label: t('tasks.detail.summary'), value: active.summary }));
+          }
+          if (typeof active.progress === 'string' && active.progress !== '') {
+            fields.push(h(DetailField, { key: 'progress', label: t('tasks.detail.progress'), value: active.progress }));
+          }
+          if (typeof active.result === 'string' && active.result !== '') {
+            fields.push(h(DetailField, { key: 'result', label: t('tasks.detail.result'), value: active.result }));
+          }
+          if (active.blocker !== null && active.blocker !== undefined) {
+            if (typeof active.blocker.reason === 'string' && active.blocker.reason !== '') {
+              fields.push(h(DetailField, { key: 'blocker', label: t('tasks.detail.blocker'), value: active.blocker.reason }));
+            }
+            if (typeof active.blocker.unblock === 'string' && active.blocker.unblock !== '') {
+              fields.push(h(DetailField, { key: 'unblock', label: t('tasks.detail.unblock'), value: active.blocker.unblock }));
+            }
+          }
+          if (typeof active.ownerSessionId === 'string' && active.ownerSessionId !== '') {
+            const liveText = active.ownerLive === true ? t('tasks.detail.ownerLive') : t('tasks.detail.ownerGone');
+            fields.push(h(DetailField, {
+              key: 'owner',
+              label: t('tasks.detail.owner'),
+              value: `${active.ownerSessionId} · ${liveText}`,
+              mono: true,
+            }));
+          }
+          const completionText = taskCompletionText(active.completion, t);
+          if (completionText !== '') {
+            fields.push(h(DetailField, { key: 'completion', label: t('tasks.detail.completion'), value: completionText }));
+          }
+          if (active.deferred === true) {
+            if (typeof active.deferredReason === 'string' && active.deferredReason !== '') {
+              fields.push(h(DetailField, { key: 'deferredReason', label: t('tasks.detail.deferredReason'), value: active.deferredReason }));
+            }
+            if (typeof active.resumeCondition === 'string' && active.resumeCondition !== '') {
+              fields.push(h(DetailField, { key: 'resumeCondition', label: t('tasks.detail.resumeCondition'), value: active.resumeCondition }));
+            }
+          }
+          if (typeof active.updatedAt === 'number' && active.updatedAt > 0) {
+            fields.push(h('div', { key: 'updated', className: 'sp-detail-meta' }, t('tasks.detail.updated', { time: relTime(active.updatedAt, t) })));
+          }
+          blocks.push(h('section', { key: 'task', className: 'sp-detail-block' },
+            h('div', { className: 'sp-detail-block-title' }, t('tasks.detail.info')),
+            fields));
+        } else if (archivedEntry !== undefined) {
+          blocks.push(h('section', { key: 'archived-task', className: 'sp-detail-block' },
+            h('div', { className: 'sp-detail-block-title' }, t('tasks.detail.archivedTitle')),
+            h(DetailField, { label: t('tasks.detail.archiveReason'), value: archivedEntry.archiveReason }),
+            typeof archivedEntry.archivedAt === 'number' && archivedEntry.archivedAt > 0
+              ? h(DetailField, { label: t('tasks.detail.archivedAt'), value: relTime(archivedEntry.archivedAt, t) })
+              : null));
+        }
+
+        const archivedCount = typeof data.archivedCount === 'number' ? data.archivedCount : archived.length;
+        {
+          blocks.push(h('section', { key: 'archived-list', className: 'sp-detail-block' },
+            h('button', {
+              type: 'button',
+              className: 'sp-detail-block-toggle',
+              'aria-expanded': archivedOpen,
+              onClick: () => setArchivedOpen((value) => !value),
+            },
+              h(Glyph, { name: archivedOpen ? 'chevron-down' : 'chevron-right', size: 12 }),
+              h('span', null, t('tasks.detail.archived', { n: archivedCount }))),
+            archivedOpen && archivedCount === 0
+              ? h('div', { className: 'sp-empty' }, t('tasks.detail.archivedEmpty'))
+              : null,
+            archivedOpen && archivedCount > 0
+              ? h('div', { className: 'sp-detail-list' },
+                archived.map((entry) => h('button', {
+                  key: entry.id,
+                  type: 'button',
+                  className: 'sp-detail-archive-row',
+                  title: typeof entry.title === 'string' ? entry.title : '',
+                  onClick: () => {
+                    if (api !== undefined && typeof api.openTask === 'function') api.openTask(targetSession, entry.id);
+                  },
+                },
+                  h('span', { className: 'sp-detail-archive-title' }, entry.title),
+                  typeof entry.archiveReason === 'string' && entry.archiveReason !== ''
+                    ? h('span', { className: 'sp-detail-archive-meta' }, entry.archiveReason)
+                    : null,
+                  typeof entry.archivedAt === 'number' && entry.archivedAt > 0
+                    ? h('span', { className: 'sp-detail-archive-meta' }, relTime(entry.archivedAt, t))
+                    : null)))
+              : null));
+        }
+
+        body = h('div', { className: 'sp-detail-body' },
+          state.message
+            ? h('div', { className: 'sp-error' },
+              h('span', null, t('state.error', { message: state.message })),
+              h('button', { className: 'sp-link', onClick: state.retry }, t('state.retry')))
+            : null,
+          blocks);
+      }
+
+      const title = active !== undefined
+        ? (typeof active.title === 'string' ? active.title : t('tasks.detail.title'))
+        : (archivedEntry !== undefined && typeof archivedEntry.title === 'string'
+          ? archivedEntry.title
+          : t('tasks.detail.title'));
+      return h('div', { className: 'sp-detail-root' },
+        h(Styles, null),
+        h('div', { className: 'sp-detail-toolbar' },
+          h(Glyph, { name: 'tasks', size: 14 }),
+          h('span', { className: 'sp-detail-title', title }, title),
+          active !== undefined
+            ? h('span', { className: 'sp-task-status sp-task-status-' + String(active.status ?? 'pending') }, taskStatusText(active.status, t))
+            : null,
+          h('button', {
+            className: 'sp-icon-btn',
+            title: t('panel.refresh'),
+            'aria-label': t('panel.refresh'),
+            onClick: state.retry,
+          }, h(Glyph, { name: 'refresh', size: 13 }))),
+        body);
+    }
+
+    // ------------------------------------------------------------------
     // panel + entry
     // ------------------------------------------------------------------
 
     const BUILTIN_SECTIONS = [
+      { id: 'tasks', order: 5, Component: TasksSection },
       { id: 'git', order: 10, Component: GitSection },
       { id: 'outputs', order: 20, Component: OutputsSection },
       { id: 'subagents', order: 30, Component: SubagentsSection },
       { id: 'sources', order: 40, Component: SourcesSection },
     ];
+
+    // The floating panel keeps the conversation column untouched: it measures
+    // the chat flow's right edge and only occupies the empty band beside it.
+    function measurePanelSpace() {
+      const fallback = { top: 56, right: 12, width: 240, maxHeight: 640 };
+      if (typeof window === 'undefined' || typeof document === 'undefined') return fallback;
+      const width = typeof window.innerWidth === 'number' ? window.innerWidth : 1024;
+      const height = typeof window.innerHeight === 'number' ? window.innerHeight : 768;
+      let chatRight = 0;
+      try {
+        // Chat rows sit inside the centered conversation column, so their right
+        // edge is the content edge we must not cover. The flow container falls
+        // back to the full width in some layouts, so it is only a last resort.
+        for (const node of document.querySelectorAll('[data-slot="conversation.chat.node"]')) {
+          const rect = node.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) chatRight = Math.max(chatRight, rect.right);
+        }
+        if (chatRight === 0) {
+          for (const node of document.querySelectorAll('[data-slot="conversation.chat.flow"]')) {
+            const rect = node.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) chatRight = Math.max(chatRight, rect.right);
+          }
+        }
+      } catch {
+        chatRight = 0;
+      }
+      if (chatRight === 0) {
+        // Last resort: derive the centered column width from the layout token.
+        try {
+          const raw = window.getComputedStyle(document.documentElement).getPropertyValue('--dsh-chat-content-width');
+          const match = /([\d.]+)px/.exec(raw);
+          if (match !== null) {
+            const chatWidth = Math.min(Number(match[1]), width);
+            chatRight = Math.max(0, Math.round((width + chatWidth) / 2));
+          }
+        } catch {
+          chatRight = 0;
+        }
+      }
+      const margin = chatRight > 0 ? width - chatRight : width - 28;
+      // Compact by design: stay narrow so the floating card borrows the right
+      // margin instead of covering the conversation.
+      const panelWidth = Math.max(180, Math.min(240, Math.floor(margin - 12)));
+      return {
+        top: 56,
+        right: 12,
+        width: panelWidth,
+        maxHeight: Math.max(220, height - 72),
+      };
+    }
 
     function Panel({ api, locale }) {
       const snapshot = useSnapshot(panelStore);
@@ -1286,12 +1987,12 @@ window.__ModuleLoader__.load({
       const t = useT(locale);
       const sessionId = snapshot.sessionId;
       const open = snapshot.open === true && sessionId !== null && sessionId !== undefined;
+      const [space, setSpace] = React.useState(() => measurePanelSpace());
       const contextState = useSection(sessionId, 'context', snapshot.nonce);
       const subagent = contextState.status === 'ready' && contextState.data !== undefined
         ? contextState.data.subagent ?? null
         : null;
       const isSubagent = subagent !== null;
-      const panelRef = React.useRef(null);
 
       React.useEffect(() => {
         if (!open) return undefined;
@@ -1301,25 +2002,30 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         if (!open) return undefined;
+        const update = () => setSpace(measurePanelSpace());
+        update();
+        const timer = setInterval(update, 300);
+        const onResize = () => update();
+        const canListen = typeof window.addEventListener === 'function';
+        if (canListen) window.addEventListener('resize', onResize);
+        return () => {
+          clearInterval(timer);
+          if (canListen) window.removeEventListener('resize', onResize);
+        };
+      }, [open]);
+
+      // The panel is persistent: outside clicks no longer dismiss it. Only
+      // Escape, the close button, and the entry toggle close the panel.
+      React.useEffect(() => {
+        if (!open) return undefined;
         const onKeyDown = (event) => {
           if (event.key === 'Escape') {
             event.stopPropagation();
             api.close();
           }
         };
-        const onPointerDown = (event) => {
-          const element = panelRef.current;
-          if (element === null) return;
-          if (element.contains(event.target)) return;
-          if (event.target !== null && typeof event.target.closest === 'function' && event.target.closest('.sp-entry') !== null) return;
-          api.close();
-        };
         document.addEventListener('keydown', onKeyDown, true);
-        document.addEventListener('pointerdown', onPointerDown, true);
-        return () => {
-          document.removeEventListener('keydown', onKeyDown, true);
-          document.removeEventListener('pointerdown', onPointerDown, true);
-        };
+        return () => document.removeEventListener('keydown', onKeyDown, true);
       }, [open, api]);
 
       if (!open) return null;
@@ -1340,10 +2046,12 @@ window.__ModuleLoader__.load({
         }));
       }
 
-      const anchor = snapshot.anchor;
-      const rootStyle = anchor === null || anchor === undefined
-        ? undefined
-        : { top: `${anchor.top}px`, right: `${anchor.right}px`, maxHeight: `calc(100vh - ${anchor.top}px - 14px)` };
+      const style = {
+        top: `${space.top}px`,
+        right: `${space.right}px`,
+        width: `${space.width}px`,
+        maxHeight: `${space.maxHeight}px`,
+      };
       const banner = isSubagent
         ? h('div', { className: 'sp-context' },
           h(Glyph, { name: 'robot', size: 14 }),
@@ -1357,9 +2065,9 @@ window.__ModuleLoader__.load({
             }, t('context.back'))
             : null)
         : null;
-      return h('div', { className: 'sp-root', style: rootStyle },
+      return h('div', { className: 'sp-root', style },
         h(Styles, null),
-        h('div', { className: 'sp-panel', ref: panelRef, role: 'dialog', 'aria-label': t('panel.title') },
+        h('div', { className: 'sp-panel', role: 'dialog', 'aria-label': t('panel.title') },
           h('header', { className: 'sp-head' },
             h('span', { className: 'sp-head-glyph' }, h(Glyph, { name: 'panel', size: 16 })),
             h('span', { className: 'sp-head-title' }, t('panel.title')),
@@ -1381,28 +2089,61 @@ window.__ModuleLoader__.load({
     function EntryButton({ sessionId, api, locale }) {
       const t = useT(locale);
       const snapshot = useSnapshot(panelStore);
-      const buttonRef = React.useRef(null);
+      const [tip, setTip] = React.useState(null);
+      const identity = sessionId === null || sessionId === undefined ? '' : String(sessionId);
+      // Entry status lamp: small payload, polled every 5s regardless of the
+      // panel being open, so the dot is current when the panel is closed.
+      const statusState = usePolledData({
+        path: 'summary-panel/tasks/status',
+        sessionId,
+        interval: 5000,
+        nonce: snapshot.nonce,
+        identity,
+      });
+      const statusReady = statusState.status === 'ready' && statusState.identity === identity;
+      const focus = statusReady && Array.isArray(statusState.data?.focus) ? statusState.data.focus : [];
+      const firstFocus = focus.length > 0 ? focus[0] : null;
       React.useEffect(() => {
         if (sessionId !== null && sessionId !== undefined) api.setActiveSession(sessionId);
       }, [sessionId, api]);
       const openForThisSession = snapshot.open === true && snapshot.sessionId === sessionId;
-      React.useEffect(() => {
-        if (!openForThisSession) return undefined;
-        const measure = () => api.setAnchor(anchorOfElement(buttonRef.current));
-        measure();
-        const timer = setInterval(measure, 300);
-        return () => clearInterval(timer);
-      }, [openForThisSession, api]);
+      const entryTitle = firstFocus !== null && typeof firstFocus.title === 'string' && firstFocus.title !== ''
+        ? t('entry.focusTitle', { label: t('entry.label'), title: firstFocus.title })
+        : t('entry.label');
+      const focusBlocked = firstFocus !== null
+        && (firstFocus.blocked === true || firstFocus.status === 'blocked');
+      const dot = firstFocus === null
+        ? null
+        : h('span', {
+          className: 'sp-entry-dot' + (focusBlocked ? ' sp-entry-dot-warn' : ''),
+          'aria-hidden': true,
+        });
       return h(React.Fragment, null,
         h(Styles, null),
         h('button', {
-          ref: buttonRef,
           className: 'sp-entry' + (openForThisSession ? ' sp-entry-active' : ''),
-          title: t('entry.label'),
+          title: entryTitle,
           'aria-label': t('entry.label'),
           'aria-expanded': openForThisSession,
-          onClick: () => api.toggle(sessionId, buttonRef.current),
-        }, h(Glyph, { name: 'panel', size: 16 })));
+          onMouseEnter: (event) => {
+            let rect = null;
+            try {
+              rect = event.currentTarget.getBoundingClientRect();
+            } catch {
+              rect = null;
+            }
+            setTip({ rect });
+          },
+          onMouseLeave: () => setTip(null),
+          onClick: () => api.toggle(sessionId),
+        }, h(Glyph, { name: 'panel', size: 16 }), dot),
+        tip === null
+          ? null
+          : h('div', {
+            className: 'sp-task-tip',
+            style: tooltipStyle(tip.rect),
+            role: 'tooltip',
+          }, h('div', { className: 'sp-tip-title' }, entryTitle)));
     }
 
     // ------------------------------------------------------------------
@@ -1427,41 +2168,34 @@ window.__ModuleLoader__.load({
         }
 
         const api = {
-          open(sessionId, element) {
+          open(sessionId) {
             if (sessionId === null || sessionId === undefined) return;
             const current = panelStore.get();
             panelStore.set({
               sessionId,
               open: true,
-              anchor: anchorOfElement(element),
-              nonce: current.open && current.sessionId === sessionId ? current.nonce : current.nonce + 1,
+              nonce: current.open === true && current.sessionId === sessionId ? current.nonce : current.nonce + 1,
             });
           },
           close() {
             panelStore.set({ open: false });
           },
-          toggle(sessionId, element) {
+          toggle(sessionId) {
             const current = panelStore.get();
             if (current.open === true && current.sessionId === sessionId) {
               panelStore.set({ open: false });
               return;
             }
-            this.open(sessionId, element);
+            this.open(sessionId);
           },
           refresh() {
             panelStore.set({ nonce: panelStore.get().nonce + 1 });
-          },
-          setAnchor(anchor) {
-            if (anchor === null || anchor === undefined) return;
-            const current = panelStore.get().anchor;
-            if (current !== null && current !== undefined && current.top === anchor.top && current.right === anchor.right) return;
-            panelStore.set({ anchor });
           },
           setActiveSession(sessionId) {
             if (sessionId === null || sessionId === undefined) return;
             const current = panelStore.get();
             if (current.sessionId !== sessionId) {
-              panelStore.set({ sessionId, open: false });
+              panelStore.set({ sessionId, nonce: current.nonce + 1 });
             }
           },
           openSourceFile(address) {
@@ -1521,6 +2255,18 @@ window.__ModuleLoader__.load({
               console.error('[summary-panel] failed to open the diff tab', error);
             }
           },
+          openTask(sessionId, taskId) {
+            if (sidebarRight === undefined) return;
+            if (typeof taskId !== 'string' || taskId === '') return;
+            try {
+              // The panel is a transient peek; collapse it before the detail
+              // tab opens, but keep the anchor/session for reopening.
+              sidebarRight.openTab('summary-panel.task', { params: { sessionId, taskId } });
+              panelStore.set({ open: false });
+            } catch (error) {
+              console.error('[summary-panel] failed to open the task tab', error);
+            }
+          },
           sections: sectionRegistry,
         };
 
@@ -1565,6 +2311,23 @@ window.__ModuleLoader__.load({
             locale: NS,
             inject: (sessionId) => ({ sessionId }),
           }, DiffBody)), 'summary-panel: diff tab body');
+          scope.effect(() => scope.sidebarRightTabs.register({
+            id: 'summary-panel.task',
+            kind: 'summary-panel.task',
+            title: () => {
+              try {
+                return makeT(scope.locale)('tasks.tabTitle');
+              } catch {
+                return 'Task';
+              }
+            },
+          }), 'summary-panel: task tab type');
+          scope.effect(() => scope.slots.inject('sidebar.right.pane.tab', () => scope.slots.register({
+            name: 'sidebar.right.pane.tab',
+            key: 'summary-panel.task',
+            locale: NS,
+            inject: (sessionId) => ({ sessionId }),
+          }, (props) => h(TaskDetailBody, Object.assign({}, props, { api })))), 'summary-panel: task tab body');
         });
       },
     };

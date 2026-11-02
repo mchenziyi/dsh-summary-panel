@@ -2,7 +2,8 @@
  * Host half of the summary panel bundle.
  *
  * Serves read-only JSON endpoints under `/summary-panel/*` for the browser
- * summary panel: `git`, `outputs`, `diff`, `subagents`, and `sources`.
+ * summary panel: `git`, `outputs`, `diff`, `subagents`, `sources`, and
+ * `context`.
  *
  * Every route answers through the composition's `connection` trust fence and
  * carries `cache-control: no-store`: the panel polls while it is open and the
@@ -11,7 +12,13 @@
  * Git runs through the `subprocess` capability with the same hardened
  * environment the workspace-changes recorder uses (no terminal prompts, no
  * optional locks, ambient git configuration excluded, bounded output).
+ *
+ * The task-tree half (storage, tools, prompt section, and its two read-only
+ * routes) is assembled by `host/mount.js`; a failure there only degrades that
+ * feature and never fails the plugin load.
  */
+
+import { mountTaskTree } from './host/mount.js';
 
 export const name = 'summary-panel';
 
@@ -734,4 +741,12 @@ export function apply(ctx) {
   route(ctx, '/subagents', subagentsHandler);
   route(ctx, '/sources', sourcesHandler);
   route(ctx, '/context', contextHandler);
+
+  // The task tree is an additive feature: any failure here degrades only the
+  // tasks section, never the read-only summary panel (CONTRACT.md §6).
+  try {
+    mountTaskTree(ctx, { route });
+  } catch (error) {
+    console.warn(`[summary-panel] task tree disabled: ${String(error?.message ?? error)}`);
+  }
 }

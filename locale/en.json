@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Summary Panel",
-    "description": "A floating right-side summary panel with Git, deliverables, subagents, and sources."
+    "description": "A floating right-side summary panel with the current task tree, Git, deliverables, subagents, and sources."
   }
 }

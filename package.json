@@ -1,8 +1,8 @@
 {
   "name": "@mchenziyi/dsh-summary-panel",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "Floating right-side summary panel for DSH: Git, uncommitted diff, deliverables, subagents, and sources.",
+  "description": "Floating right-side summary panel for DSH: Git, uncommitted diff, deliverables, subagents, sources, and a persistent agent-maintained task tree.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -12,6 +12,7 @@
   "files": [
     "index.js",
     "client.js",
+    "host/",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
@@ -42,9 +43,14 @@
     "dsh-plugin",
     "summary-panel",
     "git",
-    "diff"
+    "diff",
+    "task-tree",
+    "todo"
   ],
   "engines": {
     "dsh": ">=0.2.0-rc.2"
+  },
+  "scripts": {
+    "test": "node test/host.mjs && node test/tasks.mjs && node test/client.mjs"
   }
 }

@@ -84,6 +84,23 @@ const samples = {
   subagents: { children: [{ id: 's-child-1', label: 'Researcher', mode: 'continuable', createdAt: Date.now() - 300000, running: true }] },
   context: { subagent: { childSessionId: 'c1', parentSessionId: 's1', mode: 'continuable', label: 'Researcher' } },
   sources: { scope: 'turn', turn: 3, links: [{ url: 'https://example.com', title: 'Example', time: Date.now() }], queries: [{ value: 'dsh plugin', time: Date.now() }], files: [{ path: 'a.txt', address: 'dsh-resource://file/session/s1/a.txt', time: Date.now() }], tools: [] },
+  tasks: {
+    available: true,
+    worklineId: 's1',
+    goal: { original: '目标 A', current: '目标 A', changes: [] },
+    outline: '',
+    focus: ['t5'],
+    updatedAt: Date.now(),
+    tasks: [
+      { id: 't1', parentId: null, order: 0, title: 'Host 半', summary: '存储与工具', status: 'in_progress', deferred: false, blocked: null, blocker: null, progress: '', result: null, ownerSessionId: null, ownerLive: false, completion: null, updatedAt: Date.now() },
+      { id: 't5', parentId: 't1', order: 0, title: '存储与工具', summary: '原子写', status: 'in_progress', deferred: false, blocked: null, blocker: null, progress: '', result: null, ownerSessionId: null, ownerLive: false, completion: null, updatedAt: Date.now() },
+      { id: 't2', parentId: null, order: 1, title: 'Client 半', summary: '任务树分区', status: 'in_progress', deferred: false, blocked: null, blocker: null, progress: '', result: null, ownerSessionId: null, ownerLive: false, completion: null, updatedAt: Date.now() },
+      { id: 't6', parentId: 't2', order: 0, title: '悬浮窗展示', summary: '默认收纳', status: 'pending', deferred: true, blocked: null, blocker: null, progress: '', result: null, ownerSessionId: null, ownerLive: false, completion: null, updatedAt: Date.now() },
+    ],
+    archived: [],
+    archivedCount: 0,
+  },
+  'tasks/status': { available: true, focus: [{ id: 't5', title: '存储与工具', status: 'in_progress', blocked: false }], updatedAt: Date.now() },
 };
 globalThis.document = { baseURI: 'http://127.0.0.1:49605/', addEventListener() {}, removeEventListener() {} };
 globalThis.window = { location: { href: 'http://127.0.0.1:49605/' }, open() {}, __ModuleLoader__: { load(registration) { globalThis.window.__captured = registration; } } };
@@ -128,26 +145,31 @@ plugin.apply(ctx);
 
 const api = provided.summaryPanel;
 api.open('s1');
-const panel = slotRegistrations.find((entry) => entry.registration.name === 'shell.overlay').component;
-const text = await renderTree(panel, {});
-const expected = ['Git', 'main', '分支 (3)', '最近提交', '输出内容', '子智能体', '来源', '子智能体会话', 'Researcher', '返回父会话'];
+const panelEntry = slotRegistrations.find((entry) => entry.registration.name === 'shell.overlay');
+if (panelEntry === undefined) throw new Error('summary panel overlay was not registered');
+const text = await renderTree(panelEntry.component, {});
+const expected = ['Git', 'main', '分支 (3)', '最近提交', '输出内容', '子智能体', '来源', '子智能体会话', 'Researcher', '返回父会话', '当前任务', 'Host 半', '存储与工具'];
 const failures = [];
 for (const needle of expected) if (!text.includes(needle)) failures.push(`missing text: ${needle}`);
 if (text.includes('classify')) failures.push('collapsed feature branch leaked into the list');
 if (text.includes('backup/')) failures.push('collapsed branch block leaked into the list');
 if (text.includes('Example')) failures.push('collapsed sources section leaked into the list');
+// Default fold: only the focus path (t1 > t5) is expanded; t2's child stays hidden.
+if (text.includes('悬浮窗展示')) failures.push('default fold leaked a non-focus branch');
 
 api.openSourceFile('dsh-resource://file/session/s1/a.txt');
 api.openSourceUrl('https://example.com');
 api.openDiff('s1', 'a.txt');
 api.openSubagent('s1', { id: 's-child-1', label: 'Researcher', mode: 'continuable' });
 api.openParent('s1');
+api.openTask('s1', 't5');
 console.log('sidebar calls:', JSON.stringify(rightCalls, null, 0));
 if (rightCalls[0]?.call !== 'openResource' || rightCalls[0]?.address !== 'dsh-resource://file/session/s1/a.txt') failures.push('openSourceFile');
 if (rightCalls[1]?.call !== 'openTab' || rightCalls[1]?.kind !== 'browser' || rightCalls[1]?.options?.params?.url !== 'https://example.com') failures.push('openSourceUrl');
 if (rightCalls[2]?.kind !== 'summary-panel.diff') failures.push('openDiff');
 if (rightCalls[3]?.call !== 'openSession' || rightCalls[3]?.target?.childSessionId !== 's-child-1') failures.push('openSubagent');
 if (rightCalls[4]?.call !== 'openSession' || rightCalls[4]?.target !== 's1') failures.push('openParent');
+if (rightCalls[5]?.kind !== 'summary-panel.task' || rightCalls[5]?.options?.params?.taskId !== 't5') failures.push('openTask');
 if (errors.length > 0) failures.push(...errors.map((error) => String(error?.message ?? error)));
 console.log("panel sample:", text.replace(/\s+/g, " "));
 console.log(failures.length === 0 ? 'client OK' : 'FAILED: ' + failures.join(' | '));

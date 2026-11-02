@@ -1,6 +1,6 @@
 # 摘要面板（summary-panel）
 
-右上角点开的浮窗式摘要面板：**面板是容器，Git 只是第一个分区**。以后加功能 = 加一个分区，不用碰外壳。
+浮在对话区右侧留白里的摘要面板（不覆盖正文）：**面板是容器，当前任务树与 Git 都只是分区**。以后加功能 = 加一个分区，不用碰外壳。
 
 ## 安装
 
@@ -24,7 +24,9 @@
 ## 形态
 
 - 入口：会话头部右上角工具区（`conversation.session.header.utilities`），在 open-in-app、定时任务之后、会话日志下载之前。
-- 浮窗：`shell.overlay` 全帧浮层，**锚定在入口按钮下方**（打开时测量按钮位置，打开期间每 300ms 跟随一次，右栏展开/窗口缩放时面板跟着按钮移动）；宽度固定 420px，**高度随内容自适应**（折叠后自动收缩，超过视口才滚动）；支持 Escape 关闭、点击外部关闭、手动刷新、每 20 秒自动刷新。
+- 面板：`shell.overlay` 全帧浮层，**贴右侧、宽度按对话列右侧的留白自适应**（读取 `[data-slot="conversation.chat.flow"]` 的右边缘，每 300ms / 窗口缩放时重算），对话列本身不移动、不被盖住；宽度上限 240px、下限 180px，留白不足时会收窄而不是压住正文；字号按紧凑面板调小。
+- 关闭：点入口再关、Esc、面板右上角关闭按钮；点外部不关闭。手动刷新 + 打开期间每 20 秒整轮刷新；任务树（1.5 秒）、任务详情（3 秒）、入口状态灯（5 秒）各自独立轮询。
+- 入口按钮带呼吸灯：有执行焦点时脉动（进行中蓝、阻塞琥珀），无焦点隐藏；`prefers-reduced-motion` 下改为静态。
 - 语言：中 / 英，跟随 Harness 语言设置。
 - 主题：只用 `--dsw-*` 主题 token（含 `--dsw-elevation-panel`、`--dsw-radius-lg`），跟随明暗主题。
 - 面板底色与对话页一致（`--dsw-alias-bg-base`），不再用菜单/浮层的灰色底（`bg-overlay`）。
@@ -33,12 +35,25 @@
 
 | 分区 | 数据来源 | 内容 |
 |---|---|---|
+| 当前任务 | Host 任务树存储 + Agent 工具 | Agent 维护的任务树：层级、状态点、当前焦点；悬停看简介，点击切到右栏任务详情 tab |
 | Git | Host 跑 `git` 只读命令 | 仓库名 / 路径、当前分支、ahead/behind、工作区状态（暂存/修改/未跟踪/冲突）；「分支」「最近提交」两个子块默认收起，分支按文件夹再折叠一层，展开后显示 ahead/behind 徽标、短 hash、subject、作者、相对时间、refs |
 | 输出内容 | 会话事件 + 实时 `git status` | `deliverables/presented` 交付文件；**未提交变更**文件列表（修改/新增/删除/重命名/冲突/未跟踪），点一行打开右栏 live diff |
 | 子智能体 | Host `ctx.subagents.listChildren` | 子会话 label、模式（一次性/可继续）、创建时间；运行中的行显示旋转指示；点击跳转到该子会话 |
 | 来源 | 会话 `tool/call` 事件 | 默认**当前轮**：网页搜索词、抓取的 URL、读写的文件、工具调用次数；「查看全部」切到整个会话。文件行点击打开右栏文件预览，抓取的 URL 点击打开右栏浏览器 tab |
 
 Git 分区是只读的：不做 checkout / fetch / push。工作目录不是仓库、或会话还没有工作目录时显示空状态。
+
+## 当前任务树
+
+任务树完全由 Agent 维护（`task_tree_read` / `task_tree_write`），面板只读：
+
+- 悬浮窗只显示「展开箭头 + 状态色点 + 简短标题」，不显示编号；默认只展开当前焦点任务的祖先路径，其余收起，手动展开的分支在刷新时不会被收回。
+- 状态点使用主题语义色：待开始 `state-idle`、进行中 `brand`、阻塞 `state-warn`、已完成 `state-success`；暂缓任务整行降透明度。
+- 当前焦点（可多个）加粗 + 淡底色，父任务不跟随高亮；悬停显示完整标题、简介与阻塞原因。
+- 点击任务在右栏打开只读详情 tab：目标（原始/当前/修订记录）、进展、结果、阻塞、占用、归档列表。
+- 入口按钮上的小点是**呼吸灯**：有焦点时脉动（颜色随焦点状态），无焦点时隐藏，`prefers-reduced-motion` 下改为静态。面板浮在对话右侧留白，详情在右栏 tab。
+- 分支会话沿用根会话同一条工作线；普通新会话拥有独立工作线。
+- 数据按工作线存在 `<DSH_PROFILE_DIR>/agent-task-tree/<worklineId>.json`（未设置时为 `~/.dsh/agent-task-tree/`），原子写，重启不丢。
 
 ## Host 端点
 
@@ -49,6 +64,8 @@ Git 分区是只读的：不做 checkout / fetch / push。工作目录不是仓�
 - `/summary-panel/diff?sessionId=...&path=<repo 相对路径>`（工作区 vs HEAD 的 unified diff；未跟踪文件按整文件新增；只读）
 - `/summary-panel/subagents?sessionId=...`
 - `/summary-panel/sources?sessionId=...&scope=turn|session`
+- `/summary-panel/tasks?sessionId=...`（任务树：目标、焦点、活跃任务、归档）
+- `/summary-panel/tasks/status?sessionId=...`（入口呼吸灯：焦点概要）
 
 Git 通过 `ctx.subprocess` 运行，环境与 `dsh-workspace-changes` 一致：`GIT_OPTIONAL_LOCKS=0`、`GIT_TERMINAL_PROMPT=0`、`GIT_CONFIG_COUNT=0`、`LC_ALL=C`，单次 6 秒超时、输出有上限。
 
@@ -108,7 +125,7 @@ const dispose = ctx.summaryPanel.register({
 
 ## 文件
 
-- `index.js` — Host 半：四个只读端点和 git 解析。
+- `index.js` — Host 半：只读端点、git 解析，以及任务树装配（`host/`）。
 - `client.js` — Client 半：入口按钮、浮窗、分区注册表、四个内置分区。
 - `cordis.patch.yml` — 插入 Host 行。
 - `locale/*.json` — 插件管理页显示的标题与描述。
@@ -122,3 +139,5 @@ const dispose = ctx.summaryPanel.register({
 - diff 是行级（git 的按行比较，含 3 行上下文、重命名检测），不是词级/字符级高亮；支持「统一 / 并排」切换；无语法高亮、无暂存/还原等写操作；超过 4000 行截断。
 - 来源默认当前轮，整个会话范围最多扫描末尾 20000 条事件；更早的记录不显示。
 - 刷新是打开时 + 每 20 秒 + 手动；没有监听 `.git` 文件变化。
+- 任务树用轮询（1.5 秒）而不是推送；多个宿主进程同时写同一工作线需要额外的文件锁，当前只保证单进程内串行。
+- 任务树不为琐碎修复建节点、完成需要用户确认、只由 Lead 维护——这些是提示词与工具约束，不是硬性权限墙（写入方会拒绝 subagent/teammate）。
