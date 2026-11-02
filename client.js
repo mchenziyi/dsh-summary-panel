@@ -406,9 +406,9 @@ window.__ModuleLoader__.load({
 .sp-task-dot-done{background:var(--dsw-alias-state-success-primary)}
 .sp-task-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sp-task-row-focus .sp-task-title{font-weight:700}
-.sp-task-tip{position:fixed;z-index:60;pointer-events:none;padding:7px 9px;border-radius:8px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-panel);display:flex;flex-direction:column;gap:3px}
-.sp-tip-title{font-size:12.5px;font-weight:600;overflow-wrap:anywhere}
-.sp-tip-text{font-size:11.5px;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
+.sp-task-tip{position:fixed;z-index:80;pointer-events:none;max-width:min(220px,calc(100vw - 16px));padding:4px 7px;border-radius:7px;background:color-mix(in srgb,var(--dsw-alias-bg-overlay) 74%,transparent);backdrop-filter:blur(10px) saturate(1.15);border:1px solid color-mix(in srgb,var(--dsw-alias-border-l1) 70%,transparent);box-shadow:0 6px 18px rgba(0,0,0,.10);display:flex;flex-direction:column;gap:1px;color:var(--dsw-alias-label-primary)}
+.sp-tip-title{font-size:11px;font-weight:500;line-height:1.3;color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}
+.sp-tip-text{font-size:10px;line-height:1.35;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
 .sp-tip-blocker{color:var(--dsw-alias-state-warn-primary)}
 .sp-task-status{flex:none;font-size:10.5px;padding:0 6px;border-radius:999px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);white-space:nowrap}
 .sp-task-status-pending{color:var(--dsw-alias-label-secondary)}
@@ -464,6 +464,12 @@ window.__ModuleLoader__.load({
     }
 
     const panelStore = createStore({ sessionId: null, open: false, nonce: 0 });
+    // Frame-level hover bubble: rendered beside the panel (not inside it) so
+    // the panel's rounded overflow can never clip it.
+    const tipStore = createStore({ visible: false, title: '', text: '', note: '', rect: null });
+    function hideTip() {
+      tipStore.set({ visible: false, title: '', text: '', note: '', rect: null });
+    }
 
     function createRegistry() {
       const definitions = new Map();
@@ -1300,19 +1306,26 @@ window.__ModuleLoader__.load({
       return expanded;
     }
 
-    function tooltipStyle(rect) {
-      const width = 220;
+    function tooltipStyle(rect, options = {}) {
+      const width = 240;
       const margin = 8;
       const viewportWidth = typeof window !== 'undefined' && typeof window.innerWidth === 'number' ? window.innerWidth : 1024;
       const viewportHeight = typeof window !== 'undefined' && typeof window.innerHeight === 'number' ? window.innerHeight : 768;
       let left = margin;
       let top = margin;
       if (rect !== null && rect !== undefined) {
-        left = Math.min(Math.max(margin, rect.left), Math.max(margin, viewportWidth - width - margin));
         top = rect.bottom + 6;
         if (top > viewportHeight - 120) top = Math.max(margin, rect.top - 6 - 90);
+        if (options.center === true) {
+          // Center under the anchor; the bubble translates itself by -50%.
+          const half = 110;
+          const center = rect.left + rect.width / 2;
+          left = Math.min(Math.max(center, margin + half), Math.max(margin + half, viewportWidth - margin - half));
+          return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px`, transform: 'translateX(-50%)' };
+        }
+        left = Math.min(Math.max(margin, rect.left), Math.max(margin, viewportWidth - width - margin));
       }
-      return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px`, width: `${width}px` };
+      return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px` };
     }
 
     function TasksBody({ data, state, sessionId, t, api }) {
@@ -1321,7 +1334,6 @@ window.__ModuleLoader__.load({
       const focusKey = focus.join('|');
       const focusSet = new Set(focus);
       const [expanded, setExpanded] = React.useState({});
-      const [hover, setHover] = React.useState(null);
       const hoverTimer = React.useRef(null);
       const initRef = React.useRef({ sessionId: null, focusKey: null });
 
@@ -1357,7 +1369,7 @@ window.__ModuleLoader__.load({
           clearTimeout(hoverTimer.current);
           hoverTimer.current = null;
         }
-        setHover(null);
+        hideTip();
       };
       const enterRow = (task) => (event) => {
         if (hoverTimer.current !== null) clearTimeout(hoverTimer.current);
@@ -1370,7 +1382,17 @@ window.__ModuleLoader__.load({
           } catch {
             rect = null;
           }
-          setHover({ task, rect });
+          const note = task.status === 'blocked' && task.blocker !== null && task.blocker !== undefined
+            && typeof task.blocker.reason === 'string' && task.blocker.reason !== ''
+            ? t('tasks.tip.blocker', { reason: task.blocker.reason })
+            : '';
+          tipStore.set({
+            visible: true,
+            title: typeof task.title === 'string' ? task.title : '',
+            text: typeof task.summary === 'string' ? task.summary : '',
+            note,
+            rect,
+          });
         }, 250);
       };
       const openTask = (task) => {
@@ -1417,28 +1439,13 @@ window.__ModuleLoader__.load({
       };
       for (const root of roots) walk(root, 0);
 
-      const tooltip = hover === null ? null : h('div', {
-        className: 'sp-task-tip',
-        style: tooltipStyle(hover.rect),
-        role: 'tooltip',
-      },
-        h('div', { className: 'sp-tip-title' }, hover.task.title),
-        typeof hover.task.summary === 'string' && hover.task.summary !== ''
-          ? h('div', { className: 'sp-tip-text' }, hover.task.summary)
-          : null,
-        hover.task.status === 'blocked' && hover.task.blocker !== null && hover.task.blocker !== undefined
-          && typeof hover.task.blocker.reason === 'string' && hover.task.blocker.reason !== ''
-          ? h('div', { className: 'sp-tip-text sp-tip-blocker' }, t('tasks.tip.blocker', { reason: hover.task.blocker.reason }))
-          : null);
-
       return h('div', { className: 'sp-stack' },
         state.message
           ? h('div', { className: 'sp-error' },
             h('span', null, t('state.error', { message: state.message })),
             h('button', { className: 'sp-link', onClick: state.retry }, t('state.retry')))
           : null,
-        h('div', { className: 'sp-task-tree', role: 'tree' }, rows),
-        tooltip);
+        h('div', { className: 'sp-task-tree', role: 'tree' }, rows));
     }
 
     function TasksSection({ sessionId, nonce, t, api }) {
@@ -1993,6 +2000,11 @@ window.__ModuleLoader__.load({
         ? contextState.data.subagent ?? null
         : null;
       const isSubagent = subagent !== null;
+      const tip = useSnapshot(tipStore);
+
+      React.useEffect(() => {
+        if (!open) hideTip();
+      }, [open]);
 
       React.useEffect(() => {
         if (!open) return undefined;
@@ -2083,7 +2095,13 @@ window.__ModuleLoader__.load({
               'aria-label': t('panel.close'),
               onClick: () => api.close(),
             }, h(Glyph, { name: 'close', size: 14 }))),
-          h('div', { className: 'sp-body' }, banner, sections)));
+          h('div', { className: 'sp-body' }, banner, sections)),
+        tip.visible === true
+          ? h('div', { className: 'sp-task-tip', style: tooltipStyle(tip.rect), role: 'tooltip' },
+            h('div', { className: 'sp-tip-title' }, tip.title),
+            tip.text !== '' ? h('div', { className: 'sp-tip-text' }, tip.text) : null,
+            tip.note !== '' ? h('div', { className: 'sp-tip-text sp-tip-blocker' }, tip.note) : null)
+          : null);
     }
 
     function EntryButton({ sessionId, api, locale }) {
@@ -2141,7 +2159,7 @@ window.__ModuleLoader__.load({
           ? null
           : h('div', {
             className: 'sp-task-tip',
-            style: tooltipStyle(tip.rect),
+            style: tooltipStyle(tip.rect, { center: true }),
             role: 'tooltip',
           }, h('div', { className: 'sp-tip-title' }, entryTitle)));
     }
