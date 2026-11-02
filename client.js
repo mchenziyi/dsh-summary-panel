@@ -40,6 +40,8 @@ window.__ModuleLoader__.load({
       'tasks.status.blocked': '阻塞',
       'tasks.status.done': '已完成',
       'tasks.tip.blocker': '阻塞原因：{reason}',
+      'tasks.childrenProgress': '子任务 {done}/{total} 已完成',
+      'tasks.detail.archiveHistory': '归档历史',
       'tasks.detail.title': '任务',
       'tasks.detail.noTarget': '没有指定任务',
       'tasks.detail.missing': '任务不存在或已归档',
@@ -389,23 +391,28 @@ window.__ModuleLoader__.load({
 .sp-entry-dot-warn{background:var(--dsw-alias-state-warn-primary)}
 @keyframes sp-breathe{0%,100%{opacity:1}50%{opacity:.25}}
 @media (prefers-reduced-motion: reduce){.sp-entry-dot{animation:none;opacity:1}}
-.sp-task-tree{display:flex;flex-direction:column;gap:1px}
-.sp-task-row{display:flex;align-items:center;border-radius:6px;min-height:21px;padding-right:2px}
+.sp-task-tree{display:flex;flex-direction:column;gap:0}
+.sp-task-row{display:flex;align-items:center;border-radius:5px;min-height:20px;padding-right:2px}
 .sp-task-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.sp-task-row-focus{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 9%,transparent)}
-.sp-task-row-focus:hover{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent)}
-.sp-task-row-deferred{opacity:.55}
-.sp-task-arrow{width:16px;height:20px;flex:none;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;padding:0;border-radius:4px}
-.sp-task-arrow:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
-.sp-task-arrow-space{width:16px;flex:none}
-.sp-task-main{flex:1;min-width:0;display:flex;align-items:center;gap:6px;border:0;background:transparent;color:inherit;font:inherit;font-size:11.5px;padding:2px 2px;cursor:pointer;text-align:left;border-radius:6px}
-.sp-task-dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--dsw-alias-state-idle-primary)}
-.sp-task-dot-pending{background:transparent;box-shadow:inset 0 0 0 1.5px var(--dsw-alias-state-idle-primary)}
-.sp-task-dot-in_progress{background:var(--dsw-static-blue-500)}
-.sp-task-dot-blocked{background:var(--dsw-alias-state-warn-primary)}
-.sp-task-dot-done{background:var(--dsw-alias-state-success-primary)}
-.sp-task-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sp-task-row-focus .sp-task-title{font-weight:700}
+.sp-task-row-focus{background:color-mix(in srgb,var(--dsw-static-blue-500) 10%,transparent)}
+.sp-task-row-focus:hover{background:color-mix(in srgb,var(--dsw-static-blue-500) 15%,transparent)}
+.sp-task-row-deferred{opacity:.5}
+.sp-task-guide{width:11px;flex:none;align-self:stretch;border-left:1px solid var(--dsw-alias-border-l1);opacity:.55}
+.sp-task-arrow{width:15px;height:19px;flex:none;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;padding:0;border-radius:4px;opacity:.8}
+.sp-task-arrow:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);opacity:1}
+.sp-task-arrow-space{width:15px;flex:none}
+.sp-task-main{flex:1;min-width:0;display:flex;align-items:center;gap:6px;border:0;background:transparent;color:inherit;font:inherit;font-size:11.5px;line-height:18px;padding:1px 2px;cursor:pointer;text-align:left;border-radius:5px}
+.sp-task-icon{flex:none;display:block}
+.sp-task-icon-pending{color:var(--dsw-alias-state-idle-primary)}
+.sp-task-icon-in_progress{color:var(--dsw-static-blue-500)}
+.sp-task-icon-blocked{color:var(--dsw-alias-state-warn-primary)}
+.sp-task-icon-done{color:var(--dsw-alias-state-success-primary);opacity:.9}
+.sp-task-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary)}
+.sp-task-row-parent>.sp-task-main>.sp-task-title{font-weight:600}
+.sp-task-row-done>.sp-task-main>.sp-task-title{color:var(--dsw-alias-label-secondary)}
+.sp-task-progress{flex:none;font-size:9.5px;line-height:1;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;opacity:.85;padding-left:2px}
+.sp-task-progress-warn{color:var(--dsw-alias-state-warn-primary);opacity:1}
+.sp-task-row-focus>.sp-task-main>.sp-task-title{font-weight:700}
 .sp-task-tip{position:fixed;z-index:80;pointer-events:none;max-width:min(220px,calc(100vw - 16px));padding:4px 7px;border-radius:7px;background:color-mix(in srgb,var(--dsw-alias-bg-overlay) 74%,transparent);backdrop-filter:blur(10px) saturate(1.15);border:1px solid color-mix(in srgb,var(--dsw-alias-border-l1) 70%,transparent);box-shadow:0 6px 18px rgba(0,0,0,.10);display:flex;flex-direction:column;gap:1px;color:var(--dsw-alias-label-primary)}
 .sp-tip-title{font-size:11px;font-weight:500;line-height:1.3;color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}
 .sp-tip-text{font-size:10px;line-height:1.35;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
@@ -1306,6 +1313,28 @@ window.__ModuleLoader__.load({
       return expanded;
     }
 
+    // Number of unfinished (non-done, non-archived) descendants per ancestor.
+    // A completed parent can still receive new unfinished children later; the
+    // count lets the tree keep them visible instead of hiding them behind a
+    // collapsed completed node.
+    function unfinishedByAncestor(tasks) {
+      const byId = new Map();
+      for (const task of tasks) byId.set(task.id, task);
+      const counts = new Map();
+      for (const task of tasks) {
+        if (task.archived === true || task.status === 'done') continue;
+        let cursor = task.parentId;
+        const seen = new Set();
+        while (typeof cursor === 'string' && !seen.has(cursor)) {
+          seen.add(cursor);
+          counts.set(cursor, (counts.get(cursor) ?? 0) + 1);
+          const parent = byId.get(cursor);
+          cursor = parent === undefined ? null : parent.parentId;
+        }
+      }
+      return counts;
+    }
+
     function tooltipStyle(rect, options = {}) {
       const width = 240;
       const margin = 8;
@@ -1328,6 +1357,45 @@ window.__ModuleLoader__.load({
       return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px` };
     }
 
+    // Linear/VS Code-flavoured status glyphs: one 12px mark per row, coloured by
+    // the existing status model and deliberately quiet for completed work.
+    function TaskStatusIcon({ status }) {
+      const className = 'sp-task-icon sp-task-icon-' + String(status ?? 'pending');
+      const svg = (children) => h('svg', {
+        className,
+        width: 12,
+        height: 12,
+        viewBox: '0 0 12 12',
+        'aria-hidden': true,
+        focusable: 'false',
+      }, children);
+      if (status === 'done') {
+        return svg([
+          h('circle', { key: 'bg', cx: 6, cy: 6, r: 5, fill: 'currentColor', opacity: '0.16' }),
+          h('path', {
+            key: 'check', d: 'M3.7 6.1l1.6 1.6 3.1-3.2', fill: 'none', stroke: 'currentColor',
+            strokeWidth: '1.4', strokeLinecap: 'round', strokeLinejoin: 'round',
+          }),
+        ]);
+      }
+      if (status === 'blocked') {
+        return svg([
+          h('circle', { key: 'ring', cx: 6, cy: 6, r: 4.4, fill: 'none', stroke: 'currentColor', strokeWidth: '1.3' }),
+          h('path', { key: 'bar', d: 'M6 3.7v2.7', stroke: 'currentColor', strokeWidth: '1.3', strokeLinecap: 'round' }),
+          h('circle', { key: 'dot', cx: 6, cy: 8.2, r: '0.6', fill: 'currentColor' }),
+        ]);
+      }
+      if (status === 'in_progress') {
+        return svg([
+          h('circle', { key: 'halo', cx: 6, cy: 6, r: 4.8, fill: 'currentColor', opacity: '0.18' }),
+          h('circle', { key: 'core', cx: 6, cy: 6, r: 2.9, fill: 'currentColor' }),
+        ]);
+      }
+      return svg([
+        h('circle', { key: 'ring', cx: 6, cy: 6, r: 4.2, fill: 'none', stroke: 'currentColor', strokeWidth: '1.3', opacity: '0.75' }),
+      ]);
+    }
+
     function TasksBody({ data, state, sessionId, t, api }) {
       const tasks = Array.isArray(data.tasks) ? data.tasks : [];
       const focus = Array.isArray(data.focus) ? data.focus.filter((id) => typeof id === 'string' && id !== '') : [];
@@ -1335,21 +1403,37 @@ window.__ModuleLoader__.load({
       const focusSet = new Set(focus);
       const [expanded, setExpanded] = React.useState({});
       const hoverTimer = React.useRef(null);
-      const initRef = React.useRef({ sessionId: null, focusKey: null });
+      const initRef = React.useRef({ sessionId: null, focusKey: null, attentionKey: null });
+      const unfinishedCounts = unfinishedByAncestor(tasks);
+      const attentionIds = tasks
+        .filter((task) => task.status === 'done' && (unfinishedCounts.get(task.id) ?? 0) > 0)
+        .map((task) => task.id);
+      const attentionKey = attentionIds.slice().sort().join('|');
 
       // Default fold: first load of a session expands only focus ancestors.
-      // Polling refreshes keep the user's manual fold state; a session switch
-      // resets to the default, a new focus path is merged in additively.
+      // Completed parents with new unfinished children are also opened once, so
+      // their follow-up work is never invisible. Polling refreshes keep the
+      // user's manual fold state; a session switch resets to the default.
       React.useEffect(() => {
         if (sessionId === null || sessionId === undefined) return;
         const previous = initRef.current;
         const sessionChanged = previous.sessionId !== sessionId;
-        if (!sessionChanged && previous.focusKey === focusKey) return;
-        const ancestors = focusAncestors(focus, tasks);
-        initRef.current = { sessionId, focusKey };
-        if (sessionChanged) setExpanded(ancestors);
-        else setExpanded((current) => Object.assign({}, current, ancestors));
-      }, [sessionId, focusKey, tasks]);
+        const focusChanged = previous.focusKey !== focusKey;
+        const attentionChanged = previous.attentionKey !== attentionKey;
+        if (!sessionChanged && !focusChanged && !attentionChanged) return;
+        const next = focusAncestors(focus, tasks);
+        for (const id of attentionIds) {
+          next[id] = true;
+          let cursor = tasks.find((task) => task.id === id);
+          while (cursor !== undefined && cursor.parentId !== null) {
+            next[cursor.parentId] = true;
+            cursor = tasks.find((task) => task.id === cursor.parentId);
+          }
+        }
+        initRef.current = { sessionId, focusKey, attentionKey };
+        if (sessionChanged) setExpanded(next);
+        else setExpanded((current) => Object.assign({}, current, next));
+      }, [sessionId, focusKey, attentionKey, tasks]);
 
       React.useEffect(() => () => {
         if (hoverTimer.current !== null) {
@@ -1405,17 +1489,26 @@ window.__ModuleLoader__.load({
       const walk = (task, depth) => {
         const children = childrenMap.get(task.id) ?? [];
         const hasChildren = children.length > 0;
+        const doneChildren = children.filter((child) => child.status === 'done').length;
+        // Keep the panel quiet: only show progress when it carries information.
+        const showProgress = hasChildren && (children.length > 1 || (task.status === 'done' && doneChildren < children.length));
         const isOpen = expanded[task.id] === true;
+        const guides = [];
+        for (let level = 0; level < depth; level += 1) {
+          guides.push(h('span', { key: `guide-${level}`, className: 'sp-task-guide', 'aria-hidden': true }));
+        }
         rows.push(h('div', {
           key: task.id,
           className: 'sp-task-row'
+            + (hasChildren ? ' sp-task-row-parent' : '')
+            + (task.status === 'done' ? ' sp-task-row-done' : '')
             + (focusSet.has(task.id) ? ' sp-task-row-focus' : '')
             + (task.deferred === true ? ' sp-task-row-deferred' : ''),
-          style: { paddingLeft: `${depth * 11}px` },
           role: 'treeitem',
           'aria-level': depth + 1,
           'aria-expanded': hasChildren ? isOpen : undefined,
         },
+          guides,
           hasChildren
             ? h('button', {
               type: 'button',
@@ -1433,8 +1526,15 @@ window.__ModuleLoader__.load({
             onMouseEnter: enterRow(task),
             onMouseLeave: clearHover,
           },
-            h('span', { className: 'sp-task-dot sp-task-dot-' + String(task.status ?? 'pending'), 'aria-hidden': true }),
-            h('span', { className: 'sp-task-title' }, task.title))));
+            h(TaskStatusIcon, { status: task.status }),
+            h('span', { className: 'sp-task-title' }, task.title),
+            showProgress
+              ? h('span', {
+                className: 'sp-task-progress'
+                  + (task.status === 'done' && (unfinishedCounts.get(task.id) ?? 0) > 0 ? ' sp-task-progress-warn' : ''),
+                title: t('tasks.childrenProgress', { done: doneChildren, total: children.length }),
+              }, `${doneChildren}/${children.length}`)
+              : null)));
         if (isOpen) for (const child of children) walk(child, depth + 1);
       };
       for (const root of roots) walk(root, 0);
@@ -1851,6 +1951,18 @@ window.__ModuleLoader__.load({
           blocks.push(h('section', { key: 'task', className: 'sp-detail-block' },
             h('div', { className: 'sp-detail-block-title' }, t('tasks.detail.info')),
             fields));
+          const archiveHistory = Array.isArray(active.archiveHistory) ? active.archiveHistory : [];
+          if (archiveHistory.length > 0) {
+            blocks.push(h('section', { key: 'archive-history', className: 'sp-detail-block' },
+              h('div', { className: 'sp-detail-block-title' }, t('tasks.detail.archiveHistory')),
+              h('div', { className: 'sp-detail-list' },
+                archiveHistory.slice().reverse().map((entry, index) => h('div', {
+                  key: `${String(entry.at)}-${index}`,
+                  className: 'sp-detail-change',
+                },
+                  h('div', { className: 'sp-detail-change-meta' },
+                    `${relTime(entry.at, t)} · ${String(entry.reason ?? '')}`))))));
+          }
         } else if (archivedEntry !== undefined) {
           blocks.push(h('section', { key: 'archived-task', className: 'sp-detail-block' },
             h('div', { className: 'sp-detail-block-title' }, t('tasks.detail.archivedTitle')),

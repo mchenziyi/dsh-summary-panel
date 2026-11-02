@@ -41,7 +41,7 @@ export function mountTaskTree(ctx, options = {}) {
 
   let prompt = false;
   try {
-    prompt = registerTaskTreePrompt(ctx);
+    prompt = registerTaskTreePrompt(ctx, { store });
   } catch (error) {
     logger.warn(`[summary-panel] task tree prompt disabled: ${String(error?.message ?? error)}`);
   }

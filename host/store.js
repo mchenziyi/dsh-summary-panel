@@ -15,6 +15,7 @@
  * running host.
  */
 
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -108,6 +109,15 @@ export function createTaskStore(options = {}) {
       );
     }
     return readyPromise;
+  }
+
+  /** @returns whether one workline already has a persisted tree (sync, for prompts). */
+  function has(worklineId) {
+    try {
+      return existsSync(fileFor(worklineId));
+    } catch {
+      return false;
+    }
   }
 
   /** @returns whether the storage directory can be created and written. */
@@ -218,5 +228,5 @@ export function createTaskStore(options = {}) {
     });
   }
 
-  return { root, directory: root, ensure, available, read, update };
+  return { root, directory: root, has, ensure, available, read, update };
 }

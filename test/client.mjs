@@ -96,6 +96,8 @@ const samples = {
       { id: 't5', parentId: 't1', order: 0, title: '存储与工具', summary: '原子写', status: 'in_progress', deferred: false, blocked: null, blocker: null, progress: '', result: null, ownerSessionId: null, ownerLive: false, completion: null, updatedAt: Date.now() },
       { id: 't2', parentId: null, order: 1, title: 'Client 半', summary: '任务树分区', status: 'in_progress', deferred: false, blocked: null, blocker: null, progress: '', result: null, ownerSessionId: null, ownerLive: false, completion: null, updatedAt: Date.now() },
       { id: 't6', parentId: 't2', order: 0, title: '悬浮窗展示', summary: '默认收纳', status: 'pending', deferred: true, blocked: null, blocker: null, progress: '', result: null, ownerSessionId: null, ownerLive: false, completion: null, updatedAt: Date.now() },
+      { id: 't7', parentId: null, order: 2, title: '登录功能', summary: '已完成', status: 'done', deferred: false, blocked: null, blocker: null, progress: '', result: '已上线', ownerSessionId: null, ownerLive: false, completion: 'user-confirmed', updatedAt: Date.now() },
+      { id: 't8', parentId: 't7', order: 0, title: '修复 Token 过期', summary: '上线后发现', status: 'in_progress', deferred: false, blocked: null, blocker: null, progress: '定位中', result: null, ownerSessionId: null, ownerLive: false, completion: null, updatedAt: Date.now() },
     ],
     archived: [],
     archivedCount: 0,
@@ -148,7 +150,7 @@ api.open('s1');
 const panelEntry = slotRegistrations.find((entry) => entry.registration.name === 'shell.overlay');
 if (panelEntry === undefined) throw new Error('summary panel overlay was not registered');
 const text = await renderTree(panelEntry.component, {});
-const expected = ['Git', 'main', '分支 (3)', '最近提交', '输出内容', '子智能体', '来源', '子智能体会话', 'Researcher', '返回父会话', '当前任务', 'Host 半', '存储与工具'];
+const expected = ['Git', 'main', '分支 (3)', '最近提交', '输出内容', '子智能体', '来源', '子智能体会话', 'Researcher', '返回父会话', '当前任务', 'Host 半', '存储与工具', '登录功能', '修复 Token 过期'];
 const failures = [];
 for (const needle of expected) if (!text.includes(needle)) failures.push(`missing text: ${needle}`);
 if (text.includes('classify')) failures.push('collapsed feature branch leaked into the list');

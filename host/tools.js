@@ -28,6 +28,14 @@ const READ_PARAMETERS = Object.freeze({
       type: 'boolean',
       description: 'Also return each task summary, progress, and result (default false).',
     },
+    includeArchived: {
+      type: 'boolean',
+      description: 'Also list archived tasks, newest first, with the archive reason, archive time, original location, status, and progress (default false).',
+    },
+    archivedLimit: {
+      type: 'integer',
+      description: 'Maximum archived rows to return when includeArchived is true (1..200, default 50).',
+    },
   },
 });
 
@@ -46,7 +54,7 @@ const WRITE_PARAMETERS = Object.freeze({
         properties: {
           op: {
             type: 'string',
-            enum: ['init', 'reviseGoal', 'create', 'update', 'move', 'defer', 'resume', 'archive', 'focus', 'claim', 'release', 'complete'],
+            enum: ['init', 'reviseGoal', 'create', 'update', 'move', 'defer', 'resume', 'archive', 'restore', 'focus', 'claim', 'release', 'complete'],
             description: 'The operation to apply.',
           },
           id: { type: 'string', description: 'Target task id, e.g. "t3".' },
@@ -108,6 +116,29 @@ const READ_OUTPUT = Object.freeze({
       ],
     },
     focus: { type: 'array', items: { type: 'string' } },
+    archived: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'parentId', 'title', 'status', 'archivedAt', 'archiveReason', 'path'],
+        properties: {
+          id: { type: 'string' },
+          parentId: NULLABLE_STRING,
+          title: { type: 'string' },
+          status: { type: 'string', enum: [...TASK_STATUSES] },
+          deferred: { type: 'boolean' },
+          archivedAt: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+          archiveReason: NULLABLE_STRING,
+          summary: { type: 'string' },
+          progress: { type: 'string' },
+          result: NULLABLE_STRING,
+          completion: NULLABLE_STRING,
+          path: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+    archivedTotal: { type: 'integer' },
     tasks: {
       type: 'array',
       items: {
@@ -157,7 +188,7 @@ const WRITE_OUTPUT = Object.freeze({
 const READ_DESCRIPTION = [
   'Read the workline task tree: the goal (original and current), the current focus, and every active task in tree order with its depth.',
   'Call this at the start of a session or branch, before resuming interrupted work, before planning a large new chunk, and whenever you need to confirm the current goal, focus, or task state; do not rebuild a tree that already exists.',
-  'Pass details: true to also get each task summary, progress notes, and result. Archived tasks are not returned; the summary panel shows them in the right sidebar.',
+  'Pass details: true to also get each task summary, progress notes, and result. Archived tasks are omitted by default; pass includeArchived: true when you need to check what was cancelled before (reason, time, original location, progress), for example before proposing a direction the user may already have rejected.',
 ].join(' ');
 
 const WRITE_DESCRIPTION = [
@@ -233,7 +264,9 @@ export function registerTaskTreeTools(ctx, { store, sessions }) {
       await store.ensure();
       const envelope = await store.read(worklineId);
       const details = args !== null && typeof args === 'object' && args.details === true;
-      return readSnapshot(envelope, worklineId, details);
+      const includeArchived = args !== null && typeof args === 'object' && args.includeArchived === true;
+      const archivedLimit = args !== null && typeof args === 'object' ? args.archivedLimit : undefined;
+      return readSnapshot(envelope, worklineId, details, { includeArchived, archivedLimit });
     },
   };
 

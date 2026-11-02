@@ -25,6 +25,7 @@ export const TASK_OPS = Object.freeze([
   'defer',
   'resume',
   'archive',
+  'restore',
   'focus',
   'claim',
   'release',
@@ -56,6 +57,7 @@ const OP_FIELDS = Object.freeze({
   defer: ['op', 'id', 'deferredReason', 'resumeCondition'],
   resume: ['op', 'id'],
   archive: ['op', 'id', 'reason'],
+  restore: ['op', 'id'],
   focus: ['op', 'ids'],
   claim: ['op', 'id'],
   release: ['op', 'id'],
@@ -181,6 +183,7 @@ function normalizeTask(task, worklineId) {
     archived: task.archived === true,
     archiveReason: typeof task.archiveReason === 'string' ? task.archiveReason : null,
     archivedAt: typeof task.archivedAt === 'number' ? task.archivedAt : null,
+    archiveBatch: typeof task.archiveBatch === 'string' && task.archiveBatch !== '' ? task.archiveBatch : null,
     progress: typeof task.progress === 'string' ? task.progress : '',
     result: typeof task.result === 'string' ? task.result : null,
     blocker: task.blocker !== null && typeof task.blocker === 'object' && typeof task.blocker.reason === 'string'
@@ -191,6 +194,12 @@ function normalizeTask(task, worklineId) {
       : null,
     completion: task.completion === 'user-confirmed' || task.completion === 'self' ? task.completion : null,
     completedAt: typeof task.completedAt === 'number' ? task.completedAt : null,
+    archiveHistory: Array.isArray(task.archiveHistory)
+      ? task.archiveHistory
+        .filter((entry) => entry !== null && typeof entry === 'object')
+        .map((entry) => ({ at: numberOr(entry.at, 0), reason: typeof entry.reason === 'string' ? entry.reason : '' }))
+        .slice(-20)
+      : [],
     createdAt: numberOr(task.createdAt, 0),
     updatedAt: numberOr(task.updatedAt, 0),
   };
@@ -384,12 +393,14 @@ function applyCreate(state, op, context) {
     archived: false,
     archiveReason: null,
     archivedAt: null,
+    archiveBatch: null,
     progress,
     result: null,
     blocker: null,
     owner: null,
     completion: null,
     completedAt: null,
+    archiveHistory: [],
     createdAt: context.now,
     updatedAt: context.now,
   });
@@ -498,6 +509,7 @@ function applyArchive(state, op, context) {
   const id = requireTaskId(op);
   const task = findTask(state, id, { active: true });
   const reason = singleLine(op.reason, 'reason', LIMITS.reason, { required: true });
+  const batch = `${task.id}@${context.now}`;
   const stack = [task.id];
   const archived = [];
   while (stack.length > 0) {
@@ -508,6 +520,10 @@ function applyArchive(state, op, context) {
     current.archived = true;
     current.archiveReason = reason;
     current.archivedAt = context.now;
+    current.archiveBatch = batch;
+    current.archiveHistory = Array.isArray(current.archiveHistory) ? current.archiveHistory : [];
+    current.archiveHistory.push({ at: context.now, reason });
+    current.archiveHistory = current.archiveHistory.slice(-20);
     current.owner = null;
     removeFromFocus(state, current.id);
     touch(state, current, context.now);
@@ -515,6 +531,59 @@ function applyArchive(state, op, context) {
     for (const child of childTasks(state, current.id)) stack.push(child.id);
   }
   return { op: 'archive', id };
+}
+
+function applyRestore(state, op, context) {
+  const id = requireTaskId(op);
+  const task = findTask(state, id);
+  if (task.archived !== true) fail(`task ${id} is not archived`);
+  // Restore under the original parent when it is active; otherwise reparent to
+  // the nearest active ancestor (or the root) so the tree stays valid.
+  let parentId = task.parentId;
+  if (parentId !== null) {
+    const seen = new Set();
+    let cursor = parentId;
+    while (typeof cursor === 'string' && !seen.has(cursor)) {
+      seen.add(cursor);
+      const parent = state.tasks.find((candidate) => candidate.id === cursor);
+      if (parent === undefined) {
+        cursor = null;
+        break;
+      }
+      if (parent.archived !== true) break;
+      cursor = parent.parentId;
+    }
+    parentId = typeof cursor === 'string' ? cursor : null;
+  }
+  const batch = task.archiveBatch ?? null;
+  if (parentId !== task.parentId) {
+    // A reparented root goes to the end of its new siblings.
+    task.order = nextOrder(state, parentId, task.id);
+  }
+  task.parentId = parentId;
+  // Restore the archived subtree that the SAME archive event removed: a task
+  // archived with its children comes back with them, while a descendant that
+  // was cancelled separately stays archived.
+  const stack = [task.id];
+  while (stack.length > 0) {
+    const currentId = stack.pop();
+    const current = state.tasks.find((candidate) => candidate.id === currentId);
+    if (current === undefined || current.archived !== true) continue;
+    current.archived = false;
+    current.archiveReason = null;
+    current.archivedAt = null;
+    current.archiveBatch = null;
+    current.owner = null;
+    removeFromFocus(state, current.id);
+    touch(state, current, context.now);
+    for (const child of state.tasks) {
+      if (child.parentId !== current.id || child.archived !== true) continue;
+      // Legacy records (no batch) keep the old whole-subtree behavior.
+      if (batch !== null && child.archiveBatch !== batch) continue;
+      stack.push(child.id);
+    }
+  }
+  return { op: 'restore', id };
 }
 
 function applyFocus(state, op, context) {
@@ -599,6 +668,7 @@ function applyOne(state, op, context) {
     case 'defer': return applyDefer(state, op, context);
     case 'resume': return applyResume(state, op, context);
     case 'archive': return applyArchive(state, op, context);
+    case 'restore': return applyRestore(state, op, context);
     case 'focus': return applyFocus(state, op, context);
     case 'claim': return applyClaim(state, op, context);
     case 'release': return applyRelease(state, op, context);
@@ -652,8 +722,18 @@ export function applyOps(envelope, ops, context = {}) {
  * @param worklineId - the resolved workline id.
  * @param details - include summary/progress/result when true.
  */
-export function readSnapshot(envelope, worklineId, details = false) {
-  if (envelope === undefined) return { worklineId, goal: null, focus: [], tasks: [] };
+export function readSnapshot(envelope, worklineId, details = false, options = {}) {
+  const includeArchived = options !== null && typeof options === 'object' && options.includeArchived === true;
+  const limitRaw = options !== null && typeof options === 'object' ? options.archivedLimit : undefined;
+  const archivedLimit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 50;
+  if (envelope === undefined) {
+    const empty = { worklineId, goal: null, focus: [], tasks: [] };
+    if (includeArchived) {
+      empty.archived = [];
+      empty.archivedTotal = 0;
+    }
+    return empty;
+  }
   const workline = envelope.workline ?? {};
   const goal = workline.goal === null || workline.goal === undefined
     ? null
@@ -676,12 +756,48 @@ export function readSnapshot(envelope, worklineId, details = false) {
     }
     return row;
   });
-  return {
+  const snapshot = {
     worklineId,
     goal,
     focus: Array.isArray(workline.focus) ? [...workline.focus] : [],
     tasks,
   };
+  if (includeArchived) {
+    const archivedTasks = (Array.isArray(envelope.tasks) ? envelope.tasks : [])
+      .filter((task) => task.archived === true)
+      .sort((left, right) => numberOr(right.archivedAt, 0) - numberOr(left.archivedAt, 0));
+    snapshot.archivedTotal = archivedTasks.length;
+    snapshot.archived = archivedTasks.slice(0, archivedLimit).map((task) => ({
+      id: task.id,
+      parentId: task.parentId,
+      title: task.title,
+      status: task.status,
+      deferred: task.deferred === true,
+      archivedAt: task.archivedAt ?? null,
+      archiveReason: task.archiveReason ?? null,
+      summary: task.summary ?? '',
+      progress: task.progress ?? '',
+      result: typeof task.result === 'string' ? task.result : null,
+      completion: task.completion ?? null,
+      path: ancestorTitles(envelope.tasks, task.parentId),
+    }));
+  }
+  return snapshot;
+}
+
+/** Ancestor titles from the root down to the direct parent. */
+function ancestorTitles(tasks, parentId) {
+  const titles = [];
+  const seen = new Set();
+  let cursor = parentId;
+  while (typeof cursor === 'string' && !seen.has(cursor)) {
+    seen.add(cursor);
+    const task = tasks.find((candidate) => candidate.id === cursor);
+    if (task === undefined) break;
+    titles.unshift(task.title);
+    cursor = task.parentId;
+  }
+  return titles;
 }
 
 /**
@@ -738,6 +854,14 @@ export function httpSnapshot(envelope, worklineId, options = {}) {
     ownerLive: task.owner === null || task.owner === undefined ? false : isLive(task.owner.sessionId) === true,
     completion: task.completion ?? null,
     updatedAt: task.updatedAt,
+    ...(Array.isArray(task.archiveHistory) && task.archiveHistory.length > 0
+      ? {
+        archiveHistory: task.archiveHistory.map((entry) => ({
+          at: numberOr(entry.at, 0),
+          reason: typeof entry.reason === 'string' ? entry.reason : '',
+        })),
+      }
+      : {}),
   }));
   const archivedTasks = tasks.filter((task) => task.archived === true);
   const archived = archivedTasks
