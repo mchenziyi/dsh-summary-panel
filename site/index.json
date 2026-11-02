@@ -40,9 +40,21 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.3.3"
+        "latest": "0.3.4"
       },
       "versions": [
+        {
+          "version": "0.3.4",
+          "publishTimestamp": 1793599628,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/mchenziyi/dsh-summary-panel",
+            "commit": "a86d0791e0afaec1c1784f2d62237a32f398b3be"
+          },
+          "engines": {
+            "dsh": ">=0.2.0-rc.2"
+          }
+        },
         {
           "version": "0.3.3",
           "publishTimestamp": 1793589871,
