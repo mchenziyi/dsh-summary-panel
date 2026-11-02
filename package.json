@@ -1,8 +1,8 @@
 {
   "name": "@mchenziyi/dsh-summary-panel",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "type": "module",
-  "description": "Floating right-side summary panel for DSH: Git, uncommitted diff, deliverables, subagents, sources, and a persistent agent-maintained task tree.",
+  "description": "DSH Reins (缰绳): a floating DSH panel where an agent-maintained task tree keeps long-running work on course, alongside Git, diffs, deliverables, subagents and sources.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -45,7 +45,8 @@
     "git",
     "diff",
     "task-tree",
-    "todo"
+    "todo",
+    "reins"
   ],
   "engines": {
     "dsh": ">=0.2.0-rc.2"

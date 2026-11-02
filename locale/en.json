@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Summary Panel",
-    "description": "A floating right-side summary panel with the current task tree, Git, deliverables, subagents, and sources."
+    "title": "DSH Reins",
+    "description": "A DSH panel with an agent-maintained task tree: goals, progress, Git, diffs, deliverables, subagents and sources."
   }
 }

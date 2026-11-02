@@ -12,12 +12,12 @@
     {
       "name": "@mchenziyi/dsh-summary-panel",
       "title": {
-        "en": "Summary Panel",
-        "zh": "摘要面板"
+        "en": "DSH Reins",
+        "zh": "DSH Reins（缰绳）"
       },
       "description": {
-        "en": "Floating DSH summary panel with an agent-maintained task tree, Git status, uncommitted diffs, deliverables, subagents, and sources.",
-        "zh": "右上角浮窗式摘要面板：AI 自动维护的任务树，以及 Git、未提交变更 diff、交付文件、子智能体、来源。"
+        "en": "DSH Reins (缰绳): a floating DSH panel with an agent-maintained task tree, so long-running work stays on course. Also shows Git, diffs, deliverables, subagents and sources.",
+        "zh": "DSH Reins（缰绳）：AI 自动维护任务树的 DSH 浮窗面板，让长期开发不跑偏；同时展示 Git、Diff、交付文件、子智能体与来源。"
       },
       "icon": "icons/icon.svg",
       "author": "mchenziyi",
@@ -35,7 +35,8 @@
           "task-tree",
           "tasks",
           "agent",
-          "todo"
+          "todo",
+          "reins"
         ]
       },
       "dist-tags": {

@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     const ZH = {
       'entry.label': '摘要',
       'entry.focusTitle': '{label} · {title}',
-      'panel.title': '摘要',
+      'panel.title': '缰绳',
       'panel.refresh': '刷新',
       'panel.close': '关闭',
       'section.tasks': '当前任务',
@@ -148,7 +148,7 @@ window.__ModuleLoader__.load({
     const EN = {
       'entry.label': 'Summary',
       'entry.focusTitle': '{label} · {title}',
-      'panel.title': 'Summary',
+      'panel.title': 'DSH Reins',
       'panel.refresh': 'Refresh',
       'panel.close': 'Close',
       'section.tasks': 'Tasks',

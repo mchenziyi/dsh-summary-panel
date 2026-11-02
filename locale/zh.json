@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "摘要面板",
-    "description": "右上角浮窗式摘要面板：当前任务树、Git、输出内容、子智能体、来源。"
+    "title": "DSH Reins（缰绳）",
+    "description": "AI 自动维护任务树的 DSH 面板：原始目标、进度、Git、Diff、交付文件、子智能体与来源。"
   }
 }
