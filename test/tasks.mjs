@@ -19,10 +19,36 @@ import {
 } from '../host/model.js';
 import { createTaskStore } from '../host/store.js';
 import { mountTaskTree } from '../host/mount.js';
-import { taskTreeReminderFor, TASK_TREE_REMINDER } from '../host/prompt.js';
+import { taskTreeReminderFor, TASK_TREE_REMINDER, TASK_TREE_START_REMINDER, TASK_TREE_PROMPT } from '../host/prompt.js';
+import { verifyUserQuote } from '../host/evidence.js';
 
 const NOW = 1_700_000_000_000;
-const CTX = { worklineId: 'session-root', now: NOW, actorSessionId: 'session-root', isLive: () => true };
+
+// The user messages this fake session "contains"; approval and acceptance
+// quotes are checked against them, exactly like the live host does. Times are
+// relative to NOW: instructions come before the work, acceptance after it.
+const USER_SAYS = [
+  { seq: 1, time: NOW - 60_000, text: '帮我实现一个 Go 短链接服务，包括创建、跳转、查询和测试。' },
+  { seq: 3, time: NOW - 50_000, text: '登录功能可以做，开始吧。' },
+  { seq: 5, time: NOW - 40_000, text: '我决定把纯 API 短链接服务升级为单管理员管理工具，但先讨论实施方案，不要写代码。' },
+  { seq: 7, time: NOW + 5_000, text: '没问题了，验收通过。' },
+];
+
+function fakeVerifier(quote) {
+  const needle = String(quote).replace(/\s+/g, '');
+  const hit = USER_SAYS.find((entry) => entry.text.replace(/\s+/g, '').includes(needle));
+  return hit === undefined
+    ? { ok: false, reason: 'the quote does not appear in any user message' }
+    : { ok: true, seq: hit.seq, time: hit.time };
+}
+
+const CTX = {
+  worklineId: 'session-root',
+  now: NOW,
+  actorSessionId: 'session-root',
+  isLive: () => true,
+  verifyUserQuote: fakeVerifier,
+};
 
 function tempRoot() {
   return mkdtempSync(join(tmpdir(), 'sp-tasks-'));
@@ -96,18 +122,37 @@ function titles(snapshot) {
     () => envelopeAfter(base, [{ op: 'complete', id: 't1', confirmedByUser: true }]),
     /child tasks are unfinished/,
   );
+  // A normal implementation task may be finished on the agent's own verification.
+  const selfDone = envelopeAfter(base, [{ op: 'complete', id: 't2', result: '子完成' }]).envelope;
+  assert.equal(selfDone.tasks[1].completion, 'self');
+  assert.equal(selfDone.tasks[1].completionBasis, null);
+
+  // Recording the user's acceptance needs a quote they actually wrote.
   assert.throws(
-    () => envelopeAfter(base, [{ op: 'complete', id: 't2' }]),
-    /confirmedByUser: true/,
+    () => envelopeAfter(base, [{ op: 'complete', id: 't2', confirmedByUser: true }]),
+    /needs confirmationBasis/,
+  );
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'complete', id: 't2', confirmedByUser: true, confirmationBasis: '全部通过' }]),
+    /does not appear in a user message/,
   );
 
+  // The top-level task is the delivered requirement, so it waits for the user;
+  // its child is an implementation step and may self-complete.
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'complete', id: 't2' }, { op: 'complete', id: 't1' }]),
+    /needs the user's acceptance/,
+  );
+  assert.equal(readSnapshot(envelopeAfter(base, [{ op: 'complete', id: 't2' }]).envelope, CTX.worklineId).tasks[1].status, 'done');
   const done = envelopeAfter(base, [
-    { op: 'complete', id: 't2', confirmedByUser: true, result: '子完成' },
-    { op: 'complete', id: 't1', confirmedByUser: true },
+    { op: 'complete', id: 't2', result: '子完成' },
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '验收通过' },
   ]).envelope;
   const snapshot = readSnapshot(done, CTX.worklineId);
   assert.deepEqual(snapshot.tasks.map((task) => task.status), ['done', 'done']);
-  assert.equal(done.tasks[1].completion, 'user-confirmed');
+  assert.equal(done.tasks[1].completion, 'self');
+  assert.equal(done.tasks[0].completion, 'user-confirmed');
+  assert.equal(done.tasks[0].completionBasis, '验收通过');
   assert.equal(done.workline.goal.current, 'g');
 }
 
@@ -118,7 +163,7 @@ function titles(snapshot) {
 {
   const base = envelopeAfter(undefined, [
     { op: 'init', originalGoal: 'g' },
-    { op: 'create', title: 'A' },
+    { op: 'create', title: 'A', executionApproval: 'approved', approvalBasis: '开始吧' },
     { op: 'create', title: 'B' },
   ]).envelope;
 
@@ -224,7 +269,7 @@ function titles(snapshot) {
 {
   const base = envelopeAfter(undefined, [
     { op: 'init', originalGoal: 'g' },
-    { op: 'create', title: '当前' },
+    { op: 'create', title: '当前', executionApproval: 'approved', approvalBasis: '开始吧' },
     { op: 'focus', ids: ['t1'] },
   ]).envelope;
   const status = statusSnapshot(base, CTX.worklineId);
@@ -469,10 +514,10 @@ function titles(snapshot) {
 {
   const base = envelopeAfter(undefined, [
     { op: 'init', originalGoal: '用户登录' },
-    { op: 'create', title: '登录功能' },
+    { op: 'create', title: '登录功能', executionApproval: 'approved', approvalBasis: '登录功能可以做，开始吧。' },
     { op: 'create', title: '登录接口', parentId: 't1' },
-    { op: 'complete', id: 't2', confirmedByUser: true, result: '接口完成' },
-    { op: 'complete', id: 't1', confirmedByUser: true, result: '登录完成' },
+    { op: 'complete', id: 't2', result: '接口完成' },
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '验收通过', result: '登录完成' },
   ]).envelope;
   const doneAt = base.tasks[0].completedAt;
   assert.equal(doneAt, NOW);
@@ -633,7 +678,11 @@ function titles(snapshot) {
 // ---------------------------------------------------------------------------
 
 {
-  const userEvent = (seq, text) => ({ type: 'user/message', seq, data: { content: [{ type: 'text', text }] } });
+  const userEvent = (seq, text, kind = 'user') => ({
+    type: 'user/message',
+    seq,
+    data: { source: { kind }, content: [{ type: 'text', text }] },
+  });
   const writeEvent = (seq) => ({ type: 'tool/call', seq, data: { name: 'task_tree_write' } });
   const sessionOf = (id, events, header = { id }) => ({
     id,
@@ -659,9 +708,9 @@ function titles(snapshot) {
     },
   };
 
-  // No tree file yet: never nags sessions that never used the task tree.
+  // No tree file yet: a new session is nudged to create one instead of waiting.
   const stranger = sessionOf('session-stranger', [userEvent(1, '帮我改个 bug')]);
-  assert.equal(taskTreeReminderFor(ctx, store, stranger), '');
+  assert.equal(taskTreeReminderFor(ctx, store, stranger), TASK_TREE_START_REMINDER);
 
   // A real user message with no write after it -> reminder.
   const pending = sessionOf('session-root', [userEvent(5, '实现这三个功能')]);
@@ -675,8 +724,9 @@ function titles(snapshot) {
   const refreshed = sessionOf('session-root', [
     userEvent(5, '实现这三个功能'),
     writeEvent(6),
-    userEvent(7, 'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.'),
-    userEvent(8, '<system-reminder>skills</system-reminder>'),
+    userEvent(7, 'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.', 'runtime-context'),
+    userEvent(8, '<system-reminder>skills</system-reminder>', 'skill-catalog'),
+    userEvent(9, 'Time sampled while preparing turn 2, step 1', 'time-context'),
   ]);
   assert.equal(taskTreeReminderFor(ctx, store, refreshed), '');
 
@@ -693,9 +743,16 @@ function titles(snapshot) {
   const branch = sessionOf('session-branch', [userEvent(3, '继续这个功能')], { id: 'session-branch', parentSession: 'session-root' });
   assert.equal(taskTreeReminderFor(ctx, store, branch), TASK_TREE_REMINDER);
 
-  // A branch of a never-initialised workline stays quiet.
+  // A branch of a workline without a tree is nudged to create one.
   const plainBranch = sessionOf('session-plain', [userEvent(3, '你好')], { id: 'session-plain', parentSession: 'session-unused' });
-  assert.equal(taskTreeReminderFor(ctx, store, plainBranch), '');
+  assert.equal(taskTreeReminderFor(ctx, store, plainBranch), TASK_TREE_START_REMINDER);
+
+  // Injected context alone never counts as a user request.
+  const injectedOnly = sessionOf('session-fresh', [
+    userEvent(1, 'Current runtime context. Snapshot.', 'runtime-context'),
+    userEvent(2, '<system-reminder>skills</system-reminder>', 'skill-catalog'),
+  ]);
+  assert.equal(taskTreeReminderFor(ctx, store, injectedOnly), '');
 }
 
 
@@ -795,6 +852,473 @@ function titles(snapshot) {
   assert.equal(feature.archived, false);
   assert.equal(detail.parentId, 't1', 'the earlier restoration keeps its placement');
   assert.equal(full.tasks.find((task) => task.id === 't4').archived, false, 'same-batch sibling comes back');
+}
+
+
+// ---------------------------------------------------------------------------
+// execution approval: permission is separate from status
+// ---------------------------------------------------------------------------
+
+{
+  // A new task is an idea until the user approves it.
+  const created = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '短链接服务' },
+    { op: 'create', title: 'Web 管理后台' },
+  ]).envelope;
+  assert.equal(created.tasks[0].executionApproval, 'pending');
+  assert.equal(created.tasks[0].approvalBasis, null);
+
+  // Approving a top-level task needs the user's own words.
+  assert.throws(
+    () => envelopeAfter(created, [{ op: 'update', id: 't1', executionApproval: 'approved' }]),
+    /requires approvalBasis/,
+  );
+  assert.throws(
+    () => envelopeAfter(created, [{ op: 'update', id: 't1', executionApproval: 'approved', approvalBasis: '用户说要做' }]),
+    /does not appear in a user message/,
+  );
+  const approved = envelopeAfter(created, [
+    { op: 'update', id: 't1', executionApproval: 'approved', approvalBasis: '登录功能可以做，开始吧' },
+  ]).envelope;
+  assert.equal(approved.tasks[0].executionApproval, 'approved');
+  assert.equal(approved.tasks[0].approvalBasis, '登录功能可以做，开始吧');
+  assert.equal(approved.tasks[0].approvalAt, NOW);
+
+  // A basis without the approval flag is a caller mistake, not a silent no-op.
+  assert.throws(
+    () => envelopeAfter(created, [{ op: 'update', id: 't1', approvalBasis: '开始吧' }]),
+    /only applies together with executionApproval/,
+  );
+  assert.throws(
+    () => envelopeAfter(created, [{ op: 'update', id: 't1', executionApproval: 'yes-please' }]),
+    /executionApproval must be one of approved, pending/,
+  );
+
+  // Withdrawing approval clears its evidence.
+  const revoked = envelopeAfter(approved, [{ op: 'update', id: 't1', executionApproval: 'pending' }]).envelope;
+  assert.equal(revoked.tasks[0].executionApproval, 'pending');
+  assert.equal(revoked.tasks[0].approvalBasis, null);
+  assert.equal(revoked.tasks[0].approvalAt, null);
+}
+
+{
+  // Inheritance: normal steps inside an approved scope are covered, an invented
+  // extra feature is not, and approval never flows through a pending parent.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '短链接服务' },
+    { op: 'create', title: '登录', executionApproval: 'approved', approvalBasis: '登录功能可以做，开始吧。' },
+  ]).envelope;
+  const inherited = envelopeAfter(base, [
+    { op: 'create', title: '登录接口', parentId: 't1' },
+    { op: 'create', title: '登录页', parentId: 't1' },
+  ]).envelope;
+  assert.deepEqual(inherited.tasks.slice(1).map((task) => task.executionApproval), ['approved', 'approved']);
+  assert.equal(inherited.tasks[1].approvalBasis, null, 'inherited approval cites no new quote');
+
+  // Scope the user never agreed to stays pending even under an approved parent.
+  const extra = envelopeAfter(inherited, [
+    { op: 'create', title: 'OAuth 第三方登录', parentId: 't1', executionApproval: 'pending' },
+  ]).envelope;
+  assert.equal(extra.tasks.find((task) => task.title === 'OAuth 第三方登录').executionApproval, 'pending');
+
+  // Approving that unrelated child needs its own quote: an existing task never
+  // inherits approval, only a step created inside the approved scope does.
+  assert.throws(
+    () => envelopeAfter(extra, [{ op: 'update', id: 't4', executionApproval: 'approved' }]),
+    /approving an existing task requires approvalBasis/,
+  );
+  assert.throws(
+    () => envelopeAfter(extra, [{
+      op: 'update',
+      id: 't4',
+      executionApproval: 'approved',
+      approvalBasis: '顺便把 OAuth 也做了',
+    }]),
+    /does not appear in a user message/,
+  );
+
+  // A pending parent does not approve its children.
+  const pendingParent = envelopeAfter(base, [
+    { op: 'create', title: '多用户系统', executionApproval: 'pending' },
+    { op: 'create', title: '邀请码', parentId: 't2' },
+  ]).envelope;
+  assert.equal(pendingParent.tasks.find((task) => task.title === '邀请码').executionApproval, 'pending');
+}
+
+{
+  // An unapproved task may be discussed and focused, but not started.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '短链接服务' },
+    { op: 'create', title: '访问看板' },
+  ]).envelope;
+
+  const focused = envelopeAfter(base, [{ op: 'focus', ids: ['t1'] }]).envelope;
+  assert.deepEqual(focused.workline.focus, ['t1']);
+  assert.equal(focused.tasks[0].status, 'pending', 'focus is attention, not execution');
+
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'update', id: 't1', status: 'in_progress' }]),
+    /is not approved for execution/,
+  );
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'claim', id: 't1' }]),
+    /is not approved for execution/,
+  );
+
+  // Recording progress on work that already started is never blocked.
+  const running = envelopeAfter(base, [{ op: 'update', id: 't1', progress: '记录进展' }]).envelope;
+  assert.equal(running.tasks[0].progress, '记录进展');
+  assert.equal(running.tasks[0].executionApproval, 'pending');
+
+  // Once approved the same transitions succeed.
+  const ready = envelopeAfter(base, [
+    { op: 'update', id: 't1', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'update', id: 't1', status: 'in_progress' },
+    { op: 'claim', id: 't1' },
+  ]).envelope;
+  assert.equal(ready.tasks[0].status, 'in_progress');
+  assert.equal(ready.tasks[0].owner.sessionId, 'session-root');
+}
+
+// ---------------------------------------------------------------------------
+// completion: self-verification now, the user's acceptance when they say so
+// ---------------------------------------------------------------------------
+
+{
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'Web 管理后台' },
+    { op: 'create', title: '管理后台', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', title: '后台页面', parentId: 't1' },
+  ]).envelope;
+  // An implementation step may self-complete; the delivered requirement may not.
+  const self = envelopeAfter(base, [{ op: 'complete', id: 't2', result: '实现并自测通过' }]).envelope;
+  assert.equal(self.tasks[1].status, 'done');
+  assert.equal(self.tasks[1].completion, 'self');
+  assert.equal(self.tasks[1].completionBasis, null);
+  assert.throws(
+    () => envelopeAfter(self, [{ op: 'complete', id: 't1', result: '实现并自测通过' }]),
+    /needs the user's acceptance/,
+  );
+
+  // Delivering does not close the requirement: the work is recorded and the
+  // task stays open with the delivery note.
+  const delivered = envelopeAfter(self, [
+    { op: 'update', id: 't1', status: 'in_progress' },
+    { op: 'update', id: 't1', progress: '开发与测试已完成，等待用户验收。', result: '后台页面已上线' },
+  ]).envelope;
+  assert.equal(delivered.tasks[0].status, 'in_progress');
+  assert.equal(delivered.tasks[0].completion, null);
+  assert.equal(delivered.tasks[0].result, '后台页面已上线');
+
+  // The user accepts later: the same task records acceptance without reopening.
+  const accepted = envelopeAfter(delivered, [
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '没问题了，验收通过' },
+  ]).envelope;
+  assert.equal(accepted.tasks[0].status, 'done');
+  assert.equal(accepted.tasks[0].completion, 'user-confirmed');
+  assert.equal(accepted.tasks[0].completionBasis, '没问题了，验收通过');
+
+  // An implementation step completed on its own can be accepted afterwards,
+  // and acceptance keeps the completion time.
+  const stepAccepted = envelopeAfter(self, [
+    { op: 'update', id: 't2', confirmedByUser: true, confirmationBasis: '验收通过' },
+  ]).envelope;
+  assert.equal(stepAccepted.tasks[1].completion, 'user-confirmed');
+  assert.equal(stepAccepted.tasks[1].completedAt, self.tasks[1].completedAt, 'acceptance keeps the completion time');
+
+  assert.throws(
+    () => envelopeAfter(self, [{ op: 'update', id: 't2', confirmedByUser: true, confirmationBasis: '全都通过了' }]),
+    /does not appear in a user message/,
+  );
+  assert.throws(
+    () => envelopeAfter(accepted, [{ op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '验收通过' }]),
+    /already done/,
+  );
+
+  // Reopening clears the completion record.
+  const reopened = envelopeAfter(accepted, [{ op: 'update', id: 't1', status: 'in_progress' }]).envelope;
+  assert.equal(reopened.tasks[0].completion, null);
+  assert.equal(reopened.tasks[0].completionBasis, null);
+  assert.equal(reopened.tasks[0].completedAt, null);
+}
+
+// ---------------------------------------------------------------------------
+// legacy records keep loading and are never assumed approved
+// ---------------------------------------------------------------------------
+
+{
+  const legacy = {
+    version: 1,
+    workline: { id: 'session-root', createdAt: 1, updatedAt: 2, goal: null, outline: '', focus: [], nextSeq: 3 },
+    tasks: [
+      { id: 't1', worklineId: 'session-root', parentId: null, order: 0, title: '旧任务', status: 'done', completion: 'user-confirmed', createdAt: 1, updatedAt: 2 },
+      { id: 't2', worklineId: 'session-root', parentId: 't1', order: 0, title: '旧子任务', status: 'pending', createdAt: 1, updatedAt: 2 },
+    ],
+  };
+  const snapshot = readSnapshot(legacy, CTX.worklineId, true);
+  assert.equal(snapshot.tasks[0].approval, 'pending');
+  assert.equal(snapshot.tasks[0].completion, 'user-confirmed', 'the historic claim is kept, but it carries no basis');
+  assert.equal(snapshot.tasks[0].approvalBasis, null);
+  const http = httpSnapshot(legacy, CTX.worklineId, { isLive: () => false });
+  assert.deepEqual(http.tasks.map((task) => task.executionApproval), ['pending', 'pending']);
+  assert.equal(http.tasks[0].completion, 'user-confirmed', 'an explicitly recorded completion kind survives');
+  assert.equal(http.tasks[0].completionBasis, null);
+  // The legacy record can still be approved and continued.
+  const resumed = envelopeAfter(legacy, [
+    { op: 'update', id: 't2', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'focus', ids: ['t2'] },
+  ]).envelope;
+  assert.equal(resumed.tasks[1].status, 'in_progress');
+}
+
+// ---------------------------------------------------------------------------
+// snapshots expose approval to the agent and the panel
+// ---------------------------------------------------------------------------
+
+{
+  const envelope = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: '想法', summary: '待讨论' },
+    { op: 'create', title: '已批', executionApproval: 'approved', approvalBasis: '开始吧' },
+  ]).envelope;
+  const read = readSnapshot(envelope, CTX.worklineId, true);
+  assert.deepEqual(read.tasks.map((task) => task.approval), ['pending', 'approved']);
+  assert.equal(read.tasks[1].approvalBasis, '开始吧');
+  const http = httpSnapshot(envelope, CTX.worklineId, { isLive: () => false });
+  assert.deepEqual(http.tasks.map((task) => task.executionApproval), ['pending', 'approved']);
+  assert.equal(http.tasks[1].approvalBasis, '开始吧');
+  assert.equal(http.tasks[0].approvalAt, null);
+}
+
+// ---------------------------------------------------------------------------
+// user evidence: only messages a person submitted can justify a quote
+// ---------------------------------------------------------------------------
+
+{
+  const events = [
+    { type: 'user/message', seq: 1, time: 1000, data: { source: { kind: 'runtime-context' }, content: [{ type: 'text', text: 'Current runtime context. cwd is /tmp' }] } },
+    { type: 'user/message', seq: 2, time: 2000, data: { source: { kind: 'user', rpcId: 'r1' }, content: [{ type: 'text', text: '帮我实现一个 Go 短链接服务，\n包括创建、跳转、查询和测试。' }] } },
+    { type: 'user/message', seq: 3, time: 2500, data: { source: { kind: 'skill-catalog' }, content: [{ type: 'text', text: '<system-reminder>skills</system-reminder>' }] } },
+    { type: 'user/message', seq: 4, time: 5000, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '好的，验收通过' }] } },
+  ];
+  const session = { id: 'session-root', header: { id: 'session-root' }, seq: 10, snapshotEvents: (from = 0) => events.filter((event) => event.seq >= from) };
+
+  assert.deepEqual(verifyUserQuote(session, '短链接服务'), { ok: true, seq: 2, time: 2000 });
+  assert.deepEqual(verifyUserQuote(session, '包括创建、 跳转、查询和测试。'), { ok: true, seq: 2, time: 2000 }, 'whitespace is ignored');
+  assert.deepEqual(verifyUserQuote(session, '验收通过'), { ok: true, seq: 4, time: 5000 });
+  assert.equal(verifyUserQuote(session, 'cwd is /tmp').ok, false, 'injected context is not user evidence');
+  assert.equal(verifyUserQuote(session, '<system-reminder>').ok, false);
+  assert.equal(verifyUserQuote(session, '').ok, false);
+  assert.equal(verifyUserQuote(session, 'x'.repeat(201)).ok, false);
+  assert.equal(verifyUserQuote({}, '短链接服务').ok, false, 'a session without a log proves nothing');
+}
+
+{
+  // The mounted write tool wires the verifier, so an invented quote is refused
+  // even when the model asks for it directly.
+  const root = tempRoot();
+  const registeredTools = new Map();
+  const events = [
+    { type: 'user/message', seq: 1, data: { source: { kind: 'user', rpcId: 'r1' }, content: [{ type: 'text', text: '帮我实现一个 Go 短链接服务' }] } },
+  ];
+  const ctx = {
+    effect: (factory) => factory(),
+    get(name) {
+      if (name === 'sessions') return { get: () => undefined };
+      if (name === 'tools') return { register: (definition) => { registeredTools.set(definition.name, definition); return () => {}; } };
+      return undefined;
+    },
+  };
+  mountTaskTree(ctx, { root, logger: { warn() {} }, route: () => {} });
+  const session = { header: { id: 'session-live' }, seq: 5, snapshotEvents: (from = 0) => events.filter((event) => event.seq >= from) };
+  const exec = { agent: { id: 'session-live', session } };
+  const write = registeredTools.get('task_tree_write');
+
+  await assert.rejects(
+    () => write.execute({ ops: [{ op: 'init', originalGoal: '短链接' }, { op: 'create', title: '管理后台', executionApproval: 'approved', approvalBasis: '你说要做管理后台' }] }, exec),
+    /does not appear in a user message/,
+  );
+  const ok = await write.execute({
+    ops: [
+      { op: 'init', originalGoal: '短链接' },
+      { op: 'create', title: '短链接服务', executionApproval: 'approved', approvalBasis: '帮我实现一个 Go 短链接服务' },
+    ],
+  }, exec);
+  assert.equal(ok.ok, true);
+  const read = await registeredTools.get('task_tree_read').execute({ details: true }, exec);
+  assert.equal(read.tasks[0].approval, 'approved');
+  assert.equal(read.tasks[0].approvalBasis, '帮我实现一个 Go 短链接服务');
+}
+
+// ---------------------------------------------------------------------------
+// the prompt teaches the lifecycle, not just the coding moments
+// ---------------------------------------------------------------------------
+
+{
+  for (const needle of ['executionApproval', 'approvalBasis', 'confirmationBasis', 'confirmedByUser', 'reviseGoal', 'pending']) {
+    assert.equal(TASK_TREE_PROMPT.includes(needle), true, `prompt should mention ${needle}`);
+  }
+  assert.equal(TASK_TREE_PROMPT.includes('Record work that is worth tracking as soon as it appears'), true);
+  assert.notEqual(TASK_TREE_REMINDER, TASK_TREE_START_REMINDER);
+  assert.equal(TASK_TREE_START_REMINDER.includes('no task tree yet'), true);
+  assert.equal(TASK_TREE_REMINDER.includes('task_tree_write'), true);
+}
+
+// ---------------------------------------------------------------------------
+// final acceptance: a delivered requirement cannot be closed by the agent
+// ---------------------------------------------------------------------------
+
+{
+  // A user request authorises the work but does not waive the final acceptance.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '用 Go 实现一个 Todo REST API' },
+    { op: 'create', title: 'Go Todo REST API', executionApproval: 'approved', approvalBasis: '帮我实现一个 Go 短链接服务' },
+    { op: 'create', title: '存储层', parentId: 't1' },
+    { op: 'create', title: 'HTTP 层', parentId: 't1' },
+  ]).envelope;
+  assert.equal(base.tasks[0].requiresUserAcceptance, true, 'a top-level request needs acceptance');
+  assert.equal(base.tasks[1].requiresUserAcceptance, false, 'implementation steps do not');
+  assert.equal(base.tasks[2].requiresUserAcceptance, false);
+
+  // 2. Implementation steps still self-complete, without asking the user.
+  const steps = envelopeAfter(base, [
+    { op: 'focus', ids: ['t2'] },
+    { op: 'complete', id: 't2', result: '内存 Store 完成，go test 通过' },
+    { op: 'focus', ids: ['t3'] },
+    { op: 'complete', id: 't3', result: 'CRUD 路由完成，go test -race 通过' },
+  ]).envelope;
+  assert.deepEqual(steps.tasks.slice(1).map((task) => task.completion), ['self', 'self']);
+
+  // 3. The delivered requirement cannot be closed by the agent.
+  assert.throws(
+    () => envelopeAfter(steps, [{ op: 'complete', id: 't1', result: '全部完成' }]),
+    /needs the user's acceptance before it can be completed/,
+  );
+  assert.throws(
+    () => envelopeAfter(steps, [{ op: 'update', id: 't1', status: 'done' }]),
+    /needs the user's acceptance before it can be completed/,
+  );
+
+  // 4. Delivery without acceptance keeps the task open and keeps the result.
+  const delivered = envelopeAfter(steps, [
+    { op: 'update', id: 't1', status: 'in_progress', progress: '开发与测试已完成，等待用户验收。', result: 'CRUD + 单测，94% 覆盖率' },
+  ]).envelope;
+  const waiting = delivered.tasks[0];
+  assert.equal(waiting.status, 'in_progress');
+  assert.equal(waiting.completion, null);
+  assert.equal(waiting.progress, '开发与测试已完成，等待用户验收。');
+  assert.equal(waiting.result, 'CRUD + 单测，94% 覆盖率');
+
+  // 5. The user's acceptance closes it, as user-confirmed.
+  const accepted = envelopeAfter(delivered, [
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '验收通过' },
+  ]).envelope;
+  assert.equal(accepted.tasks[0].status, 'done');
+  assert.equal(accepted.tasks[0].completion, 'user-confirmed');
+  assert.equal(accepted.tasks[0].completionBasis, '验收通过');
+
+  // 6. The instruction that started the work is not the user's acceptance.
+  assert.throws(
+    () => envelopeAfter(steps, [{ op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '开始吧' }]),
+    /predates this task's authorisation/,
+  );
+  assert.throws(
+    () => envelopeAfter(steps, [{ op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '帮我实现一个 Go 短链接服务' }]),
+    /predates this task's authorisation/,
+  );
+
+  // 7. The agent cannot waive the requirement to get around it.
+  assert.throws(
+    () => envelopeAfter(steps, [{ op: 'update', id: 't1', requiresUserAcceptance: false }]),
+    /dropping the user-acceptance requirement needs acceptanceBasis/,
+  );
+  assert.throws(
+    () => envelopeAfter(steps, [{ op: 'update', id: 't1', requiresUserAcceptance: false, acceptanceBasis: '不再验收' }]),
+    /does not appear in a user message/,
+  );
+  assert.throws(
+    () => envelopeAfter(steps, [{ op: 'update', id: 't1', acceptanceBasis: '开始吧' }]),
+    /only applies together with requiresUserAcceptance/,
+  );
+  // Only a real user instruction waives it, and then the task may self-complete.
+  const waived = envelopeAfter(steps, [
+    { op: 'update', id: 't1', requiresUserAcceptance: false, acceptanceBasis: '开始吧' },
+    { op: 'complete', id: 't1', result: '用户同意不单独验收' },
+  ]).envelope;
+  assert.equal(waived.tasks[0].requiresUserAcceptance, false);
+  assert.equal(waived.tasks[0].acceptanceBasis, '开始吧');
+  assert.equal(waived.tasks[0].completion, 'self');
+  // Tightening again is always allowed.
+  const tightened = envelopeAfter(waived, [{ op: 'update', id: 't1', requiresUserAcceptance: true }]).envelope;
+  assert.equal(tightened.tasks[0].requiresUserAcceptance, true);
+  assert.equal(tightened.tasks[0].acceptanceBasis, null);
+}
+
+{
+  // A child that is itself a user-visible deliverable can require acceptance.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '登录' },
+    { op: 'create', title: '登录功能', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', title: '登录页面', parentId: 't1', requiresUserAcceptance: true },
+  ]).envelope;
+  assert.equal(base.tasks[1].requiresUserAcceptance, true);
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'complete', id: 't2' }]),
+    /needs the user's acceptance/,
+  );
+  const accepted = envelopeAfter(base, [
+    { op: 'complete', id: 't2', confirmedByUser: true, confirmationBasis: '验收通过' },
+  ]).envelope;
+  assert.equal(accepted.tasks[1].completion, 'user-confirmed');
+}
+
+{
+  // Legacy worklines keep loading: no field means "top level needs it, a child
+  // does not", and history is never rewritten.
+  const legacy = {
+    version: 1,
+    workline: { id: 'session-root', createdAt: 1, updatedAt: 2, goal: { original: 'g', current: 'g', changes: [] }, outline: '', focus: [], nextSeq: 4 },
+    tasks: [
+      { id: 't1', worklineId: 'session-root', parentId: null, order: 0, title: '旧交付', status: 'done', completion: 'self', completedAt: 5, createdAt: 1, updatedAt: 5 },
+      { id: 't2', worklineId: 'session-root', parentId: 't1', order: 0, title: '旧子任务', status: 'pending', createdAt: 1, updatedAt: 2 },
+      { id: 't3', worklineId: 'session-root', parentId: null, order: 1, title: '旧待办', status: 'pending', createdAt: 1, updatedAt: 2 },
+    ],
+  };
+  const http = httpSnapshot(legacy, 'session-root', { isLive: () => false });
+  assert.equal(http.tasks[0].requiresUserAcceptance, true);
+  assert.equal(http.tasks[1].requiresUserAcceptance, false);
+  assert.equal(http.tasks[2].requiresUserAcceptance, true);
+  assert.equal(http.tasks[0].status, 'done', 'a historic completion is not rewritten');
+  assert.equal(http.tasks[0].completion, 'self');
+
+  // The old pending top-level task now waits for acceptance, and the old
+  // pending child may still self-complete.
+  assert.throws(
+    () => envelopeAfter(legacy, [{ op: 'complete', id: 't3' }]),
+    /needs the user's acceptance/,
+  );
+  const child = envelopeAfter(legacy, [{ op: 'complete', id: 't2' }]).envelope;
+  assert.equal(child.tasks[1].completion, 'self');
+
+  // Archive and restore keep working on legacy rows.
+  const archived = envelopeAfter(legacy, [{ op: 'archive', id: 't3', reason: '不做了' }]).envelope;
+  assert.equal(readSnapshot(archived, 'session-root').tasks.length, 2);
+  const restored = envelopeAfter(archived, [{ op: 'restore', id: 't3' }]).envelope;
+  assert.equal(readSnapshot(restored, 'session-root').tasks.length, 3);
+  assert.equal(restored.tasks[2].requiresUserAcceptance, true);
+}
+
+{
+  // The read snapshot exposes the requirement so the agent can plan around it.
+  const envelope = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: '交付', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', title: '步骤', parentId: 't1' },
+  ]).envelope;
+  const read = readSnapshot(envelope, CTX.worklineId, true);
+  assert.deepEqual(read.tasks.map((task) => task.requiresUserAcceptance), [true, false]);
+  const http = httpSnapshot(envelope, CTX.worklineId, { isLive: () => false });
+  assert.deepEqual(http.tasks.map((task) => task.requiresUserAcceptance), [true, false]);
 }
 
 console.log('tasks ok');

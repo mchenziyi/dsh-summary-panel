@@ -5,31 +5,56 @@
  * The section is registered on the optional `systemPrompt` service at order 60,
  * ahead of the plan and team policies. When the service is absent (a headless
  * deployment without prompts) registration is skipped.
+ *
+ * The tree covers the whole life of the work — idea, discussion, approval,
+ * execution, acceptance, cancellation — so maintenance is triggered by the
+ * conversation, not by the moment the agent starts writing code.
  */
+
+import { latestRequestAndWrite } from './evidence.js';
 
 export const TASK_TREE_SECTION = 'agent-task-tree';
 
 export const TASK_TREE_PROMPT = [
   '## Task tree',
   '',
-  'This conversation has a task tree: the workline goal, the task hierarchy, progress, and the current focus. The user reads it in the summary panel, and it survives restarts and branches, so an existing tree is a record to continue, not a draft to rebuild.',
+  'This conversation has a task tree: the workline goal, the task hierarchy, progress, the current focus, and whether each task is approved to execute. The user reads it in the DSH Reins panel, and it survives restarts and branches, so an existing tree is a record to continue, not a draft to rebuild.',
   '',
-  'Read `task_tree_read` at the start of a session or branch, before resuming interrupted work, before starting a large new chunk, and whenever you need the current goal, focus, or task state. Never recreate an existing tree.',
+  'Read `task_tree_read` at the start of a session or branch, before resuming interrupted work, before starting a large new chunk, and whenever you need the current goal, focus, approval, or task state. Never recreate an existing tree.',
+  '',
+  'The tree follows the whole life of the work: idea -> discussion -> approved or deferred -> execution -> user acceptance, or archive. Record work that is worth tracking as soon as it appears; do not wait until code is being written. Ordinary questions, explanations of existing code, and one-off commands do not need tasks.',
   '',
   'Write with `task_tree_write` at these moments:',
   '',
-  '- The user gives an explicit instruction: update the tree before acting on it.',
-  '- You start executing a task: put it in the focus, mark it in progress, and claim it.',
-  '- A task makes real progress, or you pause it: record meaningful progress, not every tool call.',
-  '- You hit a blocker: set status blocked with the blocker reason and the unblock condition.',
-  '- Work is deferred or archived after agreeing with the user: defer keeps the status and progress for later; archive removes the task and its subtree from the active tree with a reason.',
-  '- You finish a task: ask the user first, then complete it with confirmedByUser: true and record the result.',
+  '- The user raises a new idea, a requirement, a scope or priority change, or decides to execute, defer, or cancel something: record it before you answer.',
+  '- Discussion turns a rough idea into concrete work: refine the existing task (title, summary, progress, children) instead of creating a near-duplicate node.',
+  '- A task starts, makes real progress, pauses, or blocks: set the focus, record meaningful progress, and keep the status truthful.',
+  '- Work is finished or dropped: complete it, or defer/archive it with a reason once the user agrees.',
+  '',
+  '**Execution approval is separate from status.** `executionApproval` is `approved` (the user asked for this work, or agreed to it) or `pending` (an idea, a proposal, or scope you thought of yourself). `pending` means discuss, analyse, plan, and refine freely, but ask the user before executing. `approved` means you may start when the task comes up without asking again.',
+  '',
+  '- The user explicitly asks for a feature: create it `approved` and quote their instruction in `approvalBasis`; its normal implementation steps inherit that approval.',
+  '- You propose an idea, or the user is still only discussing one: `pending`. Discussing is allowed; starting is not.',
+  '- The user agrees to something you proposed: set it to `approved` and quote their agreement.',
+  '- You find extra scope yourself (an unrequested feature, a new subsystem, a refactor nobody asked for): create it `pending`, even under an approved parent. Approval never expands into work the user has not agreed to.',
+  '- The user declines work: defer it when it may come back, archive it when it will not, and keep the discussion and decision history.',
+  '- A `pending` task cannot become `in_progress` and cannot be claimed: the write is rejected until it is approved. If the user says "not now", respect that even when the task is already approved.',
+  '',
+  '`approvalBasis` and `confirmationBasis` must quote the user\'s own words, because the host checks that the quote appears in a real user message and rejects the write otherwise. Never invent a quote, never paraphrase one into your own words, and never approve something because it feels intended.',
+  '',
+  '**Approval, completion, and acceptance are three different things.** `executionApproval` says whether you may do the work at all; completion says the work is done and verified; acceptance says the user approves the delivered result. Do not use one to stand in for another.',
+  '',
+  '- A top-level task stands for a delivered requirement and defaults to `requiresUserAcceptance: true`; its children default to `false` and are implementation steps. Keep those defaults. If a step is something the user will judge on its own, create it with `requiresUserAcceptance: true`.',
+  '- An implementation step is yours to finish: once code, tests, and checks are done, call `complete` without `confirmedByUser` and record the result — that is your own verification.',
+  '- A task that requires acceptance cannot be completed by you; the host rejects it. When the work is done, record it in progress or result ("开发与测试已完成，等待用户验收"), keep the task in progress, and tell the user what to check. Do not mark it done and do not ask for a rubber stamp in the same breath as the delivery.',
+  '- When the user accepts, complete it with `confirmedByUser: true` and `confirmationBasis` quoting what they said. The quote must come after you reported the delivery: the instruction that authorised the work ("开始吧", "继续") is not acceptance, and the host rejects it.',
+  '- Never set `requiresUserAcceptance: false` to get around this. Waiving the user\'s acceptance needs a real user instruction plus an `acceptanceBasis` quote, and the host rejects anything else. Never record the user\'s acceptance on your own, and never guess it from silence.',
   '',
   'Keep task titles short (at most 40 characters) and put explanations in the summary. Do not create a node for a trivial fix or an intermediate step; record it in the current task progress. Do not mark a parent done while its children are unfinished.',
   '',
   'Only the lead session maintains the tree. In an Agent Team, teammates report progress, blockers, and completion to the lead and never write the tree themselves.',
   '',
-  'A goal revision changes the current goal and must carry a reason; the original goal is immutable. Explain the original goal, the proposed goal, and the impact and get the user\'s explicit confirmation before calling `reviseGoal`.',
+  'Goals: the original goal is immutable. When the user decides to change the direction of the project, record it immediately with `reviseGoal` and a reason that names their decision — a decided direction change is recorded even when implementation is deferred, and it does not need the work to start. When you are only proposing a direction, discuss it first and revise the goal after the user agrees. A new plan under discussion is a task, not a goal change.',
   '',
   'When planning, `task_tree_read` with includeArchived: true shows what was cancelled earlier and why. Use it before proposing a direction the user may already have rejected; archived history is context, not a veto — the user may still decide to do it.',
   '',
@@ -38,43 +63,27 @@ export const TASK_TREE_PROMPT = [
   'Use `restore` only when the user explicitly decides to resume a cancelled task. Restore keeps the original id, progress, and archive history; do not restore a task the user has not asked for.',
 ].join('\n');
 
-/** Reminder shown until the current user request has a tree write of its own. */
+/**
+ * The per-turn nudge for a workline that already has a tree: it stays non-empty
+ * until the newest user request has a `task_tree_write` after it.
+ */
 export const TASK_TREE_REMINDER = [
-  'The user just sent a new message. If it asks for development work (code changes or a multi-step task), call `task_tree_write` before you start, not after:',
-  'focus the task you are working on, mark it in progress, and create the tasks the new request needs.',
-  'Skip this only for pure questions or a trivial single-step fix.',
+  'The user\'s latest message has no `task_tree_write` yet.',
+  'If it starts, changes, or decides real project work — a new idea, a requirement, a scope or direction change, an approval, a deferral, a delivered result, the user\'s acceptance — write the tree before you go further:',
+  'record the idea, refine the existing tasks instead of duplicating them, and set `executionApproval` from what the user actually said (`pending` for ideas you proposed, `approved` with `approvalBasis` only for work they asked for).',
+  'Skip this for pure questions, explanations, or trivial single-step work.',
 ].join(' ');
 
-/** Concatenated text of one event's content blocks. */
-function eventText(event) {
-  const content = event?.data?.content;
-  if (!Array.isArray(content)) return '';
-  let text = '';
-  for (const block of content) {
-    if (block !== null && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string') text += block.text;
-  }
-  return text;
-}
-
-/** The newest real user message and the newest tree write in the session tail. */
-function latestUserAndWrite(session) {
-  const end = Number(session?.seq) || 0;
-  const events = session.snapshotEvents(Math.max(0, end - 80));
-  let lastUser = -1;
-  let lastWrite = -1;
-  for (const event of events) {
-    if (event.type === 'user/message') {
-      const text = eventText(event);
-      // Runtime-context refreshes and skill reminders are injected by the host,
-      // not typed by the user; only a real request should trigger the reminder.
-      if (text.startsWith('Current runtime context') || text.startsWith('<system-reminder>')) continue;
-      lastUser = Math.max(lastUser, Number(event.seq));
-    } else if (event.type === 'tool/call' && event.data?.name === 'task_tree_write') {
-      lastWrite = Math.max(lastWrite, Number(event.seq));
-    }
-  }
-  return { lastUser, lastWrite };
-}
+/**
+ * The same nudge for a workline without a tree: a new session that starts real
+ * project work should get a tree instead of waiting to be asked.
+ */
+export const TASK_TREE_START_REMINDER = [
+  'This workline has no task tree yet.',
+  'If the user is describing project work — an idea, a requirement, a plan, a direction change — create the tree with `task_tree_write` (`init` for the goal, `create` for the first tasks) instead of waiting to be asked.',
+  'Record ideas and proposals as `executionApproval: "pending"`; approve only what the user has asked for, quoting their words in `approvalBasis`.',
+  'Skip this for pure questions, explanations, or one-off operations.',
+].join(' ');
 
 /** Resolve the root session id synchronously, preferring live parents. */
 function rootSessionIdSync(ctx, session) {
@@ -99,7 +108,8 @@ function rootSessionIdSync(ctx, session) {
 
 /**
  * The per-turn nudge: non-empty while the latest user request has no
- * `task_tree_write` after it. It disappears as soon as the agent writes.
+ * `task_tree_write` after it. A workline with a tree is nudged to keep it in
+ * sync; a workline without one is nudged to create it when real work starts.
  * @param ctx - plugin context (for `sessions`).
  * @param store - task store (sync `has`).
  * @param session - the assembling agent's session.
@@ -108,12 +118,12 @@ export function taskTreeReminderFor(ctx, store, session) {
   try {
     if (session === undefined || session === null || typeof session !== 'object') return '';
     if (session.header !== undefined && session.header.origin === 'subagent') return '';
-    if (store === undefined || typeof store.has !== 'function') return '';
     const root = rootSessionIdSync(ctx, session);
-    if (root === '' || store.has(root) !== true) return '';
-    const { lastUser, lastWrite } = latestUserAndWrite(session);
-    if (lastUser < 0 || lastUser <= lastWrite) return '';
-    return TASK_TREE_REMINDER;
+    if (root === '') return '';
+    const { lastRequest, lastWrite } = latestRequestAndWrite(session);
+    if (lastRequest < 0 || lastRequest <= lastWrite) return '';
+    const hasTree = store !== undefined && typeof store.has === 'function' && store.has(root) === true;
+    return hasTree ? TASK_TREE_REMINDER : TASK_TREE_START_REMINDER;
   } catch {
     return '';
   }
@@ -123,7 +133,7 @@ export function taskTreeReminderFor(ctx, store, session) {
  * Register the maintenance prompt and the per-turn reminder when the
  * `systemPrompt` service exists.
  * @param ctx - the plugin context.
- * @param options - `{ store }` for the "has a tree" gate.
+ * @param options - `{ store }` for the "already has a tree" distinction.
  * @returns whether a section was registered.
  */
 export function registerTaskTreePrompt(ctx, options = {}) {

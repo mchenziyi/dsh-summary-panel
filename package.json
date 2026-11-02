@@ -1,6 +1,6 @@
 {
   "name": "@mchenziyi/dsh-summary-panel",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "type": "module",
   "description": "DSH Reins (缰绳): a floating DSH panel where an agent-maintained task tree keeps long-running work on course, alongside Git, diffs, deliverables, subagents and sources.",
   "exports": {

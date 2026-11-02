@@ -15,6 +15,16 @@
 /** The four active task statuses. */
 export const TASK_STATUSES = Object.freeze(['pending', 'in_progress', 'blocked', 'done']);
 
+/**
+ * Execution approval, which is independent of the status.
+ *
+ * - `approved`: the user asked for this work or agreed to it, so the agent may
+ *   start when the task comes up.
+ * - `pending`: an idea, a proposal, or unrequested scope; the agent may discuss,
+ *   analyse, plan, and refine it, but must ask before executing.
+ */
+export const EXECUTION_APPROVALS = Object.freeze(['approved', 'pending']);
+
 /** Every operation accepted by `task_tree_write`. */
 export const TASK_OPS = Object.freeze([
   'init',
@@ -43,6 +53,7 @@ export const LIMITS = Object.freeze({
   reason: 1000,
   shortText: 500,
   blocker: 1000,
+  basis: 200,
   archivedListed: 200,
   maxOps: 100,
 });
@@ -51,8 +62,8 @@ export const LIMITS = Object.freeze({
 const OP_FIELDS = Object.freeze({
   init: ['op', 'originalGoal', 'outline'],
   reviseGoal: ['op', 'current', 'reason'],
-  create: ['op', 'title', 'summary', 'parentId', 'status', 'progress', 'order'],
-  update: ['op', 'id', 'title', 'summary', 'status', 'progress', 'result', 'blockerReason', 'blockerUnblock', 'confirmedByUser'],
+  create: ['op', 'title', 'summary', 'parentId', 'status', 'progress', 'order', 'executionApproval', 'approvalBasis', 'requiresUserAcceptance', 'acceptanceBasis'],
+  update: ['op', 'id', 'title', 'summary', 'status', 'progress', 'result', 'blockerReason', 'blockerUnblock', 'confirmedByUser', 'executionApproval', 'approvalBasis', 'confirmationBasis', 'requiresUserAcceptance', 'acceptanceBasis'],
   move: ['op', 'id', 'parentId', 'order'],
   defer: ['op', 'id', 'deferredReason', 'resumeCondition'],
   resume: ['op', 'id'],
@@ -61,7 +72,7 @@ const OP_FIELDS = Object.freeze({
   focus: ['op', 'ids'],
   claim: ['op', 'id'],
   release: ['op', 'id'],
-  complete: ['op', 'id', 'confirmedByUser', 'result'],
+  complete: ['op', 'id', 'confirmedByUser', 'confirmationBasis', 'result'],
 });
 
 /** One rejected task-tree operation, with a model-readable reason. */
@@ -129,8 +140,202 @@ function normalizeOrder(value) {
   return value;
 }
 
+function normalizeApproval(value) {
+  if (!EXECUTION_APPROVALS.includes(value)) {
+    fail(`executionApproval must be one of ${EXECUTION_APPROVALS.join(', ')} (got ${JSON.stringify(value)})`);
+  }
+  return value;
+}
+
+/**
+ * Ask the caller's session whether a real user message contains this quote.
+ * The verdict comes from `context.verifyUserQuote`, which `host/tools.js` wires
+ * to the session log; this module stays free of session access.
+ */
+function verifyQuote(context, quote) {
+  const verify = typeof context.verifyUserQuote === 'function' ? context.verifyUserQuote : undefined;
+  if (verify === undefined) {
+    return { ok: false, reason: 'the calling session exposes no user messages to compare against' };
+  }
+  let verdict;
+  try {
+    verdict = verify(quote);
+  } catch (error) {
+    return { ok: false, reason: `verification failed: ${String(error?.message ?? error)}` };
+  }
+  if (verdict === true) return { ok: true };
+  if (verdict !== null && typeof verdict === 'object' && verdict.ok === true) {
+    return { ok: true, seq: numberOr(verdict.seq, -1), time: numberOr(verdict.time, 0) };
+  }
+  return {
+    ok: false,
+    reason: verdict !== null && typeof verdict === 'object' && typeof verdict.reason === 'string' && verdict.reason !== ''
+      ? verdict.reason
+      : 'no user message contains it',
+  };
+}
+
+/** Whether an active ancestor of the task is approved for execution. */
+function approvedAncestor(state, task) {
+  const seen = new Set();
+  let cursor = task.parentId;
+  while (typeof cursor === 'string' && !seen.has(cursor)) {
+    seen.add(cursor);
+    const parent = state.tasks.find((candidate) => candidate.id === cursor);
+    if (parent === undefined || parent.archived === true) return false;
+    if (parent.executionApproval === 'approved') return true;
+    cursor = parent.parentId;
+  }
+  return false;
+}
+
+/** Refuse to start executing a task the user has not approved. */
+function assertExecutable(task) {
+  if (task.executionApproval === 'approved') return;
+  fail(
+    `task ${task.id} is not approved for execution: ask the user, then set executionApproval: "approved"`
+    + ' with their words in approvalBasis, and only then start it',
+  );
+}
+
+/**
+ * Apply `executionApproval` from a create/update op.
+ *
+ * An explicit `approved` always needs the user's own words, verified against the
+ * session log. Inheritance is not decided here: `applyCreate` hands an approved
+ * scope down to the steps it creates, so approving something that already exists
+ * can never happen without a quote.
+ */
+function applyApproval(task, op, context) {
+  if (op.executionApproval === undefined) {
+    if (op.approvalBasis !== undefined) {
+      fail(`task ${task.id}: approvalBasis only applies together with executionApproval: "approved"`);
+    }
+    return;
+  }
+  const next = normalizeApproval(op.executionApproval);
+  if (next === 'pending') {
+    task.executionApproval = 'pending';
+    task.approvalBasis = null;
+    task.approvalAt = null;
+    return;
+  }
+  const basis = op.approvalBasis === undefined ? '' : singleLine(op.approvalBasis, 'approvalBasis', LIMITS.basis);
+  if (basis === '') {
+    fail(
+      `task ${task.id}: approving an existing task requires approvalBasis quoting the user's instruction;`
+      + ' only a normal step created inside an approved scope inherits that approval',
+    );
+  }
+  const verdict = verifyQuote(context, basis);
+  if (!verdict.ok) {
+    fail(
+      `task ${task.id}: approvalBasis does not appear in a user message (${verdict.reason});`
+      + " quote the user's own words, or leave the task pending until they agree",
+    );
+  }
+  task.executionApproval = 'approved';
+  task.approvalBasis = basis;
+  task.approvalAt = context.now;
+}
+
+/**
+ * Apply `requiresUserAcceptance` from a create/update op.
+ *
+ * Making the requirement stricter is always allowed. Waiving it hands the agent
+ * a shortcut around the user's acceptance, so it needs the user's own words.
+ */
+function applyAcceptanceRequirement(task, op, context) {
+  if (op.requiresUserAcceptance === undefined) {
+    if (op.acceptanceBasis !== undefined) {
+      fail(`task ${task.id}: acceptanceBasis only applies together with requiresUserAcceptance: false`);
+    }
+    return;
+  }
+  if (typeof op.requiresUserAcceptance !== 'boolean') {
+    fail(`task ${task.id}: requiresUserAcceptance must be a boolean`);
+  }
+  if (op.requiresUserAcceptance === true) {
+    task.requiresUserAcceptance = true;
+    task.acceptanceBasis = null;
+    return;
+  }
+  const basis = op.acceptanceBasis === undefined ? '' : singleLine(op.acceptanceBasis, 'acceptanceBasis', LIMITS.basis);
+  if (basis === '') {
+    fail(
+      `task ${task.id}: dropping the user-acceptance requirement needs acceptanceBasis`
+      + " quoting the user's instruction; the agent cannot waive the user's acceptance on its own",
+    );
+  }
+  const verdict = verifyQuote(context, basis);
+  if (!verdict.ok) {
+    fail(
+      `task ${task.id}: acceptanceBasis does not appear in a user message (${verdict.reason});`
+      + ' ask the user before waiving their acceptance',
+    );
+  }
+  task.requiresUserAcceptance = false;
+  task.acceptanceBasis = basis;
+}
+
+/**
+ * The verified acceptance quote for a completion that claims user confirmation.
+ * @returns the quote, or null when the agent records its own verification.
+ */
+function confirmationBasisFor(task, op, context) {
+  if (op.confirmedByUser !== true) return null;
+  const basis = op.confirmationBasis === undefined ? '' : singleLine(op.confirmationBasis, 'confirmationBasis', LIMITS.basis);
+  if (basis === '') {
+    fail(
+      `task ${task.id}: confirmedByUser: true records the user's acceptance and needs confirmationBasis`
+      + " quoting what the user said; omit confirmedByUser to record your own verification instead",
+    );
+  }
+  const verdict = verifyQuote(context, basis);
+  if (!verdict.ok) {
+    fail(
+      `task ${task.id}: confirmationBasis does not appear in a user message (${verdict.reason});`
+      + ' ask the user to accept the delivered work, then quote their answer',
+    );
+  }
+  const floor = Math.max(numberOr(task.createdAt, 0), numberOr(task.approvalAt, 0));
+  const said = numberOr(verdict.time, 0);
+  if (said > 0 && floor > 0 && said <= floor) {
+    fail(
+      `task ${task.id}: the quoted message predates this task's authorisation, so it is the instruction`
+      + ' that started the work rather than the user\'s acceptance; quote what the user said after you reported the delivery',
+    );
+  }
+  return basis;
+}
+
 export function isBlocked(task) {
   return task.status === 'blocked' || task.blocker !== null && task.blocker !== undefined;
+}
+
+/** Execution approval of any record, including one written before the field existed. */
+export function approvalOf(task) {
+  return task !== null && typeof task === 'object' && task.executionApproval === 'approved' ? 'approved' : 'pending';
+}
+
+/** The recorded completion kind, or null when the task is not completed. */
+export function completionOf(task) {
+  if (task === null || typeof task !== 'object') return null;
+  return task.completion === 'user-confirmed' || task.completion === 'self' ? task.completion : null;
+}
+
+/**
+ * Whether a task needs the user's acceptance before it can be completed.
+ *
+ * Records written before this field existed follow the creation default: a
+ * top-level task stands for a delivered requirement, a child is an
+ * implementation step.
+ */
+export function requiresAcceptanceOf(task) {
+  if (task === null || typeof task !== 'object') return true;
+  if (task.requiresUserAcceptance === false) return false;
+  if (task.requiresUserAcceptance === true) return true;
+  return typeof task.parentId !== 'string';
 }
 
 /** A fresh, empty persisted envelope for a workline. */
@@ -193,7 +398,17 @@ function normalizeTask(task, worklineId) {
       ? { sessionId: task.owner.sessionId, since: numberOr(task.owner.since, 0) }
       : null,
     completion: task.completion === 'user-confirmed' || task.completion === 'self' ? task.completion : null,
+    completionBasis: typeof task.completionBasis === 'string' && task.completionBasis !== '' ? task.completionBasis : null,
     completedAt: typeof task.completedAt === 'number' ? task.completedAt : null,
+    // Legacy records predate execution approval. They are NOT assumed approved:
+    // nobody recorded a user instruction for them.
+    executionApproval: task.executionApproval === 'approved' ? 'approved' : 'pending',
+    approvalBasis: typeof task.approvalBasis === 'string' && task.approvalBasis !== '' ? task.approvalBasis : null,
+    approvalAt: typeof task.approvalAt === 'number' ? task.approvalAt : null,
+    requiresUserAcceptance: task.requiresUserAcceptance === false
+      ? false
+      : (task.requiresUserAcceptance === true || typeof task.parentId !== 'string'),
+    acceptanceBasis: typeof task.acceptanceBasis === 'string' && task.acceptanceBasis !== '' ? task.acceptanceBasis : null,
     archiveHistory: Array.isArray(task.archiveHistory)
       ? task.archiveHistory
         .filter((entry) => entry !== null && typeof entry === 'object')
@@ -290,19 +505,50 @@ function nextTaskId(state) {
   return `t${seq}`;
 }
 
-function finishTask(state, task, now) {
+/**
+ * Finish a task.
+ *
+ * @param basis - the verified user quote for a user-accepted completion, or null
+ *   for the agent's own verification. Completion never invents a user verdict.
+ */
+/** The parent invariant, checked before anything else about a completion. */
+function assertNoUnfinishedChildren(state, task) {
   const unfinished = childTasks(state, task.id).filter((child) => child.status !== 'done');
   if (unfinished.length > 0) {
     const ids = unfinished.map((child) => child.id).join(', ');
     fail(`task ${task.id} cannot be done while child tasks are unfinished: ${ids}`);
   }
+}
+
+function finishTask(state, task, now, basis) {
+  assertNoUnfinishedChildren(state, task);
+  if (basis === null && task.requiresUserAcceptance === true) {
+    fail(
+      `task ${task.id} needs the user's acceptance before it can be completed: record the delivered work`
+      + ' in progress or result, keep the task in progress, and complete it only after the user accepts,'
+      + ' with confirmedByUser: true and confirmationBasis quoting their acceptance',
+    );
+  }
   task.status = 'done';
-  task.completion = 'user-confirmed';
+  task.completion = basis === null ? 'self' : 'user-confirmed';
+  task.completionBasis = basis;
   task.completedAt = now;
   task.blocker = null;
   task.owner = null;
   removeFromFocus(state, task.id);
   touch(state, task, now);
+}
+
+/** Record the user's acceptance of a task the agent already completed. */
+function acceptCompletion(state, task, op, context) {
+  if (task.completion === 'user-confirmed') return;
+  if (op.confirmedByUser !== true) {
+    fail(`task ${task.id} is already done; pass confirmedByUser: true with confirmationBasis only once the user accepted it`);
+  }
+  const basis = confirmationBasisFor(task, op, context);
+  task.completion = 'user-confirmed';
+  task.completionBasis = basis;
+  touch(state, task, context.now);
 }
 
 function compareTasks(left, right) {
@@ -379,7 +625,10 @@ function applyCreate(state, op, context) {
   const progress = op.progress === undefined ? '' : multiLine(op.progress, 'progress', LIMITS.progress);
   const order = op.order === undefined ? nextOrder(state, parentId, undefined) : normalizeOrder(op.order);
   const id = nextTaskId(state);
-  state.tasks.push({
+  // A normal step inside an approved scope inherits that approval; anything else
+  // starts unapproved, including every top-level task.
+  const inherited = parentId !== null && approvedAncestor(state, { parentId });
+  const task = {
     id,
     worklineId: state.workline.id,
     parentId,
@@ -399,11 +648,21 @@ function applyCreate(state, op, context) {
     blocker: null,
     owner: null,
     completion: null,
+    completionBasis: null,
     completedAt: null,
+    executionApproval: inherited ? 'approved' : 'pending',
+    approvalBasis: null,
+    approvalAt: inherited ? context.now : null,
+    // A top-level task stands for a delivered requirement; a child is a step.
+    requiresUserAcceptance: parentId === null,
+    acceptanceBasis: null,
     archiveHistory: [],
     createdAt: context.now,
     updatedAt: context.now,
-  });
+  };
+  state.tasks.push(task);
+  applyApproval(task, op, context);
+  applyAcceptanceRequirement(task, op, context);
   state.workline.updatedAt = context.now;
   return { op: 'create', id };
 }
@@ -431,19 +690,27 @@ function applyUpdate(state, op, context) {
   if (op.progress !== undefined) task.progress = multiLine(op.progress, 'progress', LIMITS.progress);
   if (op.result !== undefined) task.result = multiLine(op.result, 'result', LIMITS.result);
   applyBlocker(state, task, op);
+  applyApproval(task, op, context);
+  applyAcceptanceRequirement(task, op, context);
+  // A self-verified completion may later receive the user's acceptance, whether or
+  // not the same op also repeats the status.
+  if (task.status === 'done' && op.confirmedByUser === true) acceptCompletion(state, task, op, context);
   if (op.status !== undefined) {
     const status = normalizeStatus(op.status);
     if (status === 'done') {
       if (task.status !== 'done') {
-        if (op.confirmedByUser !== true) {
-          fail(`task ${id}: marking done requires confirmedByUser: true after the user confirms completion`);
-        }
         if (task.deferred) fail(`task ${id}: resume the deferred task before completing it`);
-        finishTask(state, task, context.now);
+        assertNoUnfinishedChildren(state, task);
+        finishTask(state, task, context.now, confirmationBasisFor(task, op, context));
       }
     } else {
+      // Starting execution needs approval; recording progress on work that is
+      // already running (for example in a workline written before this rule
+      // existed) must not be blocked.
+      if (status === 'in_progress' && task.status !== 'in_progress') assertExecutable(task);
       if (task.status === 'done') {
         task.completion = null;
+        task.completionBasis = null;
         task.completedAt = null;
       }
       task.status = status;
@@ -602,7 +869,9 @@ function applyFocus(state, op, context) {
   }
   for (const id of next) {
     const task = state.tasks.find((candidate) => candidate.id === id);
-    if (task.status === 'pending') {
+    // Focus is attention, not execution: an unapproved task can be the current
+    // subject of discussion without being started.
+    if (task.status === 'pending' && task.executionApproval === 'approved') {
       task.status = 'in_progress';
       touch(state, task, context.now);
     }
@@ -618,6 +887,7 @@ function applyClaim(state, op, context) {
   if (actor === undefined) fail(`task ${id}: claim requires a calling session`);
   const task = findTask(state, id, { active: true });
   if (task.deferred) fail(`task ${id} is deferred and cannot be claimed`);
+  assertExecutable(task);
   if (task.status !== 'in_progress') fail(`task ${id} must be in_progress to claim (current: ${task.status})`);
   const owner = task.owner;
   if (owner !== null && owner.sessionId !== actor) {
@@ -640,13 +910,16 @@ function applyRelease(state, op, context) {
 function applyComplete(state, op, context) {
   const id = requireTaskId(op);
   const task = findTask(state, id, { active: true });
-  if (op.confirmedByUser !== true) {
-    fail(`task ${id}: complete requires confirmedByUser: true after the user confirms completion`);
+  if (task.status === 'done') {
+    if (task.completion === 'user-confirmed') fail(`task ${id} is already done`);
+    if (op.result !== undefined) task.result = multiLine(op.result, 'result', LIMITS.result);
+    acceptCompletion(state, task, op, context);
+    return { op: 'complete', id };
   }
-  if (task.status === 'done') fail(`task ${id} is already done`);
   if (task.deferred) fail(`task ${id}: resume the deferred task before completing it`);
+  assertNoUnfinishedChildren(state, task);
   if (op.result !== undefined) task.result = multiLine(op.result, 'result', LIMITS.result);
-  finishTask(state, task, context.now);
+  finishTask(state, task, context.now, confirmationBasisFor(task, op, context));
   return { op: 'complete', id };
 }
 
@@ -683,7 +956,9 @@ function applyOne(state, op, context) {
  *
  * @param envelope - the current persisted envelope, or undefined for a new workline.
  * @param ops - the flat op objects from `task_tree_write`.
- * @param context - `{ worklineId, now, actorSessionId, isLive }`.
+ * @param context - `{ worklineId, now, actorSessionId, isLive, verifyUserQuote }`;
+ *   `verifyUserQuote(quote)` returns `{ ok, reason?, seq? }` and gates every
+ *   claim of user approval or user acceptance.
  * @returns `{ envelope, applied }`; throws {@link TaskTreeError} without side effects.
  */
 export function applyOps(envelope, ops, context = {}) {
@@ -693,6 +968,7 @@ export function applyOps(envelope, ops, context = {}) {
     ? context.actorSessionId
     : undefined;
   const isLive = typeof context.isLive === 'function' ? context.isLive : () => false;
+  const verifyUserQuote = typeof context.verifyUserQuote === 'function' ? context.verifyUserQuote : undefined;
   if (!Array.isArray(ops) || ops.length === 0) fail('ops must be a non-empty array');
   if (ops.length > LIMITS.maxOps) fail(`ops must contain at most ${LIMITS.maxOps} entries`);
   const state = envelope === undefined || envelope === null
@@ -704,7 +980,7 @@ export function applyOps(envelope, ops, context = {}) {
   const applied = [];
   for (let index = 0; index < ops.length; index += 1) {
     try {
-      applied.push(applyOne(state, ops[index], { worklineId, now, actorSessionId, isLive }));
+      applied.push(applyOne(state, ops[index], { worklineId, now, actorSessionId, isLive, verifyUserQuote }));
     } catch (error) {
       const message = error instanceof TaskTreeError
         ? error.message
@@ -744,6 +1020,8 @@ export function readSnapshot(envelope, worklineId, details = false, options = {}
       parentId: task.parentId,
       title: task.title,
       status: task.status,
+      approval: approvalOf(task),
+      requiresUserAcceptance: requiresAcceptanceOf(task),
       deferred: task.deferred === true,
       blocked: isBlocked(task),
       owner: task.owner !== null && task.owner !== undefined,
@@ -753,6 +1031,9 @@ export function readSnapshot(envelope, worklineId, details = false, options = {}
       row.summary = task.summary ?? '';
       row.progress = task.progress ?? '';
       row.result = typeof task.result === 'string' ? task.result : null;
+      row.completion = completionOf(task);
+      row.approvalBasis = typeof task.approvalBasis === 'string' && task.approvalBasis !== '' ? task.approvalBasis : null;
+      row.acceptanceBasis = typeof task.acceptanceBasis === 'string' && task.acceptanceBasis !== '' ? task.acceptanceBasis : null;
     }
     return row;
   });
@@ -772,13 +1053,14 @@ export function readSnapshot(envelope, worklineId, details = false, options = {}
       parentId: task.parentId,
       title: task.title,
       status: task.status,
+      approval: approvalOf(task),
       deferred: task.deferred === true,
       archivedAt: task.archivedAt ?? null,
       archiveReason: task.archiveReason ?? null,
       summary: task.summary ?? '',
       progress: task.progress ?? '',
       result: typeof task.result === 'string' ? task.result : null,
-      completion: task.completion ?? null,
+      completion: completionOf(task),
       path: ancestorTitles(envelope.tasks, task.parentId),
     }));
   }
@@ -842,6 +1124,11 @@ export function httpSnapshot(envelope, worklineId, options = {}) {
     title: task.title,
     summary: task.summary,
     status: task.status,
+    executionApproval: approvalOf(task),
+    approvalBasis: typeof task.approvalBasis === 'string' && task.approvalBasis !== '' ? task.approvalBasis : null,
+    approvalAt: typeof task.approvalAt === 'number' ? task.approvalAt : null,
+    requiresUserAcceptance: requiresAcceptanceOf(task),
+    acceptanceBasis: typeof task.acceptanceBasis === 'string' && task.acceptanceBasis !== '' ? task.acceptanceBasis : null,
     deferred: task.deferred === true,
     deferredReason: task.deferredReason ?? null,
     resumeCondition: task.resumeCondition ?? null,
@@ -852,7 +1139,9 @@ export function httpSnapshot(envelope, worklineId, options = {}) {
     result: task.result ?? null,
     ownerSessionId: task.owner === null || task.owner === undefined ? null : task.owner.sessionId,
     ownerLive: task.owner === null || task.owner === undefined ? false : isLive(task.owner.sessionId) === true,
-    completion: task.completion ?? null,
+    completion: completionOf(task),
+    completionBasis: typeof task.completionBasis === 'string' && task.completionBasis !== '' ? task.completionBasis : null,
+    completedAt: typeof task.completedAt === 'number' ? task.completedAt : null,
     updatedAt: task.updatedAt,
     ...(Array.isArray(task.archiveHistory) && task.archiveHistory.length > 0
       ? {

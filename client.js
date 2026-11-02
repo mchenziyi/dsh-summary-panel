@@ -63,6 +63,17 @@ window.__ModuleLoader__.load({
       'tasks.detail.completion': '完成方式',
       'tasks.detail.completionUser': '用户确认',
       'tasks.detail.completionSelf': 'Agent 自行确认',
+      'tasks.approvalPending': '待授权',
+      'tasks.tip.approval': '想法已记录，等你确认后再执行',
+      'tasks.detail.approval': '执行授权',
+      'tasks.detail.approvalApproved': '已授权',
+      'tasks.detail.approvalPending': '待授权',
+      'tasks.detail.approvalBasis': '授权依据',
+      'tasks.detail.acceptance': '用户验收',
+      'tasks.detail.acceptanceRequired': '等待用户验收',
+      'tasks.detail.acceptanceOptional': '不需要',
+      'tasks.detail.acceptanceBasis': '免验收依据',
+      'tasks.detail.completionBasis': '验收依据',
       'tasks.detail.deferredReason': '暂缓原因',
       'tasks.detail.resumeCondition': '恢复条件',
       'tasks.detail.updated': '更新于 {time}',
@@ -184,6 +195,17 @@ window.__ModuleLoader__.load({
       'tasks.detail.completion': 'Completion',
       'tasks.detail.completionUser': 'User confirmed',
       'tasks.detail.completionSelf': 'Self-confirmed',
+      'tasks.approvalPending': 'Needs approval',
+      'tasks.tip.approval': 'Idea recorded; execution waits for your go-ahead',
+      'tasks.detail.approval': 'Execution approval',
+      'tasks.detail.approvalApproved': 'Approved',
+      'tasks.detail.approvalPending': 'Needs approval',
+      'tasks.detail.approvalBasis': 'Approved by',
+      'tasks.detail.acceptance': 'User acceptance',
+      'tasks.detail.acceptanceRequired': 'Waiting for the user',
+      'tasks.detail.acceptanceOptional': 'Not needed',
+      'tasks.detail.acceptanceBasis': 'Waived by',
+      'tasks.detail.completionBasis': 'Accepted by',
       'tasks.detail.deferredReason': 'Deferred reason',
       'tasks.detail.resumeCondition': 'Resume when',
       'tasks.detail.updated': 'Updated {time}',
@@ -415,6 +437,7 @@ window.__ModuleLoader__.load({
 .sp-task-row-done>.sp-task-arrow{opacity:.55}
 .sp-task-progress{flex:none;font-size:9.5px;line-height:1;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;opacity:.85;padding-left:2px}
 .sp-task-progress-warn{color:var(--dsw-alias-state-warn-primary);opacity:1}
+.sp-task-approval{flex:none;font-size:9px;line-height:1;letter-spacing:.02em;color:var(--dsw-alias-label-secondary);opacity:.72;padding:1px 3px;border:1px solid color-mix(in srgb,var(--dsw-alias-label-secondary) 26%,transparent);border-radius:3px;white-space:nowrap}
 .sp-task-row-focus>.sp-task-main>.sp-task-title{font-weight:700}
 .sp-task-tip{position:fixed;z-index:80;pointer-events:none;max-width:min(220px,calc(100vw - 16px));padding:4px 7px;border-radius:7px;background:color-mix(in srgb,var(--dsw-alias-bg-overlay) 74%,transparent);backdrop-filter:blur(10px) saturate(1.15);border:1px solid color-mix(in srgb,var(--dsw-alias-border-l1) 70%,transparent);box-shadow:0 6px 18px rgba(0,0,0,.10);display:flex;flex-direction:column;gap:1px;color:var(--dsw-alias-label-primary)}
 .sp-tip-title{font-size:11px;font-weight:500;line-height:1.3;color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}
@@ -1458,6 +1481,21 @@ window.__ModuleLoader__.load({
         }
       }, []);
 
+      // Keep an open detail popover in sync with polling data. This hook must
+      // stay above the early returns: an empty tree renders fewer hooks than a
+      // populated one, and React aborts the whole panel on that mismatch.
+      React.useEffect(() => {
+        const current = detailStore.get();
+        if (current.visible !== true || current.archived === true || current.task === null) return;
+        const latest = tasks.find((task) => task.id === current.task.id);
+        if (latest === undefined) {
+          detailStore.set({ visible: false, task: null, archived: false, rect: null });
+          return;
+        }
+        if (latest.updatedAt === current.task.updatedAt) return;
+        detailStore.set(Object.assign({}, current, { task: latest }));
+      }, [tasks]);
+
       if (data.available !== true) return h('div', { className: 'sp-empty' }, t('tasks.unavailable'));
       if (tasks.length === 0) return h('div', { className: 'sp-empty' }, t('tasks.empty'));
 
@@ -1510,18 +1548,6 @@ window.__ModuleLoader__.load({
         setExpanded((current) => Object.assign({}, current, { [taskId]: current[taskId] !== true }));
       };
 
-      React.useEffect(() => {
-        const current = detailStore.get();
-        if (current.visible !== true || current.archived === true || current.task === null) return;
-        const latest = tasks.find((task) => task.id === current.task.id);
-        if (latest === undefined) {
-          detailStore.set({ visible: false, task: null, archived: false, rect: null });
-          return;
-        }
-        if (latest.updatedAt === current.task.updatedAt) return;
-        detailStore.set(Object.assign({}, current, { task: latest }));
-      }, [tasks]);
-
       const rows = [];
       const walk = (task, depth) => {
         const children = childrenMap.get(task.id) ?? [];
@@ -1529,6 +1555,11 @@ window.__ModuleLoader__.load({
         const doneChildren = children.filter((child) => child.status === 'done').length;
         // Keep the panel quiet: only show progress when it carries information.
         const showProgress = hasChildren && (children.length > 1 || (task.status === 'done' && doneChildren < children.length));
+        // An idea waiting for the user's go-ahead is the only state the marker
+        // adds: anything already started or finished was evidently approved.
+        const showApproval = task.executionApproval === 'pending'
+          && task.status === 'pending'
+          && task.deferred !== true;
         const isOpen = expanded[task.id] === true;
         const guides = [];
         for (let level = 0; level < depth; level += 1) {
@@ -1565,6 +1596,9 @@ window.__ModuleLoader__.load({
           },
             h(TaskStatusIcon, { status: task.status }),
             h('span', { className: 'sp-task-title' }, task.title),
+            showApproval
+              ? h('span', { className: 'sp-task-approval', title: t('tasks.tip.approval') }, t('tasks.approvalPending'))
+              : null,
             showProgress
               ? h('span', {
                 className: 'sp-task-progress'
@@ -1944,6 +1978,26 @@ window.__ModuleLoader__.load({
               active.deferred === true
                 ? h('span', { className: 'sp-task-status sp-task-status-deferred' }, t('tasks.deferred'))
                 : null)));
+          fields.push(h(DetailField, {
+            key: 'approval',
+            label: t('tasks.detail.approval'),
+            value: active.executionApproval === 'approved'
+              ? t('tasks.detail.approvalApproved')
+              : t('tasks.detail.approvalPending'),
+          }));
+          if (typeof active.approvalBasis === 'string' && active.approvalBasis !== '') {
+            fields.push(h(DetailField, { key: 'approvalBasis', label: t('tasks.detail.approvalBasis'), value: active.approvalBasis }));
+          }
+          fields.push(h(DetailField, {
+            key: 'acceptance',
+            label: t('tasks.detail.acceptance'),
+            value: active.requiresUserAcceptance === false
+              ? t('tasks.detail.acceptanceOptional')
+              : t('tasks.detail.acceptanceRequired'),
+          }));
+          if (typeof active.acceptanceBasis === 'string' && active.acceptanceBasis !== '') {
+            fields.push(h(DetailField, { key: 'acceptanceBasis', label: t('tasks.detail.acceptanceBasis'), value: active.acceptanceBasis }));
+          }
           if (typeof active.summary === 'string' && active.summary !== '') {
             fields.push(h(DetailField, { key: 'summary', label: t('tasks.detail.summary'), value: active.summary }));
           }
@@ -1973,6 +2027,9 @@ window.__ModuleLoader__.load({
           const completionText = taskCompletionText(active.completion, t);
           if (completionText !== '') {
             fields.push(h(DetailField, { key: 'completion', label: t('tasks.detail.completion'), value: completionText }));
+          }
+          if (typeof active.completionBasis === 'string' && active.completionBasis !== '') {
+            fields.push(h(DetailField, { key: 'completionBasis', label: t('tasks.detail.completionBasis'), value: active.completionBasis }));
           }
           if (active.deferred === true) {
             if (typeof active.deferredReason === 'string' && active.deferredReason !== '') {

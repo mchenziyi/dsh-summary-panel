@@ -52,10 +52,16 @@ function renderNode(node, path) {
   if (type === Fragment) { renderNode(props.children, path); return; }
   if (typeof type === 'function') {
     const savedSlots = currentSlots; const savedIndex = hookIndex;
-    currentSlots = slotsAt(`${path}#${type.name || 'anonymous'}`);
+    const slots = slotsAt(`${path}#${type.name || 'anonymous'}`);
+    currentSlots = slots;
     hookIndex = 0;
     let result;
-    try { result = type(props); } catch (error) { errors.push(error); }
+    let threw = false;
+    try { result = type(props); } catch (error) { threw = true; errors.push(error); }
+    if (!threw && slots.hookCount !== undefined && slots.hookCount !== hookIndex) {
+      errors.push(new Error(`hook order changed in ${type.name || 'anonymous'}: ${slots.hookCount} -> ${hookIndex}`));
+    }
+    if (!threw) slots.hookCount = hookIndex;
     currentSlots = savedSlots; hookIndex = savedIndex;
     renderNode(result, `${path}>${type.name || 'anonymous'}`);
     return;
@@ -98,6 +104,7 @@ const samples = {
       { id: 't6', parentId: 't2', order: 0, title: '悬浮窗展示', summary: '默认收纳', status: 'pending', deferred: true, blocked: null, blocker: null, progress: '', result: null, ownerSessionId: null, ownerLive: false, completion: null, updatedAt: Date.now() },
       { id: 't7', parentId: null, order: 2, title: '登录功能', summary: '已完成', status: 'done', deferred: false, blocked: null, blocker: null, progress: '', result: '已上线', ownerSessionId: null, ownerLive: false, completion: 'user-confirmed', updatedAt: Date.now() },
       { id: 't8', parentId: 't7', order: 0, title: '修复 Token 过期', summary: '上线后发现', status: 'in_progress', deferred: false, blocked: null, blocker: null, progress: '定位中', result: null, ownerSessionId: null, ownerLive: false, completion: null, updatedAt: Date.now() },
+      { id: 't9', parentId: null, order: 3, title: 'Web 管理后台', summary: '聊到但没批', status: 'pending', executionApproval: 'pending', deferred: false, blocked: null, blocker: null, progress: '', result: null, ownerSessionId: null, ownerLive: false, completion: null, updatedAt: Date.now() },
     ],
     archived: [],
     archivedCount: 0,
@@ -178,12 +185,32 @@ if (text.includes('backup/')) failures.push('collapsed branch block leaked into 
 if (text.includes('Example')) failures.push('collapsed sources section leaked into the list');
 // Default fold: only the focus path (t1 > t5) is expanded; t2's child stays hidden.
 if (text.includes('悬浮窗展示')) failures.push('default fold leaked a non-focus branch');
+// An unapproved idea is marked; an approved or finished task is not.
+if (!text.includes('Web 管理后台')) failures.push('pending-approval task did not render');
+if (!text.includes('待授权')) failures.push('pending-approval marker missing');
+if (text.split('待授权').length - 1 !== 1) failures.push('pending-approval marker leaked to approved tasks');
 
 api.openSourceFile('dsh-resource://file/session/s1/a.txt');
 api.openSourceUrl('https://example.com');
 api.openDiff('s1', 'a.txt');
 api.openSubagent('s1', { id: 's-child-1', label: 'Researcher', mode: 'continuable' });
 api.openParent('s1');
+const fullTasks = samples.tasks;
+const fullStatus = samples['tasks/status'];
+const emptyTasks = { available: true, worklineId: 's1', goal: null, outline: '', focus: [], updatedAt: 0, tasks: [], archived: [], archivedCount: 0 };
+samples.tasks = emptyTasks;
+samples['tasks/status'] = { available: true, focus: [], updatedAt: 0 };
+api.open('s1');
+api.refresh();
+const emptyText = await renderTree(panelEntry.component, {});
+if (!emptyText.includes('自动建立任务树')) failures.push('empty task tree state missing');
+samples.tasks = fullTasks;
+samples['tasks/status'] = fullStatus;
+api.refresh();
+const filledText = await renderTree(panelEntry.component, {});
+if (!filledText.includes('登录功能')) failures.push('task tree did not render after first init');
+if (!filledText.includes('修复 Token 过期')) failures.push('task children missing after first init');
+
 api.openTask('s1', 't5');
 console.log('sidebar calls:', JSON.stringify(rightCalls, null, 0));
 if (rightCalls[0]?.call !== 'openResource' || rightCalls[0]?.address !== 'dsh-resource://file/session/s1/a.txt') failures.push('openSourceFile');
