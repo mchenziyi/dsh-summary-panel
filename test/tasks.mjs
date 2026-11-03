@@ -32,6 +32,10 @@ const USER_SAYS = [
   { seq: 3, time: NOW - 50_000, text: '登录功能可以做，开始吧。' },
   { seq: 5, time: NOW - 40_000, text: '我决定把纯 API 短链接服务升级为单管理员管理工具，但先讨论实施方案，不要写代码。' },
   { seq: 7, time: NOW + 5_000, text: '没问题了，验收通过。' },
+  { seq: 9, time: NOW - 30_000, text: '这个先不做，下轮再说。' },
+  { seq: 13, time: NOW + 6_000, text: '登录功能我验收通过了，审计日志也验收通过了。' },
+  { seq: 15, time: NOW + 7_000, text: 'PDF 导出我验收通过了。' },
+  { seq: 11, time: NOW - 20_000, text: '记住我那个不做了。' },
 ];
 
 function fakeVerifier(quote) {
@@ -118,9 +122,15 @@ function titles(snapshot) {
     { op: 'create', title: '子', parentId: 't1' },
   ]).envelope;
 
+  // A child counts as delivery work once it is approved or has started; an
+  // unapproved idea does not (that rule has its own block further down).
+  const started = envelopeAfter(base, [
+    { op: 'update', id: 't2', executionApproval: 'approved', approvalBasis: '开始吧' , requiresUserAcceptance: false },
+    { op: 'update', id: 't2', status: 'in_progress' },
+  ]).envelope;
   assert.throws(
-    () => envelopeAfter(base, [{ op: 'complete', id: 't1', confirmedByUser: true }]),
-    /child tasks are unfinished/,
+    () => envelopeAfter(started, [{ op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '验收通过' }]),
+    /any work below it is unfinished/,
   );
   // A normal implementation task may be finished on the agent's own verification.
   const selfDone = envelopeAfter(base, [{ op: 'complete', id: 't2', result: '子完成' }]).envelope;
@@ -171,7 +181,7 @@ function titles(snapshot) {
   assert.deepEqual(focused.workline.focus, ['t1']);
   assert.equal(focused.tasks[0].status, 'in_progress');
 
-  const deferred = envelopeAfter(focused, [{ op: 'defer', id: 't1', deferredReason: '先做别的' }]).envelope;
+  const deferred = envelopeAfter(focused, [{ op: 'defer', id: 't1', deferredReason: '先做别的', userBasis: '开始吧' }]).envelope;
   assert.equal(deferred.tasks[0].deferred, true);
   assert.deepEqual(deferred.workline.focus, []);
   assert.equal(deferred.tasks[0].status, 'in_progress');
@@ -878,7 +888,7 @@ function titles(snapshot) {
     /does not appear in a user message/,
   );
   const approved = envelopeAfter(created, [
-    { op: 'update', id: 't1', executionApproval: 'approved', approvalBasis: '登录功能可以做，开始吧' },
+    { op: 'update', id: 't1', executionApproval: 'approved', approvalBasis: '登录功能可以做，开始吧', requiresUserAcceptance: true },
   ]).envelope;
   assert.equal(approved.tasks[0].executionApproval, 'approved');
   assert.equal(approved.tasks[0].approvalBasis, '登录功能可以做，开始吧');
@@ -972,7 +982,7 @@ function titles(snapshot) {
 
   // Once approved the same transitions succeed.
   const ready = envelopeAfter(base, [
-    { op: 'update', id: 't1', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'update', id: 't1', executionApproval: 'approved', approvalBasis: '开始吧', requiresUserAcceptance: true },
     { op: 'update', id: 't1', status: 'in_progress' },
     { op: 'claim', id: 't1' },
   ]).envelope;
@@ -1065,7 +1075,7 @@ function titles(snapshot) {
   assert.equal(http.tasks[0].completionBasis, null);
   // The legacy record can still be approved and continued.
   const resumed = envelopeAfter(legacy, [
-    { op: 'update', id: 't2', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'update', id: 't2', executionApproval: 'approved', approvalBasis: '开始吧' , requiresUserAcceptance: false },
     { op: 'focus', ids: ['t2'] },
   ]).envelope;
   assert.equal(resumed.tasks[1].status, 'in_progress');
@@ -1392,6 +1402,788 @@ function titles(snapshot) {
   assert.equal(focused.tasks[1].owner, null, 'focus does not claim the task');
   const cleared = envelopeAfter(focused, [{ op: 'focus', ids: [] }]).envelope;
   assert.deepEqual(cleared.workline.focus, []);
+}
+
+// ---------------------------------------------------------------------------
+// placement: new work goes under the task that owns it
+// ---------------------------------------------------------------------------
+
+{
+  // The prompt asks for a placement decision before creating, and keeps that
+  // decision independent from permission and acceptance.
+  for (const needle of [
+    '**Before you create a task, decide what it belongs to.**',
+    'is it the next step of an existing feature, a bug in an existing task',
+    'pass its real `parentId` to `create`',
+    'leave `parentId` out',
+    'Never invent a parent',
+    'never create an empty theme task',
+    'never nest unrelated work only to keep the tree short',
+    '`task_tree_read` first. Prefer extending an existing task over creating a near-duplicate',
+    '**Placement never changes permission or acceptance.**',
+    'must be created with `executionApproval: "pending"` even when it sits under an approved parent',
+    'A child that the user will judge on its own needs an explicit `requiresUserAcceptance: true`',
+    'Never hoist work to the top level to keep its acceptance',
+    'Do not reorganize existing tasks',
+    '"Accept it separately" is not a reason to lift the work out of the feature it belongs to',
+    'A top-level task is for work with no owner, not for work with its own acceptance',
+    'Never move, archive or defer a task only to unblock a completion',
+    'restructuring the tree to close a task is not maintenance',
+  ]) {
+    assert.equal(TASK_TREE_PROMPT.includes(needle), true, `prompt should mention: ${needle}`);
+  }
+  // A top-level task is still allowed when nothing owns the work.
+  assert.equal(TASK_TREE_PROMPT.includes('a new direction, a separate deliverable — leave `parentId` out'), true);
+}
+
+{
+  // The tool description and the parentId parameter carry the same rule.
+  const root = tempRoot();
+  const registeredTools = new Map();
+  const ctx = {
+    effect: (factory) => factory(),
+    get(name) {
+      if (name === 'sessions') return { get: () => undefined };
+      if (name === 'tools') return { register: (definition) => { registeredTools.set(definition.name, definition); return () => {}; } };
+      return undefined;
+    },
+  };
+  mountTaskTree(ctx, { root, logger: { warn() {} }, route: () => {} });
+  const write = registeredTools.get('task_tree_write');
+  for (const needle of [
+    'Before creating a task, decide what it belongs to',
+    'pass the owning task as parentId',
+    'Leave parentId out only when nothing owns the work',
+    'never invent a parent, an empty theme task',
+    'task_tree_read first instead of guessing',
+    'Placement changes neither permission nor acceptance',
+    'new scope under an approved parent must be created pending',
+    'requiresUserAcceptance: true just like a top-level task',
+    'move is not part of normal maintenance',
+    '"Accept it separately" is not a reason to lift work out of the feature it belongs to',
+    'never move, archive or defer a task only to unblock a completion',
+  ]) {
+    assert.equal(write.description.includes(needle), true, `tool description should mention: ${needle}`);
+  }
+  const parentDescription = write.parameters.properties.ops.items.properties.parentId.description;
+  for (const needle of ['Prefer the task that actually owns this work', 'Leave it out only when no existing task owns the work', 'Placement does not grant execution approval', 'does not decide who accepts the result']) {
+    assert.equal(parentDescription.includes(needle), true, `parentId description should mention: ${needle}`);
+  }
+}
+
+{
+  // Behaviour the rule relies on: placement is only placement. A child of an
+  // approved parent still needs an explicit approval for new scope, a child can
+  // carry its own acceptance obligation, and a completed parent keeps its record.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '登录功能' },
+    { op: 'create', title: '登录功能', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', title: '登录接口', parentId: 't1' },
+  ]).envelope;
+  // Inherited approval only covers the step created inside the scope…
+  assert.equal(base.tasks[1].executionApproval, 'approved');
+  // …new scope under the same parent must be created pending.
+  const bug = envelopeAfter(base, [
+    { op: 'create', title: '修复 Token 过期', parentId: 't1', executionApproval: 'pending' },
+  ]).envelope;
+  assert.equal(bug.tasks[2].executionApproval, 'pending');
+  assert.equal(bug.tasks[2].requiresUserAcceptance, false, 'a step defaults to no separate acceptance');
+  // A nested deliverable keeps its own acceptance obligation.
+  const nestedDelivery = envelopeAfter(bug, [
+    { op: 'create', title: '登录审计日志', parentId: 't1', requiresUserAcceptance: true },
+  ]).envelope;
+  assert.equal(nestedDelivery.tasks[3].requiresUserAcceptance, true);
+  assert.throws(
+    () => envelopeAfter(nestedDelivery, [{ op: 'complete', id: 't4' }]),
+    /needs the user's acceptance/,
+  );
+  // A completed parent keeps its record when follow-up work is attached.
+  const done = envelopeAfter(nestedDelivery, [
+    { op: 'complete', id: 't2' },
+    { op: 'complete', id: 't3' },
+    { op: 'complete', id: 't4', confirmedByUser: true, confirmationBasis: '审计日志也验收通过了' },
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+    { op: 'create', title: '登录页样式错位', parentId: 't1' },
+  ]).envelope;
+  const parent = done.tasks[0];
+  assert.equal(parent.status, 'done');
+  assert.equal(parent.completion, 'user-confirmed');
+  assert.equal(parent.completionBasis, '登录功能我验收通过了');
+  assert.equal(parent.completedAt, NOW);
+  const followUp = done.tasks[4];
+  assert.equal(followUp.parentId, 't1');
+  assert.equal(followUp.status, 'pending');
+  assert.equal(followUp.requiresUserAcceptance, false);
+}
+
+// ---------------------------------------------------------------------------
+// subtree completion: only finished or archived work stops blocking
+// ---------------------------------------------------------------------------
+
+{
+  // Login feature with finished steps and an idea nobody approved yet.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '登录功能' },
+    { op: 'create', title: '实现登录功能', executionApproval: 'approved', approvalBasis: '登录功能可以做，开始吧。' },
+    { op: 'create', parentId: 't1', title: '实现登录 API' },
+    { op: 'create', parentId: 't1', title: '编写单元测试' },
+    { op: 'create', parentId: 't1', title: '登录审计日志', executionApproval: 'pending' },
+  ]).envelope;
+  const stepsDone = envelopeAfter(base, [
+    { op: 'complete', id: 't2' },
+    { op: 'complete', id: 't3' },
+  ]).envelope;
+  assert.equal(stepsDone.tasks[3].status, 'pending');
+  // An unfinished idea still blocks: the tree records every unfinished thing.
+  assert.throws(
+    () => envelopeAfter(stepsDone, [{ op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' }]),
+    /any work below it is unfinished: t4 "登录审计日志" is pending/,
+  );
+  // The idea keeps its parent, its status and its pending approval.
+  assert.equal(stepsDone.tasks[3].parentId, 't1');
+  assert.equal(stepsDone.tasks[3].status, 'pending');
+  assert.equal(stepsDone.tasks[3].executionApproval, 'pending');
+  // Archiving it (the user's decision to drop it) unblocks the parent, and the
+  // archived record stays in the tree's history.
+  const archived = envelopeAfter(stepsDone, [
+    { op: 'archive', id: 't4', reason: '用户决定不做', userBasis: '这个先不做' },
+  ]).envelope;
+  const accepted = envelopeAfter(archived, [
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+  ]).envelope;
+  assert.equal(accepted.tasks[0].status, 'done');
+  assert.equal(accepted.tasks[0].completion, 'user-confirmed');
+  assert.equal(accepted.tasks[0].completionBasis, '登录功能我验收通过了');
+  assert.equal(accepted.tasks[3].archived, true);
+  assert.equal(accepted.tasks[3].parentId, 't1');
+}
+
+{
+  // Authorised work still blocks, through both completion paths.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: '交付', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', parentId: 't1', title: '实施步骤', executionApproval: 'approved', approvalBasis: '开始吧' },
+  ]).envelope;
+  const running = envelopeAfter(base, [{ op: 'update', id: 't2', status: 'in_progress' }]).envelope;
+  assert.throws(
+    () => envelopeAfter(running, [{ op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '验收通过' }]),
+    /any work below it is unfinished/,
+  );
+  assert.throws(
+    () => envelopeAfter(running, [{ op: 'update', id: 't1', status: 'done', confirmedByUser: true, confirmationBasis: '验收通过' }]),
+    /any work below it is unfinished/,
+  );
+}
+
+{
+  // A nested deliverable that is finished but not accepted still blocks.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: '父交付', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', parentId: 't1', title: '子交付', requiresUserAcceptance: true },
+  ]).envelope;
+  const delivered = envelopeAfter(base, [
+    { op: 'update', id: 't2', executionApproval: 'approved', approvalBasis: '开始吧', requiresUserAcceptance: true },
+    { op: 'update', id: 't2', status: 'in_progress' },
+    { op: 'update', id: 't2', progress: '开发与测试已完成，等待用户验收。' },
+  ]).envelope;
+  assert.throws(
+    () => envelopeAfter(delivered, [{ op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '验收通过' }]),
+    /any work below it is unfinished: t2 .* is in_progress/,
+  );
+  // A sub-delivery that is finished but not accepted (legacy records can carry
+  // this shape) still holds the parent open.
+  const legacyDone = {
+    version: 1,
+    workline: { id: 'session-root', createdAt: 1, updatedAt: 2, goal: { original: 'g', current: 'g', changes: [] }, outline: '', focus: [], nextSeq: 3 },
+    tasks: [
+      { id: 't1', worklineId: 'session-root', parentId: null, order: 0, title: '父交付', status: 'in_progress', executionApproval: 'approved', createdAt: 1, updatedAt: 2 },
+      { id: 't2', worklineId: 'session-root', parentId: 't1', order: 0, title: '子交付', status: 'done', completion: 'self', completedAt: 2, requiresUserAcceptance: true, createdAt: 1, updatedAt: 2 },
+    ],
+  };
+  // Only the status matters now: a legacy child that is already done no longer
+  // blocks, even though its completion is not a user acceptance.
+  const legacyClosed = envelopeAfter(legacyDone, [
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+  ]).envelope;
+  assert.equal(legacyClosed.tasks[0].status, 'done');
+  assert.equal(legacyClosed.tasks[1].completion, 'self');
+  // Once the sub-delivery is accepted the parent may close.
+  const subAccepted = envelopeAfter(delivered, [
+    { op: 'complete', id: 't2', confirmedByUser: true, confirmationBasis: '审计日志也验收通过了' },
+  ]).envelope;
+  const closed = envelopeAfter(subAccepted, [
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+  ]).envelope;
+  assert.equal(closed.tasks[0].status, 'done');
+  assert.equal(closed.tasks[1].completion, 'user-confirmed');
+}
+
+{
+  // Deferring is a pause, not a cancellation: the task keeps blocking its parent.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: '登录功能', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', parentId: 't1', title: '记住我', executionApproval: 'approved', approvalBasis: '开始吧' },
+  ]).envelope;
+  const deferred = envelopeAfter(base, [
+    { op: 'defer', id: 't2', deferredReason: '这轮先不做', resumeCondition: '下轮再做', userBasis: '开始吧' },
+  ]).envelope;
+  assert.equal(deferred.tasks[1].deferred, true);
+  assert.throws(
+    () => envelopeAfter(deferred, [{ op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' }]),
+    /any work below it is unfinished: t2 "记住我" is pending/,
+  );
+}
+
+{
+  // Legacy records: a started child without the approval field still blocks.
+  const legacy = {
+    version: 1,
+    workline: { id: 'session-root', createdAt: 1, updatedAt: 2, goal: { original: 'g', current: 'g', changes: [] }, outline: '', focus: [], nextSeq: 4 },
+    tasks: [
+      { id: 't1', worklineId: 'session-root', parentId: null, order: 0, title: '老交付', status: 'in_progress', createdAt: 1, updatedAt: 2 },
+      { id: 't2', worklineId: 'session-root', parentId: 't1', order: 0, title: '老步骤', status: 'in_progress', progress: '做了一半', createdAt: 1, updatedAt: 2 },
+    ],
+  };
+  assert.throws(
+    () => envelopeAfter(legacy, [{ op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '验收通过' }]),
+    /any work below it is unfinished/,
+  );
+  // The acceptance obligation of the legacy records is unchanged by the read.
+  const http = httpSnapshot(legacy, 'session-root', { isLive: () => false });
+  assert.equal(http.tasks[0].requiresUserAcceptance, true);
+  assert.equal(http.tasks[1].requiresUserAcceptance, false);
+}
+
+{
+  // Deeper nesting: an authorised grandchild still holds the delivery open.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: '交付', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', parentId: 't1', title: '模块' },
+    { op: 'create', parentId: 't2', title: '模块内的实施', executionApproval: 'approved', approvalBasis: '开始吧' },
+  ]).envelope;
+  const running = envelopeAfter(base, [{ op: 'update', id: 't3', status: 'in_progress' }]).envelope;
+  assert.throws(
+    () => envelopeAfter(running, [{ op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '验收通过' }]),
+    /any work below it is unfinished/,
+  );
+}
+
+{
+  // Bypass paths: an in-flight task cannot leave the delivery by withdrawing
+  // approval or by moving, while a pending idea may still be moved.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: '交付', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', parentId: 't1', title: '进行中步骤', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', parentId: 't1', title: '未来想法', executionApproval: 'pending' },
+  ]).envelope;
+  const running = envelopeAfter(base, [{ op: 'update', id: 't2', status: 'in_progress' }]).envelope;
+  assert.throws(
+    () => envelopeAfter(running, [{ op: 'update', id: 't2', executionApproval: 'pending' }]),
+    /withdrawing its approval would hide unfinished work/,
+  );
+  assert.throws(
+    () => envelopeAfter(running, [{ op: 'move', id: 't2', parentId: null }]),
+    /part of the current delivery and cannot be moved/,
+  );
+  // A never-started idea is not delivery work: it may be moved or approved.
+  const moved = envelopeAfter(running, [{ op: 'move', id: 't3', parentId: null }]).envelope;
+  assert.equal(moved.tasks[2].parentId, null);
+  // Archiving is the documented cancellation path, and it takes the idea with it.
+  const archived = envelopeAfter(running, [
+    { op: 'archive', id: 't2', reason: '这轮不做了', userBasis: '开始吧' },
+    { op: 'archive', id: 't3', reason: '想法一起归档' },
+  ]).envelope;
+  const closed = envelopeAfter(archived, [
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+  ]).envelope;
+  assert.equal(closed.tasks[0].status, 'done');
+  assert.equal(closed.tasks[1].archived, true);
+  assert.equal(closed.tasks[1].archiveReason, '这轮不做了');
+}
+
+// ---------------------------------------------------------------------------
+// delivery scope: the prompt and the tool description teach the same rule
+// ---------------------------------------------------------------------------
+
+{
+  for (const needle of [
+    '**A parent is complete only when nothing unfinished remains below it.**',
+    '`pending`, `in_progress`, `blocked` and deferred children all block the parent, whether or not they were approved',
+    'A completed parent that later gains an unfinished child is no longer complete',
+    'the parent becomes complete again without a second acceptance',
+    'A new deliverable under it still needs its own acceptance',
+    '**One confirmation closes one task.**',
+  ]) {
+    assert.equal(TASK_TREE_PROMPT.includes(needle), true, `prompt should mention: ${needle}`);
+  }
+}
+
+{
+  const root = tempRoot();
+  const registeredTools = new Map();
+  const ctx = {
+    effect: (factory) => factory(),
+    get(name) {
+      if (name === 'sessions') return { get: () => undefined };
+      if (name === 'tools') return { register: (definition) => { registeredTools.set(definition.name, definition); return () => {}; } };
+      return undefined;
+    },
+  };
+  mountTaskTree(ctx, { root, logger: { warn() {} }, route: () => {} });
+  const write = registeredTools.get('task_tree_write');
+  for (const needle of [
+    'A parent is complete only when nothing unfinished remains below it',
+    'pending, in_progress, blocked and deferred children all block it',
+    'one acceptance quote closes one task',
+    'never replay the same quote for another task',
+  ]) {
+    assert.equal(write.description.includes(needle), true, `tool description should mention: ${needle}`);
+  }
+  const deferDescription = write.parameters.properties.ops.items.properties.deferredReason.description;
+  assert.equal(deferDescription.includes('still blocks the parent task from being completed'), true);
+}
+
+// ---------------------------------------------------------------------------
+// lifecycle boundaries
+// ---------------------------------------------------------------------------
+
+{
+  // (1) Notes are not execution evidence — but an unfinished task blocks anyway.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '登录功能' },
+    { op: 'create', title: '登录功能', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', parentId: 't1', title: '登录审计日志', executionApproval: 'pending' },
+    { op: 'update', id: 't2', progress: '讨论中：倾向结构化事件 + 可替换 sink，待用户决定' },
+  ]).envelope;
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' }]),
+    /any work below it is unfinished: t2 .* is pending/,
+  );
+  // Notes do not turn the idea into authorised work: it can still be tidied and
+  // moved without asking the user for a basis.
+  const archived = envelopeAfter(base, [{ op: 'archive', id: 't2', reason: '不做了' }]).envelope;
+  assert.equal(archived.tasks[1].archived, true);
+  assert.equal(archived.tasks[1].archiveBasis, null);
+  const moved = envelopeAfter(base, [{ op: 'move', id: 't2', parentId: null }]).envelope;
+  assert.equal(moved.tasks[1].parentId, null);
+}
+
+{
+  // (2) Approving a recorded idea is also a decision about acceptance.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '登录功能' },
+    { op: 'create', title: '登录功能', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', parentId: 't1', title: '登录审计日志', executionApproval: 'pending' },
+  ]).envelope;
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'update', id: 't2', executionApproval: 'approved', approvalBasis: '开始吧' }]),
+    /also decides who accepts it/,
+  );
+  const asDelivery = envelopeAfter(base, [
+    { op: 'update', id: 't2', executionApproval: 'approved', approvalBasis: '开始吧', requiresUserAcceptance: true },
+  ]).envelope;
+  assert.equal(asDelivery.tasks[1].requiresUserAcceptance, true);
+  assert.equal(asDelivery.tasks[1].id, 't2', 'the original task keeps its id and its history');
+  assert.equal(asDelivery.tasks[1].progress, '', 'the discussion record is untouched');
+  // A delivery cannot close itself once the user must accept it.
+  const started = envelopeAfter(asDelivery, [{ op: 'update', id: 't2', status: 'in_progress' }]).envelope;
+  assert.throws(
+    () => envelopeAfter(started, [{ op: 'complete', id: 't2' }]),
+    /needs the user's acceptance/,
+  );
+  // An ordinary implementation step may be approved as one.
+  const asStep = envelopeAfter(base, [
+    { op: 'update', id: 't2', executionApproval: 'approved', approvalBasis: '开始吧', requiresUserAcceptance: false },
+  ]).envelope;
+  assert.equal(asStep.tasks[1].requiresUserAcceptance, false);
+}
+
+{
+  // (3) In-flight delivery work cannot leave the delivery without the user.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '登录功能' },
+    { op: 'create', title: '登录功能', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', parentId: 't1', title: '记住我', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'update', id: 't2', status: 'in_progress' },
+  ]).envelope;
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'defer', id: 't2', deferredReason: '先放放' }]),
+    /quoting the user's decision/,
+  );
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'archive', id: 't2', reason: '不做了' }]),
+    /quoting the user's decision/,
+  );
+  // The user's own words make both paths work and are recorded.
+  const deferred = envelopeAfter(base, [
+    { op: 'defer', id: 't2', deferredReason: '这轮先不做', userBasis: '这个先不做' },
+  ]).envelope;
+  assert.equal(deferred.tasks[1].deferred, true);
+  assert.equal(deferred.tasks[1].deferredBasis, '这个先不做');
+  const archived = envelopeAfter(base, [
+    { op: 'archive', id: 't2', reason: '用户取消', userBasis: '不做了' },
+  ]).envelope;
+  assert.equal(archived.tasks[1].archived, true);
+  assert.equal(archived.tasks[1].archiveBasis, '不做了');
+  assert.equal(archived.tasks[1].archiveHistory[0].basis, '不做了');
+  // Ideas that never started and finished work are ordinary tidying.
+  const ideaDeferred = envelopeAfter(base, [
+    { op: 'create', parentId: 't1', title: '未来想法', executionApproval: 'pending' },
+    { op: 'defer', id: 't3', deferredReason: '先讨论' },
+  ]).envelope;
+  assert.equal(ideaDeferred.tasks[2].deferred, true, 'an unapproved idea is tidied without a basis');
+  const doneArchived = envelopeAfter(base, [
+    { op: 'complete', id: 't2' },
+    { op: 'archive', id: 't2', reason: '交付后归档' },
+  ]).envelope;
+  assert.equal(doneArchived.tasks[1].archived, true, 'finished work is archived without a basis');
+}
+
+// ---------------------------------------------------------------------------
+// lifecycle boundaries: the prompt and the tool description say the same thing
+// ---------------------------------------------------------------------------
+
+{
+  for (const needle of [
+    '**Notes are not execution.**',
+    'Writing a discussion record or a progress note does not start a task',
+    '**Starting work on a recorded idea** is not a new task: approve the existing one and keep its id',
+    'Approving it also settles who accepts the result',
+    '**Taking authorised work out of the delivery needs the user.**',
+    'needs `userBasis` quoting the user',
+    'An idea that never started, and work that is already finished, are ordinary tidying and need no quote',
+  ]) {
+    assert.equal(TASK_TREE_PROMPT.includes(needle), true, `prompt should mention: ${needle}`);
+  }
+}
+
+{
+  const root = tempRoot();
+  const registeredTools = new Map();
+  const ctx = {
+    effect: (factory) => factory(),
+    get(name) {
+      if (name === 'sessions') return { get: () => undefined };
+      if (name === 'tools') return { register: (definition) => { registeredTools.set(definition.name, definition); return () => {}; } };
+      return undefined;
+    },
+  };
+  mountTaskTree(ctx, { root, logger: { warn() {} }, route: () => {} });
+  const write = registeredTools.get('task_tree_write');
+  for (const needle of [
+    'Notes are not execution',
+    'starting work on a recorded idea reuses that task',
+    'approving it also decides requiresUserAcceptance',
+    'needs userBasis quoting',
+  ]) {
+    assert.equal(write.description.includes(needle), true, `tool description should mention: ${needle}`);
+  }
+  const userBasis = write.parameters.properties.ops.items.properties.userBasis;
+  assert.equal(typeof userBasis === 'object', true, 'userBasis must be a documented parameter');
+  assert.equal(userBasis.description.includes("the user's own words deciding it"), true);
+}
+
+// ---------------------------------------------------------------------------
+// subtree completion and task-scoped acceptance
+// ---------------------------------------------------------------------------
+
+{
+  // A completed parent that gains unfinished children shows as unfinished again,
+  // keeps its acceptance record, and recovers without a second acceptance.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '登录功能' },
+    { op: 'create', title: '登录功能', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', parentId: 't1', title: '登录接口' },
+    { op: 'complete', id: 't2' },
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+  ]).envelope;
+  const accepted = readSnapshot(base, CTX.worklineId, false);
+  assert.equal(accepted.tasks[0].status, 'done');
+  assert.equal(accepted.tasks[0].settled, true);
+  const withIdea = envelopeAfter(base, [
+    { op: 'create', parentId: 't1', title: '登录审计日志', executionApproval: 'pending' },
+  ]).envelope;
+  const afterIdea = readSnapshot(withIdea, CTX.worklineId, false);
+  assert.equal(afterIdea.tasks[0].status, 'done', 'the record stays');
+  assert.equal(afterIdea.tasks[0].settled, false, 'the current state turns unfinished');
+  const parent = withIdea.tasks[0];
+  assert.equal(parent.completion, 'user-confirmed');
+  assert.equal(parent.completionBasis, '登录功能我验收通过了');
+  assert.equal(parent.completedAt, NOW);
+  assert.throws(
+    () => envelopeAfter(withIdea, [{ op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' }]),
+    /already done/,
+  );
+  // Finishing the new child restores the parent, without another acceptance.
+  const finished = envelopeAfter(withIdea, [{ op: 'complete', id: 't3' }]).envelope;
+  const afterFinish = readSnapshot(finished, CTX.worklineId, false);
+  assert.equal(afterFinish.tasks[0].settled, true);
+  assert.equal(finished.tasks[0].completedAt, NOW);
+}
+
+{
+  // Restoring an archived child puts the parent back to unfinished.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: '父', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'create', parentId: 't1', title: '想法', executionApproval: 'pending' },
+    { op: 'archive', id: 't2', reason: '不做' },
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+  ]).envelope;
+  assert.equal(readSnapshot(base, CTX.worklineId, false).tasks[0].status, 'done');
+  const back = envelopeAfter(base, [{ op: 'restore', id: 't2' }]).envelope;
+  const after = readSnapshot(back, CTX.worklineId, false);
+  assert.equal(after.tasks[0].settled, false, 'a restored child re-opens the parent');
+  assert.equal(after.tasks[0].status, 'done');
+}
+
+{
+  // One acceptance quote closes one task.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '登录' },
+    { op: 'create', title: '登录功能', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+    { op: 'create', parentId: 't1', title: '登录审计日志' },
+    { op: 'update', id: 't2', executionApproval: 'approved', approvalBasis: '开始吧', requiresUserAcceptance: true },
+    { op: 'update', id: 't2', status: 'in_progress' },
+  ]).envelope;
+  // The parent's quote cannot be replayed for the nested deliverable.
+  assert.throws(
+    () => envelopeAfter(base, [
+      { op: 'complete', id: 't2', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+    ]),
+    /already recorded the user's acceptance of task t1/,
+  );
+  // A single sentence naming both tasks still closes both, clause by clause.
+  const both = envelopeAfter(base, [
+    { op: 'complete', id: 't2', confirmedByUser: true, confirmationBasis: '审计日志也验收通过了' },
+  ]).envelope;
+  assert.equal(both.tasks[1].completionBasis, '审计日志也验收通过了');
+  assert.equal(both.tasks[0].completionBasis, '登录功能我验收通过了');
+  assert.equal(readSnapshot(both, CTX.worklineId, false).tasks[0].settled, true);
+  // The whole sentence cannot be reused for a second task either.
+  assert.throws(
+    () => envelopeAfter(both, [
+      { op: 'create', title: '第二个交付', executionApproval: 'approved', approvalBasis: '开始吧' },
+      { op: 'complete', id: 't3', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+    ]),
+    /already recorded the user's acceptance/,
+  );
+}
+
+{
+  // The panel payload carries the same settlement flag.
+  const envelope = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: '父', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+    { op: 'create', parentId: 't1', title: '后续想法', executionApproval: 'pending' },
+  ]).envelope;
+  const http = httpSnapshot(envelope, CTX.worklineId, { isLive: () => false });
+  assert.equal(http.tasks[0].status, 'done');
+  assert.equal(http.tasks[0].settled, false);
+  assert.equal(http.tasks[0].completion, 'user-confirmed');
+}
+
+// ---------------------------------------------------------------------------
+// the reported regression: a pending idea must keep the parent unfinished
+// ---------------------------------------------------------------------------
+
+{
+  // The exact manual-test shape: Go Todo API (in progress, needs acceptance) with
+  // an unauthorized "labels" idea under it.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'Go Todo REST API' },
+    { op: 'create', title: 'Go Todo REST API', executionApproval: 'approved', approvalBasis: '开始吧', requiresUserAcceptance: true },
+    { op: 'update', id: 't1', status: 'in_progress' },
+    { op: 'create', parentId: 't1', title: 'Todo 标签与筛选', executionApproval: 'pending', requiresUserAcceptance: true },
+  ]).envelope;
+  assert.equal(base.tasks[0].status, 'in_progress');
+  assert.equal(base.tasks[1].status, 'pending');
+  assert.equal(base.tasks[1].executionApproval, 'pending');
+  assert.equal(base.tasks[1].archived, false);
+
+  // Both completion paths must refuse, and the refusal must not change anything.
+  assert.throws(
+    () => envelopeAfter(base, [
+      { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+    ]),
+    /any work below it is unfinished: t2 "Todo 标签与筛选" is pending/,
+  );
+  assert.throws(
+    () => envelopeAfter(base, [
+      { op: 'update', id: 't1', status: 'done', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+    ]),
+    /any work below it is unfinished/,
+  );
+  // Deferring the idea is not a way out either.
+  const deferred = envelopeAfter(base, [
+    { op: 'defer', id: 't2', deferredReason: '先不做' },
+  ]).envelope;
+  assert.throws(
+    () => envelopeAfter(deferred, [
+      { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+    ]),
+    /any work below it is unfinished/,
+  );
+  // Archiving it (the user's decision) is.
+  const archived = envelopeAfter(base, [
+    { op: 'archive', id: 't2', reason: '用户决定不做' },
+  ]).envelope;
+  const closed = envelopeAfter(archived, [
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+  ]).envelope;
+  assert.equal(closed.tasks[0].status, 'done');
+  assert.equal(closed.tasks[0].completionBasis, '登录功能我验收通过了');
+  assert.equal(closed.tasks[1].archived, true);
+  assert.equal(closed.tasks[1].parentId, 't1');
+  // Finishing it is too.
+  const finished = envelopeAfter(base, [
+    { op: 'complete', id: 't2', confirmedByUser: true, confirmationBasis: '审计日志也验收通过了' },
+  ]).envelope;
+  const closed2 = envelopeAfter(finished, [
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
+  ]).envelope;
+  assert.equal(closed2.tasks[0].status, 'done');
+  // Every surface reports the same settlement.
+  const read = readSnapshot(base, CTX.worklineId, false);
+  assert.equal(read.tasks[0].status, 'in_progress');
+  assert.equal(read.tasks[0].settled, false);
+  assert.equal(read.tasks[1].parentId, 't1');
+  const http = httpSnapshot(base, CTX.worklineId, { isLive: () => false });
+  assert.equal(http.tasks[0].settled, false);
+  assert.equal(http.tasks[1].status, 'pending');
+}
+
+// ---------------------------------------------------------------------------
+// the tools' real output must match the schema they registered
+// ---------------------------------------------------------------------------
+
+/** Validate one value against a registered JSON Schema subset. Throws on mismatch. */
+function assertSchema(schema, value, path = 'value') {
+  if (schema === undefined || schema === null) return;
+  if (schema.oneOf !== undefined) {
+    const failures = [];
+    for (const option of schema.oneOf) {
+      try {
+        assertSchema(option, value, path);
+        return;
+      } catch (error) {
+        failures.push(String(error?.message ?? error));
+      }
+    }
+    throw new Error(`${path}: no oneOf branch matched (${failures.join(' | ')})`);
+  }
+  const type = schema.type;
+  if (type !== undefined) {
+    const actual = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+    const ok = type === actual
+      || (type === 'integer' && Number.isInteger(value))
+      || (type === 'number' && typeof value === 'number');
+    if (!ok) throw new Error(`${path}: expected ${type}, got ${actual}`);
+  }
+  if (Array.isArray(schema.enum) && schema.enum.includes(value) !== true) {
+    throw new Error(`${path}: ${JSON.stringify(value)} is not one of ${schema.enum.join(', ')}`);
+  }
+  if (type === 'object') {
+    for (const key of schema.required ?? []) {
+      if (Object.prototype.hasOwnProperty.call(value, key) !== true) throw new Error(`${path}.${key}: missing required property`);
+    }
+    const properties = schema.properties ?? {};
+    for (const [key, child] of Object.entries(value)) {
+      if (properties[key] === undefined) {
+        if (schema.additionalProperties === false) throw new Error(`${path}.${key}: is not a declared property`);
+        continue;
+      }
+      assertSchema(properties[key], child, `${path}.${key}`);
+    }
+    return;
+  }
+  if (type === 'array') {
+    const items = schema.items;
+    for (let index = 0; index < value.length; index += 1) assertSchema(items, value[index], `${path}[${index}]`);
+  }
+}
+
+{
+  // Drive the mounted tools and validate both read modes plus the write result.
+  const root = tempRoot();
+  const registeredTools = new Map();
+  const ctx = {
+    effect: (factory) => factory(),
+    get(name) {
+      if (name === 'sessions') return { get: () => undefined };
+      if (name === 'tools') return { register: (definition) => { registeredTools.set(definition.name, definition); return () => {}; } };
+      return undefined;
+    },
+  };
+  mountTaskTree(ctx, { root, logger: { warn() {} }, route: () => {} });
+  const read = registeredTools.get('task_tree_read');
+  const write = registeredTools.get('task_tree_write');
+
+  const events = [
+    { type: 'user/message', seq: 1, time: Date.now() - 60_000, data: { source: { kind: 'user', rpcId: 'r1' }, content: [{ type: 'text', text: '帮我实现一个登录功能。' }] } },
+    { type: 'user/message', seq: 2, time: Date.now() + 60_000, data: { source: { kind: 'user', rpcId: 'r2' }, content: [{ type: 'text', text: '登录功能验收通过了。' }] } },
+  ];
+  const exec = {
+    agent: {
+      id: 'session-schema',
+      session: { header: { id: 'session-schema' }, seq: 5, snapshotEvents: (from = 0) => events.filter((event) => event.seq >= from) },
+    },
+  };
+
+  const created = await write.execute({ ops: [
+    { op: 'init', originalGoal: '登录功能' },
+    { op: 'create', title: '登录功能', executionApproval: 'approved', approvalBasis: '帮我实现一个登录功能。' },
+    { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能验收通过了' },
+    { op: 'create', parentId: 't1', title: '登录审计日志', executionApproval: 'pending' },
+    { op: 'create', title: '归档项' },
+    { op: 'archive', id: 't3', reason: '不做了' },
+  ] }, exec);
+  assertSchema(write.output.schema, created, 'write');
+
+  // settled=false on the reopened parent, settled=true on the archived one is not listed
+  const detailed = await read.execute({ details: true, includeArchived: true }, exec);
+  assertSchema(read.output.schema, detailed, 'read');
+  const parent = detailed.tasks.find((task) => task.id === 't1');
+  assert.equal(parent.status, 'done', 'the completion record stays');
+  assert.equal(parent.settled, false, 'the current state is unfinished');
+  assert.equal(detailed.archived.length, 1);
+  assert.equal(detailed.archived[0].archiveReason, '不做了');
+  // archived rows are not listed among the active tasks
+  assert.equal(detailed.tasks.some((task) => task.id === 't3'), false);
+
+  // plain mode is equally valid
+  const plain = await read.execute({}, exec);
+  assertSchema(read.output.schema, plain, 'read-plain');
+
+  // archiving the child settles the parent again
+  await write.execute({ ops: [{ op: 'archive', id: 't2', reason: '用户决定不做' }] }, exec);
+  const settledRead = await read.execute({ details: true }, exec);
+  assertSchema(read.output.schema, settledRead, 'read-settled');
+  assert.equal(settledRead.tasks.find((task) => task.id === 't1').settled, true);
+
+  // an empty workline is equally valid (goal null, no tasks, archived list present)
+  const emptyView = await read.execute({ details: true, includeArchived: true }, {
+    agent: { id: 'session-empty', session: { header: { id: 'session-empty' }, seq: 0, snapshotEvents: () => [] } },
+  });
+  assertSchema(read.output.schema, emptyView, 'read-empty');
+  assert.deepEqual(emptyView.tasks, []);
+
+  // legacy record: the stored task has no settled field at all
+  const legacy = {
+    version: 1,
+    workline: { id: 'session-legacy', createdAt: 1, updatedAt: 2, goal: { original: 'g', current: 'g', changes: [] }, outline: '', focus: [], nextSeq: 2 },
+    tasks: [{ id: 't1', worklineId: 'session-legacy', parentId: null, order: 0, title: '老任务', status: 'done', completion: 'self', createdAt: 1, updatedAt: 2 }],
+  };
+  const legacyView = readSnapshot(legacy, 'session-legacy', true);
+  assertSchema(read.output.schema, legacyView, 'read-legacy');
+  assert.equal(legacyView.tasks[0].settled, true, 'a legacy done leaf is settled');
 }
 
 console.log('tasks ok');

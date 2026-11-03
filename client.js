@@ -52,6 +52,7 @@ window.__ModuleLoader__.load({
       'tasks.detail.outline': '目标大纲',
       'tasks.detail.changes': '修订记录 ({n})',
       'tasks.detail.status': '状态',
+      'tasks.detail.subtreePending': '仍有未完成子任务',
       'tasks.detail.summary': '简介',
       'tasks.detail.progress': '进展',
       'tasks.detail.result': '结果',
@@ -184,6 +185,7 @@ window.__ModuleLoader__.load({
       'tasks.detail.outline': 'Outline',
       'tasks.detail.changes': 'Revisions ({n})',
       'tasks.detail.status': 'Status',
+      'tasks.detail.subtreePending': 'Unfinished subtasks',
       'tasks.detail.summary': 'Summary',
       'tasks.detail.progress': 'Progress',
       'tasks.detail.result': 'Result',
@@ -1588,6 +1590,15 @@ window.__ModuleLoader__.load({
         const children = childrenMap.get(task.id) ?? [];
         const hasChildren = children.length > 0;
         const doneChildren = children.filter((child) => child.status === 'done').length;
+        // A completed task that gained unfinished children is not complete any
+        // more: its acceptance record stays, but the row shows it as unfinished
+        // until the subtree settles. Hosts that do not send `settled` fall back
+        // to counting unfinished descendants.
+        const unsettled = task.settled === undefined
+          ? (unfinishedCounts.get(task.id) ?? 0) > 0
+          : task.settled !== true;
+        const completed = task.status === 'done' && !unsettled;
+        const shownStatus = completed ? 'done' : (task.status === 'done' ? 'in_progress' : task.status);
         // Keep the panel quiet: only show progress when it carries information.
         const showProgress = hasChildren && (children.length > 1 || (task.status === 'done' && doneChildren < children.length));
         // An idea waiting for the user's go-ahead is the only state the marker
@@ -1604,7 +1615,7 @@ window.__ModuleLoader__.load({
           key: task.id,
           className: 'sp-task-row'
             + (hasChildren ? ' sp-task-row-parent' : '')
-            + (task.status === 'done' ? ' sp-task-row-done' : '')
+            + (completed ? ' sp-task-row-done' : '')
             + (focusSet.has(task.id) ? ' sp-task-row-focus' : '')
             + (task.deferred === true ? ' sp-task-row-deferred' : ''),
           role: 'treeitem',
@@ -1629,7 +1640,7 @@ window.__ModuleLoader__.load({
             onMouseEnter: enterRow(task),
             onMouseLeave: clearHover,
           },
-            h(TaskStatusIcon, { status: task.status }),
+            h(TaskStatusIcon, { status: shownStatus }),
             h('span', { className: 'sp-task-title' }, task.title),
             showApproval
               ? h('span', { className: 'sp-task-approval', title: t('tasks.tip.approval') }, t('tasks.approvalPending'))
@@ -2010,6 +2021,9 @@ window.__ModuleLoader__.load({
             h('div', { className: 'sp-detail-label' }, t('tasks.detail.status')),
             h('div', { className: 'sp-detail-value' },
               h('span', { className: 'sp-task-status sp-task-status-' + String(active.status ?? 'pending') }, taskStatusText(active.status, t)),
+              active.status === 'done' && active.settled === false
+                ? h('span', { className: 'sp-task-status sp-task-status-in_progress' }, t('tasks.detail.subtreePending'))
+                : null,
               active.deferred === true
                 ? h('span', { className: 'sp-task-status sp-task-status-deferred' }, t('tasks.deferred'))
                 : null)));

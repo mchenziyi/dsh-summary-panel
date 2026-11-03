@@ -65,9 +65,9 @@ const OP_FIELDS = Object.freeze({
   create: ['op', 'title', 'summary', 'parentId', 'status', 'progress', 'order', 'executionApproval', 'approvalBasis', 'requiresUserAcceptance', 'acceptanceBasis'],
   update: ['op', 'id', 'title', 'summary', 'status', 'progress', 'result', 'blockerReason', 'blockerUnblock', 'confirmedByUser', 'executionApproval', 'approvalBasis', 'confirmationBasis', 'requiresUserAcceptance', 'acceptanceBasis'],
   move: ['op', 'id', 'parentId', 'order'],
-  defer: ['op', 'id', 'deferredReason', 'resumeCondition'],
+  defer: ['op', 'id', 'deferredReason', 'resumeCondition', 'userBasis'],
   resume: ['op', 'id'],
-  archive: ['op', 'id', 'reason'],
+  archive: ['op', 'id', 'reason', 'userBasis'],
   restore: ['op', 'id'],
   focus: ['op', 'ids'],
   claim: ['op', 'id'],
@@ -206,7 +206,7 @@ function assertExecutable(task) {
  * scope down to the steps it creates, so approving something that already exists
  * can never happen without a quote.
  */
-function applyApproval(task, op, context) {
+function applyApproval(task, op, context, options = {}) {
   if (op.executionApproval === undefined) {
     if (op.approvalBasis !== undefined) {
       fail(`task ${task.id}: approvalBasis only applies together with executionApproval: "approved"`);
@@ -215,6 +215,12 @@ function applyApproval(task, op, context) {
   }
   const next = normalizeApproval(op.executionApproval);
   if (next === 'pending') {
+    if (hasStarted(task)) {
+      fail(
+        `task ${task.id} has already started, so withdrawing its approval would hide unfinished work behind`
+        + ' a completed parent; defer it or finish it instead',
+      );
+    }
     task.executionApproval = 'pending';
     task.approvalBasis = null;
     task.approvalAt = null;
@@ -232,6 +238,17 @@ function applyApproval(task, op, context) {
     fail(
       `task ${task.id}: approvalBasis does not appear in a user message (${verdict.reason});`
       + " quote the user's own words, or leave the task pending until they agree",
+    );
+  }
+  // Turning a recorded idea into work also settles who accepts the result; the
+  // caller has to say so instead of inheriting a default that may be wrong.
+  if (options.requireAcceptanceDecision === true
+    && task.executionApproval !== 'approved'
+    && task.approvalAt === null
+    && op.requiresUserAcceptance === undefined) {
+    fail(
+      `task ${task.id}: approving a recorded idea also decides who accepts it;`
+      + ' pass requiresUserAcceptance: true for a feature the user will accept, or false for an ordinary implementation step',
     );
   }
   task.executionApproval = 'approved';
@@ -255,6 +272,8 @@ function applyAcceptanceRequirement(task, op, context) {
   if (typeof op.requiresUserAcceptance !== 'boolean') {
     fail(`task ${task.id}: requiresUserAcceptance must be a boolean`);
   }
+  // Restating the current value changes nothing, so it needs no evidence.
+  if (op.requiresUserAcceptance === task.requiresUserAcceptance) return;
   if (op.requiresUserAcceptance === true) {
     task.requiresUserAcceptance = true;
     task.acceptanceBasis = null;
@@ -282,7 +301,11 @@ function applyAcceptanceRequirement(task, op, context) {
  * The verified acceptance quote for a completion that claims user confirmation.
  * @returns the quote, or null when the agent records its own verification.
  */
-function confirmationBasisFor(task, op, context) {
+function basisKey(text) {
+  return String(text).replace(/\s+/g, '');
+}
+
+function confirmationBasisFor(state, task, op, context) {
   if (op.confirmedByUser !== true) return null;
   const basis = op.confirmationBasis === undefined ? '' : singleLine(op.confirmationBasis, 'confirmationBasis', LIMITS.basis);
   if (basis === '') {
@@ -296,6 +319,18 @@ function confirmationBasisFor(task, op, context) {
     fail(
       `task ${task.id}: confirmationBasis does not appear in a user message (${verdict.reason});`
       + ' ask the user to accept the delivered work, then quote their answer',
+    );
+  }
+  // One quote closes one task: a message that accepted one thing cannot be
+  // replayed to accept another, so the user's words bind to what they said.
+  const key = basisKey(basis);
+  const clash = state.tasks.find((candidate) => candidate.id !== task.id
+    && typeof candidate.completionBasis === 'string'
+    && basisKey(candidate.completionBasis) === key);
+  if (clash !== undefined) {
+    fail(
+      `task ${task.id}: this quote already recorded the user's acceptance of task ${clash.id} "${clash.title}";`
+      + ' each task needs its own confirmation — quote the part of the message that names this task, or ask the user to confirm it separately',
     );
   }
   const floor = Math.max(numberOr(task.createdAt, 0), numberOr(task.approvalAt, 0));
@@ -384,6 +419,8 @@ function normalizeTask(task, worklineId) {
     status: TASK_STATUSES.includes(task.status) ? task.status : 'pending',
     deferred: task.deferred === true,
     deferredReason: typeof task.deferredReason === 'string' ? task.deferredReason : null,
+    deferredBasis: typeof task.deferredBasis === 'string' && task.deferredBasis !== '' ? task.deferredBasis : null,
+    archiveBasis: typeof task.archiveBasis === 'string' && task.archiveBasis !== '' ? task.archiveBasis : null,
     resumeCondition: typeof task.resumeCondition === 'string' ? task.resumeCondition : null,
     archived: task.archived === true,
     archiveReason: typeof task.archiveReason === 'string' ? task.archiveReason : null,
@@ -412,7 +449,11 @@ function normalizeTask(task, worklineId) {
     archiveHistory: Array.isArray(task.archiveHistory)
       ? task.archiveHistory
         .filter((entry) => entry !== null && typeof entry === 'object')
-        .map((entry) => ({ at: numberOr(entry.at, 0), reason: typeof entry.reason === 'string' ? entry.reason : '' }))
+        .map((entry) => ({
+          at: numberOr(entry.at, 0),
+          reason: typeof entry.reason === 'string' ? entry.reason : '',
+          ...(typeof entry.basis === 'string' && entry.basis !== '' ? { basis: entry.basis } : {}),
+        }))
         .slice(-20)
       : [],
     createdAt: numberOr(task.createdAt, 0),
@@ -512,16 +553,114 @@ function nextTaskId(state) {
  *   for the agent's own verification. Completion never invents a user verdict.
  */
 /** The parent invariant, checked before anything else about a completion. */
-function assertNoUnfinishedChildren(state, task) {
-  const unfinished = childTasks(state, task.id).filter((child) => child.status !== 'done');
-  if (unfinished.length > 0) {
-    const ids = unfinished.map((child) => child.id).join(', ');
-    fail(`task ${task.id} cannot be done while child tasks are unfinished: ${ids}`);
+/** Whether a task carries free-text notes (discussion, progress, result). */
+function hasNotes(task) {
+  if (typeof task.progress === 'string' && task.progress.trim() !== '') return true;
+  if (typeof task.result === 'string' && task.result.trim() !== '') return true;
+  return false;
+}
+
+/**
+ * Whether work has already happened on a task.
+ *
+ * Explicit execution state is the evidence: a status of in_progress/blocked, an
+ * owner, or a completion record. Free-text notes alone are not execution — an
+ * idea under discussion collects notes without anyone starting it — so they
+ * only count once the task was actually authorised.
+ */
+function hasStarted(task) {
+  if (task.status === 'in_progress' || task.status === 'blocked') return true;
+  if (task.owner !== null && task.owner !== undefined) return true;
+  if (task.completion !== null && task.completion !== undefined) return true;
+  if (task.executionApproval === 'approved' && hasNotes(task)) return true;
+  return false;
+}
+
+/** Whether leaving the delivery (defer/archive) needs the user's own words. */
+function needsUserDecision(task) {
+  if (task.archived === true) return false;
+  if (task.status === 'done') return false;
+  return task.executionApproval === 'approved' || hasStarted(task);
+}
+
+/**
+ * The first unfinished task inside a subtree, or null when everything is done.
+ *
+ * Only finished work and archived work stop blocking: a pending idea, an
+ * in-progress or blocked step, and a deferred task all keep the subtree open.
+ * Authorisation does not matter here — the tree records every unfinished thing.
+ */
+function firstUnfinished(state, task) {
+  if (task.archived !== true && task.status !== 'done') return task;
+  for (const child of childTasks(state, task.id)) {
+    const found = firstUnfinished(state, child);
+    if (found !== null) return found;
   }
+  return null;
+}
+
+/** Whether a task is done and nothing unfinished remains anywhere below it. */
+function isSettled(state, task) {
+  return task.archived === true || firstUnfinished(state, task) === null;
+}
+
+function assertDeliveryComplete(state, task) {
+  const reasons = [];
+  for (const child of childTasks(state, task.id)) {
+    const blocker = firstUnfinished(state, child);
+    if (blocker === null) continue;
+    reasons.push(blocker.id === child.id
+      ? `${child.id} "${child.title}" is ${child.status}`
+      : `${child.id} "${child.title}" still has unfinished work inside (${blocker.id} "${blocker.title}" is ${blocker.status})`);
+  }
+  if (reasons.length === 0) return;
+  fail(
+    `task ${task.id} cannot be done while any work below it is unfinished: ${reasons.join('; ')}.`
+    + ' Only finished or archived tasks stop blocking; a deferred task and an idea nobody approved still do.',
+  );
+}
+
+/**
+ * Settlement for every task in one list: done and with nothing unfinished below.
+ * A completed task that later gained unfinished children is therefore not
+ * settled, while its completion record stays exactly as the user accepted it.
+ * @param tasks - every task of the workline.
+ * @returns `(id) => boolean`.
+ */
+function settledLookup(tasks) {
+  const byId = new Map();
+  const children = new Map();
+  for (const task of Array.isArray(tasks) ? tasks : []) {
+    if (task === null || typeof task !== 'object' || typeof task.id !== 'string') continue;
+    byId.set(task.id, task);
+    const parentId = typeof task.parentId === 'string' ? task.parentId : null;
+    const group = children.get(parentId);
+    if (group === undefined) children.set(parentId, [task]);
+    else group.push(task);
+  }
+  const memo = new Map();
+  const settled = (id) => {
+    const memoized = memo.get(id);
+    if (memoized !== undefined) return memoized;
+    const task = byId.get(id);
+    let value = task !== undefined && task.archived !== true && task.status === 'done';
+    if (value === true) {
+      for (const child of children.get(id) ?? []) {
+        if (child.archived === true) continue;
+        if (settled(child.id) !== true) {
+          value = false;
+          break;
+        }
+      }
+    }
+    memo.set(id, value);
+    return value;
+  };
+  return settled;
 }
 
 function finishTask(state, task, now, basis) {
-  assertNoUnfinishedChildren(state, task);
+  assertDeliveryComplete(state, task);
   if (basis === null && task.requiresUserAcceptance === true) {
     fail(
       `task ${task.id} needs the user's acceptance before it can be completed: record the delivered work`
@@ -545,7 +684,7 @@ function acceptCompletion(state, task, op, context) {
   if (op.confirmedByUser !== true) {
     fail(`task ${task.id} is already done; pass confirmedByUser: true with confirmationBasis only once the user accepted it`);
   }
-  const basis = confirmationBasisFor(task, op, context);
+  const basis = confirmationBasisFor(state, task, op, context);
   task.completion = 'user-confirmed';
   task.completionBasis = basis;
   touch(state, task, context.now);
@@ -638,9 +777,11 @@ function applyCreate(state, op, context) {
     status,
     deferred: false,
     deferredReason: null,
+    deferredBasis: null,
     resumeCondition: null,
     archived: false,
     archiveReason: null,
+    archiveBasis: null,
     archivedAt: null,
     archiveBatch: null,
     progress,
@@ -690,7 +831,7 @@ function applyUpdate(state, op, context) {
   if (op.progress !== undefined) task.progress = multiLine(op.progress, 'progress', LIMITS.progress);
   if (op.result !== undefined) task.result = multiLine(op.result, 'result', LIMITS.result);
   applyBlocker(state, task, op);
-  applyApproval(task, op, context);
+  applyApproval(task, op, context, { requireAcceptanceDecision: true });
   applyAcceptanceRequirement(task, op, context);
   // A self-verified completion may later receive the user's acceptance, whether or
   // not the same op also repeats the status.
@@ -700,8 +841,8 @@ function applyUpdate(state, op, context) {
     if (status === 'done') {
       if (task.status !== 'done') {
         if (task.deferred) fail(`task ${id}: resume the deferred task before completing it`);
-        assertNoUnfinishedChildren(state, task);
-        finishTask(state, task, context.now, confirmationBasisFor(task, op, context));
+        assertDeliveryComplete(state, task);
+        finishTask(state, task, context.now, confirmationBasisFor(state, task, op, context));
       }
     } else {
       // Starting execution needs approval; recording progress on work that is
@@ -738,6 +879,12 @@ function applyMove(state, op, context) {
       parentId = parent.id;
     }
   }
+  if (task.status !== 'done' && hasStarted(task)) {
+    fail(
+      `task ${id} is part of the current delivery and cannot be moved: finish it, defer it, or archive it first;`
+      + ' moving work out of a parent does not make it done',
+    );
+  }
   let order;
   if (op.order !== undefined) order = normalizeOrder(op.order);
   else if (parentId !== task.parentId) order = nextOrder(state, parentId, task.id);
@@ -748,14 +895,44 @@ function applyMove(state, op, context) {
   return { op: 'move', id };
 }
 
+/**
+ * Take a task out of the current delivery only with the user's own words.
+ *
+ * Work that is authorised and unfinished is part of what the parent is
+ * delivering: deferring or archiving it shrinks that delivery, so the agent
+ * cannot do it on its own. Ideas that never got approved, and finished work,
+ * are ordinary tidying.
+ * @returns the verified quote, or null when no decision was needed.
+ */
+function applyUserDecision(task, op, context, action) {
+  const basis = op.userBasis === undefined ? '' : singleLine(op.userBasis, 'userBasis', LIMITS.basis);
+  if (!needsUserDecision(task)) return null;
+  if (basis === '') {
+    fail(
+      `task ${task.id} is authorised and not finished, so ${action} changes the current delivery;`
+      + " pass userBasis quoting the user's decision, or finish it first",
+    );
+  }
+  const verdict = verifyQuote(context, basis);
+  if (!verdict.ok) {
+    fail(
+      `task ${task.id}: userBasis does not appear in a user message (${verdict.reason});`
+      + ' ask the user before taking this work out of the delivery',
+    );
+  }
+  return basis;
+}
+
 function applyDefer(state, op, context) {
   const id = requireTaskId(op);
   const task = findTask(state, id, { active: true });
+  applyUserDecision(task, op, context, 'defer it');
   const reason = optionalSingleLine(op.deferredReason, 'deferredReason', LIMITS.shortText);
   const condition = optionalSingleLine(op.resumeCondition, 'resumeCondition', LIMITS.shortText);
   if (op.deferredReason !== undefined) task.deferredReason = reason === '' ? null : reason;
   if (op.resumeCondition !== undefined) task.resumeCondition = condition === '' ? null : condition;
   task.deferred = true;
+  if (op.userBasis !== undefined) task.deferredBasis = singleLine(op.userBasis, 'userBasis', LIMITS.basis);
   task.owner = null;
   removeFromFocus(state, task.id);
   touch(state, task, context.now);
@@ -775,6 +952,7 @@ function applyResume(state, op, context) {
 function applyArchive(state, op, context) {
   const id = requireTaskId(op);
   const task = findTask(state, id, { active: true });
+  const basis = applyUserDecision(task, op, context, 'archive it');
   const reason = singleLine(op.reason, 'reason', LIMITS.reason, { required: true });
   const batch = `${task.id}@${context.now}`;
   const stack = [task.id];
@@ -788,8 +966,9 @@ function applyArchive(state, op, context) {
     current.archiveReason = reason;
     current.archivedAt = context.now;
     current.archiveBatch = batch;
+    current.archiveBasis = basis;
     current.archiveHistory = Array.isArray(current.archiveHistory) ? current.archiveHistory : [];
-    current.archiveHistory.push({ at: context.now, reason });
+    current.archiveHistory.push(basis === null ? { at: context.now, reason } : { at: context.now, reason, basis });
     current.archiveHistory = current.archiveHistory.slice(-20);
     current.owner = null;
     removeFromFocus(state, current.id);
@@ -917,9 +1096,9 @@ function applyComplete(state, op, context) {
     return { op: 'complete', id };
   }
   if (task.deferred) fail(`task ${id}: resume the deferred task before completing it`);
-  assertNoUnfinishedChildren(state, task);
+  assertDeliveryComplete(state, task);
   if (op.result !== undefined) task.result = multiLine(op.result, 'result', LIMITS.result);
-  finishTask(state, task, context.now, confirmationBasisFor(task, op, context));
+  finishTask(state, task, context.now, confirmationBasisFor(state, task, op, context));
   return { op: 'complete', id };
 }
 
@@ -1014,12 +1193,14 @@ export function readSnapshot(envelope, worklineId, details = false, options = {}
   const goal = workline.goal === null || workline.goal === undefined
     ? null
     : { original: workline.goal.original, current: workline.goal.current };
+  const settled = settledLookup(envelope.tasks);
   const tasks = orderedTree(envelope.tasks).map(({ task, depth }) => {
     const row = {
       id: task.id,
       parentId: task.parentId,
       title: task.title,
       status: task.status,
+      settled: settled(task.id),
       approval: approvalOf(task),
       requiresUserAcceptance: requiresAcceptanceOf(task),
       deferred: task.deferred === true,
@@ -1117,6 +1298,7 @@ export function httpSnapshot(envelope, worklineId, options = {}) {
         next: entry.next,
       })),
     };
+  const settled = settledLookup(tasks);
   const active = orderedTree(tasks).map(({ task }) => ({
     id: task.id,
     parentId: task.parentId,
@@ -1124,6 +1306,7 @@ export function httpSnapshot(envelope, worklineId, options = {}) {
     title: task.title,
     summary: task.summary,
     status: task.status,
+    settled: settled(task.id),
     executionApproval: approvalOf(task),
     approvalBasis: typeof task.approvalBasis === 'string' && task.approvalBasis !== '' ? task.approvalBasis : null,
     approvalAt: typeof task.approvalAt === 'number' ? task.approvalAt : null,

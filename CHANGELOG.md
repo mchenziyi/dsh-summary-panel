@@ -1,5 +1,42 @@
 # 变更记录
 
+## 0.3.7 — 2026-11-03
+
+任务层级归属、父子完成规则与验收边界（含 `task_tree_read` 输出契约修复）：
+
+**新任务先判归属**
+
+- 提示词与工具描述要求创建任务前先判断归属：已有功能的下一步、已有任务的 Bug、已批准需求的实施步骤、已讨论想法的后续，都挂到对应父任务下；只有确实无人拥有的新方向才建根。不得编造父节点、不得为空凑层级，也不得把无关工作硬塞进去。
+- 归属不改变权限与验收：新范围即使挂在已批准父任务下也必须显式 `pending`；用户会单独验收的子任务要显式 `requiresUserAcceptance: true`，"单独验收"不是把工作提到根层的理由。
+- 正常维护不使用 `move`；历史不为了好看而重排。
+
+**父任务完成 = 整棵活动子树完成**
+
+- 只有 `done` 与已归档的任务不阻塞；`pending`、`in_progress`、`blocked` 与 `deferred` 都阻塞，与授权状态无关；多层子孙同样生效；`complete` 与 `update status: done` 走同一校验。
+- 已完成父任务新增未完成子任务时，"当前完成状态"重新变为未完成（派生 `settled: false`），但 `completion`、`confirmationBasis`、`completedAt` 等历史验收记录原样保留；子任务完成或归档后自动恢复 `settled: true`，不需要第二次验收。
+- `task_tree_read` 与面板接口都返回 `settled`；面板把 `settled: false` 的已完成任务按未完成渲染，详情显示"仍有未完成子任务"。
+- 早期候选版曾按"本次交付范围"判定（未授权想法与暂缓不阻塞），最终统一为上述规则；该中间规则未发布。
+
+**生命周期边界**
+
+- 讨论不等于开工：`hasStarted()` 只认 `in_progress`/`blocked`、被占用（claim）与完成记录；已授权任务上的记录仍计入。
+- 想法转开发时，`update` 首次批准必须同时给出 `requiresUserAcceptance`（true = 有独立验收的交付，false = 普通实施步骤），否则拒绝；任务沿用原 id、原讨论记录与原归属。
+- 已授权且未完成的工作要暂缓或归档，必须带 `userBasis`（可在真实用户消息里核对的引用），依据记入 `deferredBasis`、`archiveBasis` 与归档历史；未开工的想法与已完成的工作仍可自由整理。
+- 防绕过：已开始的任务不能把 `executionApproval` 降回 `pending`，也不能被 `move` 移出父任务。
+
+**验收绑定到任务**
+
+- 一句话只能关闭一个任务：同一句引用不能被复用到另一个任务（含父子之间）。用户一句话验收多个任务时，按任务分别引用对应片段；无法判断指向时要求用户确认。
+
+**`task_tree_read` 输出契约**
+
+- 修复工具输出校验失败：`settled` 已由 `readSnapshot` 输出但未在 `READ_OUTPUT` 中声明（schema 禁止未声明属性），宿主报 `"value.tasks[0].settled" is not a declared property`。现已在 schema 中声明并列入 required，工具描述同步，语义不变。
+
+**测试**
+
+- 新增：归属规则断言、子树完成与 `settled` 派生、已完成父任务新增子任务、归档/恢复重算、验收引用绑定与复用拒绝、讨论/想法/暂缓/归档三类边界、按实际注册 schema 校验 `task_tree_read`/`task_tree_write` 全部输出（普通 / details / includeArchived / 空工作线 / 旧记录）。
+- 全部既有用例保留并通过；真实 DSH 会话与桌面人工验收覆盖归属、阻塞、`settled` 与 Schema。
+
 ## 0.3.6 — 2026-11-02
 
 Focus 自动维护与跨 Session 数据隔离（不改变宿主持久化与任务树状态机）：
