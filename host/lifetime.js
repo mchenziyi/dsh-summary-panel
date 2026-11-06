@@ -122,7 +122,14 @@ export function bindWorkerLifetime(workline, {
  * End one Worker's lifetime when its execution ends. The record is kept, so
  * the ended instance can never claim again; ending it twice is idempotent.
  * The Lead is never registered, so the Lead is never ended.
- * @returns the ended record, or undefined when the session has none.
+ *
+ * The `executionId` is a guard (design v8 I17): when the record already names a
+ * different execution, this end belongs to an OLDER round and must not touch
+ * the current one. Reconciliation after a restart relies on that guard, so a
+ * stale decision can never clear a newer binding.
+ *
+ * @returns the ended record, or undefined when the session has none or the
+ *   record belongs to another round.
  */
 export function endWorkerLifetime(workline, {
   sessionId, leadSessionId, reason, executionId, now,
@@ -132,10 +139,12 @@ export function endWorkerLifetime(workline, {
   const worker = normalizeWorker(workline.workers[sessionId]);
   if (worker === undefined) return undefined;
   if (worker.state === 'ended') return worker;
+  const round = textOrNull(executionId);
+  if (worker.executionId !== null && worker.executionId !== round) return undefined;
   const ended = {
     ...worker,
     state: 'ended',
-    executionId: textOrNull(executionId) ?? worker.executionId,
+    executionId: round ?? worker.executionId,
     updatedAt: now,
     endedAt: now,
     endReason: textOrNull(reason),

@@ -17,48 +17,12 @@
  *
  * A claim that cannot be proven (another dispatch target, a stale revision, an
  * existing execution, a vanished tree task) binds nothing. That is fail-closed:
- * the Worker keeps no class A permission. Evidence reconciliation is a later
- * slice; this one never guesses an executor.
+ * the Worker keeps no class A permission, and the contradiction is adjudicated
+ * by `host/reconcile.js` — this module never guesses an executor.
  */
 
 import { bindTeamClaim } from './model.js';
-
-/** The composed Agent Team service, when this profile has one. */
-function teamServiceOf(ctx) {
-  try {
-    const agentTeams = ctx.get('agentTeams');
-    return agentTeams !== null && typeof agentTeams === 'object' ? agentTeams : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** The roster-resolved membership of one live Agent; never model input. */
-function membershipOf(agentTeams, agent) {
-  if (agent === null || typeof agent !== 'object') return undefined;
-  let membership;
-  if (typeof agentTeams.tryMembership === 'function') {
-    try {
-      membership = agentTeams.tryMembership(agent);
-    } catch {
-      membership = undefined;
-    }
-  }
-  if (membership === undefined && typeof agentTeams.membership === 'function') {
-    try {
-      membership = agentTeams.membership(agent);
-    } catch {
-      membership = undefined;
-    }
-  }
-  if (membership === null || typeof membership !== 'object') return undefined;
-  if (typeof membership.id !== 'string' || membership.id === '') return undefined;
-  if (typeof membership.role !== 'string') return undefined;
-  // `membership.id` is the Team identity (the Lead's id); the real teammate
-  // session id is the live Agent's own id.
-  if (typeof agent.id !== 'string' || agent.id === '') return undefined;
-  return { ...membership, sessionId: agent.id };
-}
+import { teamMembershipOf, teamServiceOf } from './roster.js';
 
 /**
  * The claim a finished `team_task_update` call actually committed, or undefined.
@@ -88,7 +52,7 @@ function committedClaim(exec, result) {
 async function bindClaim({ agentTeams, store, exec, result, logger }) {
   const claim = committedClaim(exec, result);
   if (claim === undefined) return false;
-  const membership = membershipOf(agentTeams, exec.agent);
+  const membership = teamMembershipOf(agentTeams, exec.agent);
   if (membership === undefined || membership.role !== 'teammate') return false;
   const rootId = membership.root !== null && typeof membership.root === 'object'
     && typeof membership.root.id === 'string'
@@ -118,13 +82,16 @@ async function bindClaim({ agentTeams, store, exec, result, logger }) {
       sessionId: membership.sessionId,
       member: membership.name,
       revision: claim.revision,
+      // The Registry call id ties this ledger row to the claim-intent journal
+      // entry written before the board call, so a restart can settle it.
+      requestId: typeof exec.callId === 'string' && exec.callId !== '' ? exec.callId : undefined,
       now: Date.now(),
     }));
     return true;
   } catch (error) {
     // The board already committed, so the claim is visible but unproven here.
     // Fail closed (no execution, no class A permission) and leave the conflict
-    // for the reconciliation slice; never invent an executor.
+    // for the reconciliation pass; never invent an executor.
     logger.warn(`[summary-panel] team claim on ${claim.teamTaskId} committed on the board but was not bound: ${String(error?.message ?? error)}`);
     return false;
   }

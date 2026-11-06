@@ -23,8 +23,9 @@
  *   A teammate gets class A only after the Lead dispatched a tree task to its
  *   roster name and the Worker's own Team-board claim bound an execution. The
  *   guard therefore also pre-checks two class B calls: `team_task_update
- *   {action:"claim"}` must match the dispatch for the roster-resolved caller,
- *   and `reassign` is refused outright because assignment is not a binding.
+ *   {action:"claim"}` must match the dispatch for the roster-resolved caller
+ *   and must not target a task stopped by an unresolved evidence conflict, and
+ *   `reassign` is refused outright because assignment is not a binding.
  *
  * The classification is **default-deny**: only tools that provably read (C) or
  * provably manage tasks/executions (B) are allow-listed; anything else —
@@ -50,6 +51,7 @@
 
 import { workerLifetimeDenial, workerLifetimeOf } from './lifetime.js';
 import { seatDenialReason, seatRequestFor } from './reservation.js';
+import { teamMembershipOf, teamServiceOf } from './roster.js';
 
 const MAX_WORKLINE_DEPTH = 50;
 
@@ -147,60 +149,6 @@ function holdsExecution(tasks, sessionId) {
 }
 
 /**
- * Team mode is decided by composition: the Agent Team service exists in this
- * plugin context. Nothing the model says can turn it off, and a profile without
- * the service keeps exactly its standard-mode behaviour.
- */
-function teamServiceOf(ctx) {
-  try {
-    const agentTeams = ctx.get('agentTeams');
-    return agentTeams !== null && typeof agentTeams === 'object' ? agentTeams : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * The caller's Team membership, resolved from the live Agent by the Team roster
- * itself — never from model input. `tryMembership` is the non-throwing probe;
- * `membership` is the fallback for a service that only exposes the strict one.
- * The roster's `id` is the Team identity (the Lead's id); `sessionId` here is
- * the live Agent's own id, which is the teammate's real session id and what the
- * execution ledger records. `name` is the model-facing Team name.
- * @returns `{ root, id, role, name, sessionId }`, or undefined when the caller
- *   is not a Team member (for example a provider-owned subagent in a team
- *   profile).
- */
-function teamMembershipOf(agentTeams, agent) {
-  if (agent === null || typeof agent !== 'object') return undefined;
-  let membership;
-  let resolved = false;
-  if (typeof agentTeams.tryMembership === 'function') {
-    try {
-      membership = agentTeams.tryMembership(agent);
-      resolved = true;
-    } catch {
-      /* fall through to the strict resolver */
-    }
-  }
-  if (!resolved && typeof agentTeams.membership === 'function') {
-    try {
-      membership = agentTeams.membership(agent);
-    } catch {
-      /* an unresolved identity is not a proven member */
-    }
-  }
-  if (membership === null || typeof membership !== 'object') return undefined;
-  if (typeof membership.role !== 'string') return undefined;
-  if (typeof membership.id !== 'string' || membership.id === '') return undefined;
-  // The roster's `id` is the Team identity (the Lead's id); the teammate's real
-  // session id is the live Agent's id. Only the latter may appear in the
-  // execution ledger.
-  if (typeof agent.id !== 'string' || agent.id === '') return undefined;
-  return { ...membership, sessionId: agent.id };
-}
-
-/**
  * The model-readable team-mode denial. It says who the caller is, which tools
  * are refused, and what it should do instead — coordination stays open.
  */
@@ -251,10 +199,11 @@ export function leadClaimDenialReason({ sessionId }) {
 }
 
 /**
- * Pre-dispatch checks for a Team-board claim: the caller's roster identity must
- * match the tree dispatch for that board task, and neither the task nor the
- * Worker may already hold an execution. All of it reads Host facts (roster +
- * synced tree snapshot), never the tool arguments' identity fields.
+ * Pre-dispatch checks for a Team-board claim: the task must not be stopped by
+ * an unresolved conflict, the caller's roster identity must match the tree
+ * dispatch for that board task, and neither the task nor the Worker may already
+ * hold an execution. All of it reads Host facts (roster + synced tree
+ * snapshot), never the tool arguments' identity fields.
  */
 function teamClaimReason({ membership, store, exec }) {
   const taskId = exec?.arguments?.task_id;
@@ -284,6 +233,20 @@ function teamClaimReason({ membership, store, exec }) {
     && candidate.archived !== true);
   if (task === undefined) {
     return teamClaimDenialReason({ taskId, sessionId: caller, detail: 'no tree task is dispatched for that board task' });
+  }
+  // A conflict is a workline-level record (design I12): when the Host cannot
+  // prove who holds this task, it stops the task instead of guessing. This runs
+  // before the dispatch check so every claimant is told the same reason.
+  const stopped = (Array.isArray(tree.conflicts) ? tree.conflicts : []).find((candidate) => candidate !== null
+    && typeof candidate === 'object'
+    && candidate.resolvedAt === null
+    && (candidate.taskId === task.id || candidate.scope === 'workline'));
+  if (stopped !== undefined) {
+    return teamClaimDenialReason({
+      taskId,
+      sessionId: caller,
+      detail: `tree task ${task.id} is stopped by conflict ${stopped.id} (${stopped.kind}); its evidence is contradictory, so no claim may start on it until a human resolves the conflict`,
+    });
   }
   const dispatchedTo = task.dispatch !== null && typeof task.dispatch === 'object' && typeof task.dispatch.member === 'string'
     ? task.dispatch.member
