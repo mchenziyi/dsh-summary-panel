@@ -5,7 +5,7 @@ throwaway profile, exports what the run actually produced, asserts the
 scenario, and cleans up:
 
 ```sh
-npm run test:e2e                 # the baseline scenario
+npm run test:e2e                 # every scenario (18 today)
 npm run test:e2e -- --list       # list scenarios
 npm run test:e2e -- tree-init    # any scenario by name
 npm run test:e2e -- --keep       # keep the temporary directory
@@ -14,7 +14,7 @@ npm run test:e2e -- --out DIR    # copy the artefacts to DIR
 
 ## What it observes
 
-Every scenario exports three artefacts under `<temp>/out` (and prints them):
+Every scenario exports the artefacts below under `<temp>/out` (and prints them):
 
 | artefact | source | why |
 | --- | --- | --- |
@@ -99,6 +99,32 @@ A passing run removes it unless `--keep` or `--out` was passed.
   `orphaned`/`executorLost` without being released, refuses another worker's
   write, force-releases the lost execution after interrupting and confirming it,
   and lets a third Worker claim the task with a third execution id.
+
+### Acceptance scenarios (ticket #11)
+
+These three are the end-to-end acceptance runs of the execution-scheduling
+feature. Each one drives the product the way a user would and asserts only what
+the user can see: what every tool call returned (the transcript follows every
+session), the task tree persisted on disk, and the live Team board. They do not
+assert internal function calls, so a different implementation that keeps the same
+user-visible promises still passes.
+
+- `acceptance-serial` — standard mode. One delivery task with three sub-tasks:
+  the Lead starts them one at a time, the next claim is refused while the
+  previous sub-task still holds the single execution seat, every checkpoint shows
+  at most one task in progress, and the tree ends with three ended executions
+  (one per sub-task) plus the delivery waiting for the user.
+- `acceptance-parallel` — team mode. Three independent sub-tasks dispatched to
+  three real Workers: one `list_agents` observation, taken from the Lead while it
+  coordinates, shows all three Workers running at the same instant; each Worker
+  binds its own task by claiming its own board task (three concurrent active
+  executions), and the Lead's own write is refused.
+- `acceptance-retry` — abnormal retry. A Worker is trapped in a long turn; the
+  Lead's force release is refused while it still runs, then (interrupted and
+  confirmed stopped) force-terminates it. The old instance's next write is
+  refused and leaves no file, and a NEW Worker claims the same task at the
+  released board revision, receiving a NEW execution id while the old ended
+  record is kept.
 
 ## How the profile is built
 
