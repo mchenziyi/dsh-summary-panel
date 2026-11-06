@@ -14,9 +14,9 @@
  * cannot make an ended Worker claimable again, and a ledger rebuild starting
  * from nothing cannot resurrect it by forgetting a mutable flag.
  *
- * `state` moves `created` -> `bound` -> `ended`. This slice registers the
- * record when the execution is bound (a spawn-time `created` record is not
- * needed for the rule); an unknown persisted state fails closed as `ended`.
+ * `state` moves `bound` -> `ended`. The record is written when the execution
+ * is bound, so there is no earlier state to keep; an unknown persisted state
+ * fails closed as `ended`.
  *
  * This module is pure: no I/O, no dependencies on the tree model.
  */
@@ -39,7 +39,7 @@ function numberOr(value, fallback) {
  */
 export function normalizeWorker(entry) {
   if (entry === null || typeof entry !== 'object') return undefined;
-  const state = entry.state === 'created' || entry.state === 'bound' ? entry.state : 'ended';
+  const state = entry.state === 'bound' ? 'bound' : 'ended';
   return {
     kind: entry.kind === 'teammate' ? 'teammate' : (entry.kind === 'subagent' ? 'subagent' : null),
     name: textOrNull(entry.name),

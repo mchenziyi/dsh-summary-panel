@@ -51,22 +51,14 @@
  * restart finds nothing left to converge.
  */
 
+import { callerOf } from './caller.js';
+import { appendIntent, readJournal, unsettledIntents } from './journal.js';
 import {
   bindTeamClaim, clearTaskExecution, cloneEnvelope, conflictStopReason, endExecutionRecord,
   recordConflict, unresolvedConflictFor,
 } from './model.js';
-import { appendIntent, readJournal, unsettledIntents } from './journal.js';
 import { teamMembershipOf, teamServiceOf } from './roster.js';
 import { workerLifetimeOf } from './lifetime.js';
-
-/** The calling session, resolved from the live agent — never from model input. */
-function callerOf(exec) {
-  const agent = exec !== null && typeof exec === 'object' ? exec.agent : undefined;
-  const header = agent !== null && typeof agent === 'object' ? agent.session?.header : undefined;
-  if (typeof header?.id === 'string' && header.id !== '') return { sessionId: header.id, header };
-  if (typeof agent?.id === 'string' && agent.id !== '') return { sessionId: agent.id, header };
-  return { sessionId: undefined, header };
-}
 
 /** Whether a task may no longer hold a non-terminal execution (design I8). */
 function isClosed(task) {
@@ -120,8 +112,8 @@ export function convergeWorkline(envelope, facts) {
   // pure pass runs. A missing entry means "not resolved this time", so the
   // execution keeps the state it had. A worker whose persisted session still
   // resolves stays `active` even when it is not live: the same session can
-  // resume it, and marking it cold would silently strip a restartable worker.
-  // Only a session nothing can resolve becomes `orphaned` (executor lost).
+  // resume it, and marking it orphaned would silently strip a restartable
+  // worker. Only a session nothing can resolve becomes `orphaned` (executor lost).
   const sessionStates = facts?.sessionStates !== null && typeof facts?.sessionStates === 'object'
     ? facts.sessionStates
     : {};

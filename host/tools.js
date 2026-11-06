@@ -7,13 +7,16 @@
  * validation therefore lives in `host/model.js`, which throws readable errors.
  *
  * Both tools locate the caller's workline automatically: the chain of
- * `SessionHeader.parentSession` up to the root session. Writes are refused for
- * subagent sessions and for Agent Team teammates (only the lead maintains the
- * tree and dispatches team work); reads are unrestricted.
+ * `SessionHeader.parentSession` up to the root session. `task_tree_read` is
+ * unrestricted. `task_tree_write` is maintained by the lead: a standard-mode
+ * subagent may claim and release only its own assigned task, and an Agent Team
+ * teammate never writes the tree at all (the lead dispatches, the Worker's own
+ * board claim binds the execution).
  */
 
+import { callerOf } from './caller.js';
 import {
-  EXECUTION_APPROVALS, TASK_STATUSES, applyOps, forceReleaseReadiness, readSnapshot,
+  CONFLICT_KINDS, EXECUTION_APPROVALS, TASK_STATUSES, applyOps, forceReleaseReadiness, readSnapshot,
 } from './model.js';
 import { MAX_BASIS, MIN_QUOTE, verifyUserQuote } from './evidence.js';
 
@@ -59,7 +62,7 @@ const WRITE_PARAMETERS = Object.freeze({
         properties: {
           op: {
             type: 'string',
-            enum: ['init', 'reviseGoal', 'create', 'update', 'move', 'defer', 'resume', 'archive', 'restore', 'focus', 'assign', 'dispatch', 'claim', 'release', 'complete'],
+            enum: ['init', 'reviseGoal', 'create', 'update', 'move', 'defer', 'resume', 'archive', 'restore', 'focus', 'assign', 'dispatch', 'claim', 'release', 'complete', 'resolveConflict'],
             description: 'The operation to apply.',
           },
           id: { type: 'string', description: 'Target task id, e.g. "t3".' },
@@ -79,6 +82,10 @@ const WRITE_PARAMETERS = Object.freeze({
           teamTaskId: {
             type: 'string',
             description: 'For op "dispatch" (team mode, lead only): the Team-board task id the dispatched Worker must claim (for example "task-3"). The Host binds the execution only when that Worker\'s own board claim succeeds.',
+          },
+          conflictId: {
+            type: 'string',
+            description: 'For op "resolveConflict" (Lead only): the conflict id from task_tree_read (for example "cf-1"). The resolution records who decided, when, and why, and lets the task be worked again; it never picks an executor or revives an execution.',
           },
           title: { type: 'string', description: 'Short task name, 1..40 characters, single line.' },
           summary: { type: 'string', description: 'One-line hover summary, at most 240 characters.' },
@@ -140,7 +147,7 @@ const WRITE_PARAMETERS = Object.freeze({
 const READ_OUTPUT = Object.freeze({
   type: 'object',
   additionalProperties: false,
-  required: ['worklineId', 'goal', 'focus', 'tasks'],
+  required: ['worklineId', 'goal', 'focus', 'conflicts', 'tasks'],
   properties: {
     worklineId: { type: 'string' },
     goal: {
@@ -182,6 +189,26 @@ const READ_OUTPUT = Object.freeze({
       },
     },
     archivedTotal: { type: 'integer' },
+    conflicts: {
+      type: 'array',
+      description: 'Every evidence contradiction recorded on this workline, oldest first. An entry with resolvedAt: null stops claims for its task (or the whole workline when scope is "workline"); only the Lead resolves one, with task_tree_write {"op":"resolveConflict","conflictId":"<id>","reason":"<why>"}.',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'scope', 'taskId', 'kind', 'evidence', 'createdAt', 'resolvedAt', 'resolvedBy', 'resolution'],
+        properties: {
+          id: { type: 'string' },
+          scope: { type: 'string', enum: ['task', 'workline'] },
+          taskId: NULLABLE_STRING,
+          kind: { type: 'string', enum: [...CONFLICT_KINDS] },
+          evidence: { type: 'object' },
+          createdAt: { type: 'number' },
+          resolvedAt: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+          resolvedBy: NULLABLE_STRING,
+          resolution: NULLABLE_STRING,
+        },
+      },
+    },
     tasks: {
       type: 'array',
       items: {
@@ -225,10 +252,10 @@ const READ_OUTPUT = Object.freeze({
           },
           executionState: {
             oneOf: [
-              { type: 'string', enum: ['active', 'cold', 'orphaned', 'ended', 'missing'] },
+              { type: 'string', enum: ['active', 'orphaned', 'ended', 'missing'] },
               { type: 'null' },
             ],
-            description: 'The lifecycle state behind the task\'s claim stamp: active grants class A permission; cold (session not live) and orphaned (executor lost) grant none; missing means the stamp has no ledger record; null means the task holds no execution.',
+            description: 'The lifecycle state behind the task\'s claim stamp: active grants class A permission; orphaned (executor lost) and ended grant none; missing means the stamp has no ledger record; null means the task holds no execution.',
           },
           depth: { type: 'integer' },
           summary: { type: 'string' },
@@ -260,6 +287,7 @@ const WRITE_OUTPUT = Object.freeze({
           op: { type: 'string' },
           id: { type: 'string' },
           executionId: { type: 'string' },
+          conflictId: { type: 'string' },
         },
       },
     },
@@ -270,6 +298,7 @@ const READ_DESCRIPTION = [
   'Read the workline task tree: the goal (original and current), the current focus, and every active task in tree order with its depth, status, execution approval, whether it needs the user\'s acceptance, whether it is settled (done with nothing unfinished below it), and who holds its execution (the executor name), if anyone. `executorLost` marks a task whose executor session can no longer be resolved: that execution grants no workspace permission, is never silently released, and needs a Lead force release after interrupt_agent and confirmation the worker stopped.',
   'Call this at the start of a session or branch, before resuming interrupted work, before planning a large new chunk, and whenever you need to confirm the current goal, focus, approval, or task state; do not rebuild a tree that already exists.',
   'Pass details: true to also get each task summary, progress notes, result, completion kind, and approval basis. Archived tasks are omitted by default; pass includeArchived: true when you need to check what was cancelled before (reason, time, original location, progress), for example before proposing a direction the user may already have rejected.',
+  '`conflicts` lists the evidence contradictions that stop this workline: an unresolved entry (resolvedAt: null) refuses new claims on its task, or on every task when its scope is "workline". The Host never guesses who holds a stopped task. Only the Lead records the human decision that ends it: task_tree_write {"op":"resolveConflict","conflictId":"<id>","reason":"<why>"} stores who decided, when, and why, and the task can be worked again after that.',
 ].join(' ');
 
 const WRITE_DESCRIPTION = [
@@ -287,21 +316,9 @@ const WRITE_DESCRIPTION = [
   'Only the lead maintains the tree. In standard mode the whole workline shares ONE execution seat: while anyone holds it, every other claim is refused. To hand a task to a subagent, release it, assign the subagent session id you read from the spawn result, let the subagent claim and release it, then assign "lead" and claim again; the new claim gets a NEW execution id, and an ended execution is never revived. Assignment is routing, not a claim: it grants nothing by itself. A subagent may call claim and release only, and only for the task assigned to it. In an Agent Team the lead only coordinates: the host refuses it every class A tool (writing files, edit, shell, terminal, worktree, workflow, ralph, subagent spawn) even while a task execution is held, so spawn a teammate with spawn_teammate, send it the work, and keep the tree and the Team board to yourself. Team mode is claim-first: the lead creates the Team-board task and the tree task, associates them with task_tree_write {"op":"dispatch","id":"<task>","member":"<worker-name>","teamTaskId":"<task-N>"}, spawns that named teammate, and the Worker claims the board task itself with team_task_update {action:"claim"} — only that claim creates the execution, resolves the Worker identity through the Team roster, and turns the tree task in_progress with its executor. There is no assign and no reassign in team mode: the Host refuses team_task_update reassign, and the lead never claims a team task in the tree.',
   'init runs once per workline and writes the immutable original goal plus the outline. When the user decides to change the project direction, call reviseGoal immediately with a reason quoting their decision — it does not need implementation to start. When you merely propose a direction, discuss it first.',
   'defer keeps the status and progress of a task that may come back later and removes it from the focus; it cannot be focused or claimed until resumed. archive means the task will not be done: it and its whole subtree leave the active tree with a reason and stay visible in the archive. A pending "not now" from the user is respected even for approved tasks.',
+  'A conflict (see task_tree_read `conflicts`) stops claims on its task until a human decides. The Lead records that decision with {"op":"resolveConflict","conflictId":"<id>","reason":"<why>"}: it stores the resolver, the time, and the reason, and never picks an executor or revives an execution. A defer or archive that would end another session\'s execution is refused with the same answer: interrupt the worker, then force-release it.',
   'Every batch is validated first and applied atomically; on failure nothing is written.',
 ].join(' ');
-
-/** Resolve the calling session and its header from a tool execution. */
-function callerOf(exec) {
-  const session = exec !== null && typeof exec === 'object' ? exec.agent?.session : undefined;
-  const header = session !== null && typeof session === 'object' ? session.header : undefined;
-  const agentId = exec !== null && typeof exec === 'object' ? exec.agent?.id : undefined;
-  const sessionId = typeof header?.id === 'string' && header.id !== ''
-    ? header.id
-    : (typeof session?.id === 'string' && session.id !== ''
-      ? session.id
-      : (typeof agentId === 'string' && agentId !== '' ? agentId : undefined));
-  return { sessionId, header };
-}
 
 /**
  * Decide what the caller may write.

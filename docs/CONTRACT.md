@@ -44,6 +44,10 @@ WorklineRecord = {
   outline: string            // 目标大纲，自由文本，可空
   focus: string[]            // 当前执行焦点的 taskId，可多个，按设置顺序
   nextSeq: number            // 生成 t1/t2/... 用
+  nextExecution: number      // 生成 ex-1/ex-2… 用，单调、不重用
+  executions: ExecutionRecord[]              // 执行账本，保留最近 500 条
+  workers: Record<string, WorkerLifetime>    // Worker 终身绑定；Lead 不登记
+  conflicts: ConflictRecord[]                // 证据冲突，保留最近 50 条
 }
 
 TaskRecord = {
@@ -64,13 +68,71 @@ TaskRecord = {
   result?: string            // 完成结果，<= 500 字符
   blocker?: { reason: string, unblock: string } | null
   assignee?: 'lead' | string | null // 标准模式：本任务被分配给哪个会话（仅路由）
-  owner?: { sessionId: string, executionId: string, since: number } | null   // 当前执行占用
+  owner?: { sessionId: string, executionId?: string, member?: string, since: number } | null   // 当前执行占用（只是索引，账本是事实）
+  executionApproval: 'approved' | 'pending'   // 执行授权，与状态独立
+  approvalBasis?: string | null     // 授权的用户原话
+  requiresUserAcceptance: boolean   // 顶层任务默认 true，子步骤默认 false
+  acceptanceBasis?: string | null   // 豁免验收时的用户原话
   completion?: 'user-confirmed' | 'self'
+  completionBasis?: string | null
   completedAt?: number
+  teamTaskId?: string | null        // 团队模式下对应的 Team-board 任务
+  dispatch?: { member: string, at: number } | null   // 团队模式派工（只是路由）
+  archiveBatch?: string | null
+  archiveBasis?: string | null
+  archiveHistory: { at: number, reason: string, basis?: string }[]
   createdAt: number
   updatedAt: number
 }
 ```
+
+```ts
+ExecutionRecord = {
+  executionId: string         // 'ex-1'、'ex-2'…，单调、不重用
+  taskId: string
+  sessionId: string           // Host 解析出的执行者会话
+  attempt: number
+  mode: 'standard' | 'team'
+  teamTaskId?: string | null
+  member?: string | null      // 团队模式的成员名
+  claimRevision?: number | null
+  requestId?: string | null   // claim 的 Registry callId（journal 对账）
+  rebuiltFrom?: string | null // 仅重启后由 journal 重建时写入
+  state: 'active' | 'orphaned' | 'ended'   // 只有 active 授予 A 类权限
+  interruptedAt?: number | null            // 观测到的 interrupt_agent 时刻
+  note?: string | null
+  startedAt: number
+  updatedAt: number
+  endedAt?: number | null
+  endReason?: string | null   // completed / released / deferred / archived / force-terminated / reconciled
+}
+
+WorkerLifetime = {            // keyed by sessionId；一个 Worker 实例一辈子只持有一个任务
+  kind: 'teammate' | 'subagent' | null
+  name?: string | null
+  state: 'bound' | 'ended'    // 无法识别的持久状态按 ended 处理（fail closed）
+  boundTaskId?: string | null
+  executionId?: string | null
+  createdAt: number
+  updatedAt: number
+  endedAt?: number | null
+  endReason?: string | null
+}
+
+ConflictRecord = {
+  id: string                  // 'cf-1'、'cf-2'…
+  scope: 'task' | 'workline'  // workline 级冲突停住整条工作线
+  taskId: string | null       // workline 级为 null
+  kind: 'unproven-claim' | 'claim-without-record' | 'ended-but-owned' | 'seat-ambiguous'
+  evidence: object            // 观测到的证据，有界
+  createdAt: number
+  resolvedAt: number | null   // 未解决时停住该任务的 claim
+  resolvedBy: string | null   // 做出决定的 Lead 会话
+  resolution: string | null   // 决定的原因
+}
+```
+
+未知字段在读取时忽略；未知的执行/Worker 状态按 fail-closed 方向归一化（orphaned / ended）。
 
 ## 2. 不变量（Host 端强制，客户端只展示）
 
@@ -81,9 +143,12 @@ TaskRecord = {
 5. `deferred` 是标记而非状态：不改 `status`、不重置进度；暂缓任务不能有焦点、不能被领取。
 6. `archived` 任务从活跃树移除，其整棵子树一并归档；已归档任务仍有子任务未归档视为数据错误（应用归档时递归）。
 7. `focus` 中的任务必须未归档、未暂缓；设置焦点时若状态为 `pending` 则改为 `in_progress`；移除焦点不改变状态。
-8. 领取（claim）要求任务未归档、未暂缓、状态为 `in_progress`、已执行授权；标准模式下整条工作线只有一个执行位，任何非终态执行存在时其他认领一律拒绝（含 Lead 换任务、子代理认领、已死会话占位）；只有持位者能 `release`/`complete` 自己的执行。分配（assign）不是认领，不产生执行。
+8. 领取（claim）要求任务未归档、未暂缓、状态为 `in_progress`、已执行授权，且不被未解决的冲突停住；标准模式下整条工作线只有一个执行位，任何非终态执行存在时其他认领一律拒绝（含 Lead 换任务、子代理认领、已死会话占位）；只有持位者能 `release`/`complete`/`defer`/`archive` 自己的执行——替别人结束执行必须先 `interrupt_agent` 再 `release {force:true}`，不能借 defer/archive 绕过。分配（assign）和派工（dispatch）不是认领，不产生执行。
 9. 目标：`original` 只能写一次；`reviseGoal` 必须带 `reason`，追写 `changes`，并把 `current` 改为新值（调用方已向用户确认）。
-10. 工具写操作：调用者 `header.origin === 'subagent'` 时拒绝（团队 Teammate 也是 subagent）；若 `agentTeams.membership(agent).role === 'teammate'` 也拒绝。读操作不限制。
+10. 工具写操作：`task_tree_write` 由 Lead 维护整棵树。标准模式下 `header.origin === 'subagent'` 的子会话只允许 `claim` / `release`（且只能领取分配给自己的任务），其他 op 一律拒绝；团队模式（`agentTeams.membership(agent).role === 'teammate'`，或非标准模式的 subagent）完全不允许写树：Lead 用 `dispatch` 派工，Worker 用自己的 `team_task_update {action:"claim"}` 绑定执行。读操作不限制。
+11. 执行授权（`executionApproval`）与状态独立：`pending` 的任务可以讨论、规划，但不能变成 `in_progress` 或被领取；`approved` 必须有用户的真实原话（`approvalBasis`，或从已批准的直接父任务继承）。执行中（已有 owner 或曾开始）的任务不能把授权改回 `pending`。
+12. 执行生命周期只有 `active` / `orphaned` / `ended` 三态，只有 `active` 授予 A 类工具权限；声明了却无法识别的状态按 `orphaned` 处理（fail closed，不授予权限、不静默释放）。`orphaned`（executor lost）只能由 Lead 在 `interrupt_agent` 并确认其停止后 `release {force:true}` 结束；结束执行同时结束该 Worker 的终身绑定（同一实例不能再领取第二个任务，重试需要新实例与新 `executionId`）。
+13. 冲突（`conflicts`）是工作线级记录，不是执行状态：未解决（`resolvedAt === null`）的冲突停住其任务（`scope: "workline"` 时停住整条工作线）的新 claim，Host 不猜执行者、不重建执行。只有 Lead 能 `resolveConflict`，记录 `resolvedAt`/`resolvedBy`/`resolution`（谁、何时、为什么）；解决后任务可以重新被领取。
 
 ## 3. Agent 工具（Host 注册，模型可见）
 
@@ -91,17 +156,28 @@ TaskRecord = {
 
 ### `task_tree_read`
 
-参数：`{ details?: boolean }`（`details=true` 时额外返回 summary/progress/result）。
+参数：`{ details?: boolean, includeArchived?: boolean, archivedLimit?: number }`
+（`details=true` 时额外返回 summary/progress/result/completion/approvalBasis/acceptanceBasis；
+`includeArchived=true` 时额外返回 `archived` 与 `archivedTotal`，`archivedLimit` 1..200，默认 50）。
 
-输出（JSON，`additionalProperties:false`）：
+输出（JSON，`additionalProperties:false`，未声明的字段会被宿主拒绝）：
 
 ```
-{ worklineId, goal: { original, current }, focus: string[],
-  tasks: [{ id, parentId, title, status, deferred, blocked: boolean,
-            owner: boolean, depth, summary?, progress?, result? }] }
+{ worklineId, goal: { original, current } | null, focus: string[],
+  conflicts: [{ id, scope: 'task'|'workline', taskId, kind, evidence,
+                createdAt, resolvedAt, resolvedBy, resolution }],
+  tasks: [{ id, parentId, title, status, settled, approval, requiresUserAcceptance,
+            deferred, blocked, owner: boolean,
+            executor: { kind: 'lead'|'teammate'|'subagent', name, sessionId } | null,
+            executorLost: boolean,
+            executionState: 'active'|'orphaned'|'ended'|'missing' | null,
+            depth, summary?, progress?, result?, completion?, approvalBasis?, acceptanceBasis? }],
+  archived?: [{ id, parentId, title, status, approval, deferred, archivedAt,
+                archiveReason, summary, progress, result, completion, path }],
+  archivedTotal?: number }
 ```
 
-说明：按树序返回（父在前，同级按 order）；`depth` 由 Host 计算；未建树时返回 `worklineId` + 空 `tasks` + `goal` 为 null。
+说明：按树序返回（父在前，同级按 order）；`depth` 由 Host 计算；未建树时返回 `worklineId` + `goal:null` + 空 `focus`/`conflicts`/`tasks`。`executionState` 是任务 claim 戳背后执行账本的状态：只有 `active` 授予 A 类工具权限，`orphaned`（executor lost）与 `ended` 都不授予，`missing` 表示戳指向的执行账本里没有记录（fail closed），`null` 表示任务没有执行。`conflicts` 是工作线的证据冲突，未解决项停住对应任务的 claim；只有 Lead 能解决。
 
 ### `task_tree_write`
 
@@ -110,25 +186,35 @@ TaskRecord = {
 ```
 {
   op: 'init'|'reviseGoal'|'create'|'update'|'move'|'defer'|'resume'|
-      'archive'|'focus'|'assign'|'claim'|'release'|'complete'
+      'archive'|'restore'|'focus'|'assign'|'dispatch'|'claim'|'release'|
+      'complete'|'resolveConflict'
   id?: string
   parentId?: string | null
   ids?: string[]
-  member?: string           // assign：子会话 id 或 "lead"（仅标准模式 Lead）
+  member?: string           // assign：子会话 id 或 "lead"（仅标准模式 Lead）；dispatch：团队成员名
+  teamTaskId?: string       // dispatch：对应的 Team-board 任务 id
+  conflictId?: string       // resolveConflict：要解决的冲突 id（如 "cf-1"）
   title?: string
   summary?: string
   outline?: string
   current?: string          // reviseGoal
-  reason?: string           // reviseGoal / archive
+  reason?: string           // reviseGoal / archive / release {force:true} / resolveConflict
   status?: 'pending'|'in_progress'|'blocked'|'done'
+  executionApproval?: 'approved' | 'pending'
+  approvalBasis?: string    // 授权的用户原话（校验真实用户消息）
+  requiresUserAcceptance?: boolean
+  acceptanceBasis?: string  // 豁免验收的用户原话
   progress?: string
   result?: string
   blockerReason?: string
   blockerUnblock?: string
+  userBasis?: string        // defer/archive 改变交付时的用户原话
   deferredReason?: string
   resumeCondition?: string
   order?: number
-  confirmedByUser?: boolean // complete 必填 true 表示用户已确认
+  force?: boolean           // release：Lead 强制结束别的会话的执行（需先 interrupt 并确认停止）
+  confirmedByUser?: boolean // complete：用户已验收
+  confirmationBasis?: string // complete：验收的用户原话
   originalGoal?: string     // init
 }
 ```
@@ -136,16 +222,18 @@ TaskRecord = {
 行为：
 
 - `init`：工作线不存在时创建，写 `originalGoal`/`outline`；已存在则报错（不要覆盖）。
-- `create`：新建子任务，`parentId` 省略为顶层；返回新 id（`t1`…）。同级 order 默认追加。
-- `update`：局部更新 title/summary/status/progress/result/blocker（blocker 用两个字段，至少给 reason；两者都空表示清除）。
-- `move`：改 parentId / order；校验成环。
-- `defer` / `resume`：见不变量 5。
-- `archive`：递归归档子树，清焦点与占用。
+- `create`：新建子任务，`parentId` 省略为顶层；返回新 id（`t1`…）。同级 order 默认追加。直接建在已批准父任务下的步骤继承授权。
+- `update`：局部更新 title/summary/status/progress/result/blocker/executionApproval/requiresUserAcceptance；blocker 用两个字段，至少给 reason，两者都空表示清除；`status='done'` 走与 `complete` 相同的完成规则。
+- `move`：改 parentId / order；校验成环；已开始且未完成的交付任务不能移走。
+- `defer` / `resume`：见不变量 5；持有别人执行的任务不能 defer。
+- `archive` / `restore`：递归归档（同一批）子树；restore 保留原 id 与历史，回到仍活跃的最近祖先。
 - `focus`：**整体替换**焦点集合（`ids: []` 表示清空）。
 - `assign`：标准模式 Lead 把任务路由给子会话或收回给自己；只能在没有活动执行时分配，分配本身不产生执行。
-- `claim` / `release`：执行占用。标准模式下全工作线只有一个执行位；每次 claim 分配新的单调 `executionId`，结束的执行只追加终态，不复活。
-- `complete`：等价 `update status='done'`，但必须 `confirmedByUser: true`；校验子任务；写 `completion='user-confirmed'`。
-- 一次调用内先全量校验再写入；返回 `{ ok: true, worklineId, applied: [{op, id?}] }` 或抛出可读错误（含任务 id 与原因）。
+- `dispatch`：团队模式 Lead 把树任务关联到 Team-board 任务并派给某个成员；不写 owner、不产生执行，Worker 自己的 board claim 才创建执行。
+- `claim` / `release`：执行占用。校验授权、状态、冲突与终身绑定后，每次 claim 分配新的单调 `executionId`，结束的执行只追加终态，不复活。`release {force:true}` 只能由 Lead 使用，且必须先有 `interrupt_agent` 记录并证明 worker 已停止；它同时结束该 Worker 的终身绑定。
+- `complete`：校验子任务全部结束；`requiresUserAcceptance` 的任务必须等用户验收（`confirmedByUser: true` + `confirmationBasis`），其余可自验完成。
+- `resolveConflict`：仅 Lead。把一条冲突标记为已解决，写 `resolvedAt`/`resolvedBy`/`resolution`；解决后该任务可以重新被领取。不指定执行者、不复活执行。
+- 一次调用内先全量校验再写入；返回 `{ ok: true, worklineId, applied: [{op, id?, executionId?, conflictId?}] }` 或抛出可读错误（含任务 id 与原因）。
 
 工具描述（description）必须写清：何时读、何时写、短标题、不为琐碎修复建节点、完成前询问用户、目标修订需确认、只 Lead 维护。
 
@@ -162,14 +250,20 @@ TaskRecord = {
   "goal": { "original": "…", "current": "…", "changes": [{ "at": 0, "reason": "…", "previous": "…", "next": "…" }] },
   "outline": "…",
   "focus": ["t3"],
+  "conflicts": [
+    { "id": "cf-1", "scope": "task", "taskId": "t1", "kind": "unproven-claim",
+      "evidence": { "boardRevision": 2 }, "createdAt": 0,
+      "resolvedAt": null, "resolvedBy": null, "resolution": null }
+  ],
   "updatedAt": 0,
   "tasks": [
     { "id": "t1", "parentId": null, "order": 0, "title": "用户登录",
-      "summary": "…", "status": "in_progress", "deferred": false,
-      "deferredReason": null, "resumeCondition": null,
+      "summary": "…", "status": "in_progress", "settled": false,
+      "executionApproval": "approved", "requiresUserAcceptance": true,
+      "deferred": false, "deferredReason": null, "resumeCondition": null,
       "blocker": null, "progress": "…", "result": null,
       "ownerSessionId": "session-…", "ownerLive": true,
-      "completion": null, "updatedAt": 0 }
+      "executorLost": false, "completion": null, "updatedAt": 0 }
   ],
   "archived": [
     { "id": "t9", "parentId": null, "title": "短信登录", "archiveReason": "…", "archivedAt": 0 }
@@ -179,7 +273,9 @@ TaskRecord = {
 ```
 
 - 只返回未归档任务的完整数据；`archived` 最多 200 条（按 archivedAt 倒序）。
-- 没有建树时：`available: true`，`goal: null`，`tasks: []`，`focus: []`。
+- `conflicts` 是工作线的证据冲突（含已解决项，带 `resolvedAt`/`resolvedBy`/`resolution`）：`resolvedAt === null` 且 `taskId` 匹配（或 `scope === "workline"`）的任务正处于被停住状态，面板据此提示「等待解决」。
+- `executorLost: true` 表示执行者会话已无法解析；该执行不授予权限、不会被自动释放，只能由 Lead 在中断并确认停止后 `release {force:true}`。
+- 没有建树时：`available: true`，`goal: null`，`tasks: []`，`focus: []`，`conflicts: []`。
 - 存储不可用时：`{ "available": false, "reason": "no-storage" }`；会话未知：现有路由行为（404）。
 
 ### `GET /summary-panel/tasks/status?sessionId=…`
