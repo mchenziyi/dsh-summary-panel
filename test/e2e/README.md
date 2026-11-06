@@ -55,6 +55,14 @@ A passing run removes it unless `--keep` or `--out` was passed.
   refused, the tree turns both tasks `in_progress` with the roster-resolved
   executor (`worker-a`/`worker-b` plus their real session ids), and
   `team_task_update reassign` is refused without changing the board.
+- `worker-lifetime` — one task per Worker in team mode: worker-a completes its
+  board task and is refused a second, worker-b releases its task and is refused
+  a second, the tree keeps both ended lifetime records keyed by session id, and
+  a new Worker (worker-c) claims the released task with a new execution id.
+- `worker-lifetime-standard` — the same rule for a standard-mode subagent: it
+  releases its task, is refused a second one, a new subagent retries the same
+  task with a new execution id, and the Lead (exempt) does three tasks with
+  three distinct execution ids.
 
 ## How the profile is built
 

@@ -17,6 +17,7 @@ import { registerTaskTreeTools } from './tools.js';
 import { registerTaskTreePrompt } from './prompt.js';
 import { registerExecutionGuard } from './guard.js';
 import { registerTeamClaimBinding } from './binding.js';
+import { registerTeamExecutionEnd } from './team-lifetime.js';
 
 /**
  * @param ctx - the plugin context.
@@ -63,6 +64,16 @@ export function mountTaskTree(ctx, options = {}) {
     logger.warn(`[summary-panel] team claim binding disabled: ${String(error?.message ?? error)}`);
   }
 
+  // A Worker's own Team-board complete/release ends its execution and its one
+  // lifetime binding (ticket #7). Like the binding it is a post-execute
+  // observer, so a failed end never rewrites the board's committed result.
+  let teamLifetime = false;
+  try {
+    teamLifetime = registerTeamExecutionEnd(ctx, { store, logger });
+  } catch (error) {
+    logger.warn(`[summary-panel] team execution end disabled: ${String(error?.message ?? error)}`);
+  }
+
   let prompt = false;
   try {
     prompt = registerTaskTreePrompt(ctx, { store });
@@ -70,5 +81,5 @@ export function mountTaskTree(ctx, options = {}) {
     logger.warn(`[summary-panel] task tree prompt disabled: ${String(error?.message ?? error)}`);
   }
 
-  return { store, tools, prompt, guard, binding };
+  return { store, tools, prompt, guard, binding, teamLifetime };
 }

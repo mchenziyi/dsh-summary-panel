@@ -41,6 +41,8 @@
  * ordinary sessions are never affected (design §14.4).
  */
 
+import { workerLifetimeDenial, workerLifetimeOf } from './lifetime.js';
+
 const MAX_WORKLINE_DEPTH = 50;
 
 /** Class B: task management and execution control, authorised without an execution. */
@@ -298,6 +300,18 @@ function teamClaimReason({ membership, store, exec }) {
     && candidate.owner.sessionId === caller);
   if (holder !== undefined) {
     return teamClaimDenialReason({ taskId, sessionId: caller, detail: `this Worker already holds an execution on task ${holder.id}` });
+  }
+  // I2b: this Worker instance holds ONE task for life. A lifetime record that
+  // has ended survives every release, so the same instance can never claim a
+  // second task; the retry must go to a NEW Worker instance. The lifetime map
+  // is keyed by the roster-resolved session id, never by a mutable task field.
+  const lifetime = workerLifetimeOf(tree, caller);
+  if (lifetime !== undefined && lifetime.state !== 'created') {
+    return teamClaimDenialReason({
+      taskId,
+      sessionId: caller,
+      detail: workerLifetimeDenial({ sessionId: caller, worker: lifetime }),
+    });
   }
   return undefined;
 }
