@@ -20,7 +20,7 @@ import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** Fixture files copied beside the generated patch file. */
-const FIXTURE_PLUGINS = ['scripted-llm.js', 'web-server-stub.js', 'connection-stub.js', 'team-board-probe.js'];
+const FIXTURE_PLUGINS = ['scripted-llm.js', 'web-server-stub.js', 'connection-stub.js', 'team-board-probe.js', 'tool-transcript.js'];
 
 export const PROFILE_NAME = 'e2e';
 
@@ -36,7 +36,7 @@ function bundles({ team }) {
  * the fixture plugins travel with the profile and the panel is referenced by
  * absolute path.
  */
-function patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, team }) {
+function patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, transcriptPath, team }) {
   const rows = [
     `    - id: e2e-scripted-llm
       name: ./plugins/scripted-llm.js
@@ -47,6 +47,10 @@ function patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, team })
     `    - id: e2e-connection
       name: ./plugins/connection-stub.js`,
   ];
+  rows.push(`    - id: e2e-tool-transcript
+      name: ./plugins/tool-transcript.js
+      config:
+        out: ${JSON.stringify(transcriptPath)}`);
   if (team) {
     rows.push(`    - id: e2e-team-probe
       name: ./plugins/team-board-probe.js
@@ -77,10 +81,10 @@ function patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, team })
 
 /**
  * Create the profile, its fixture plugins, and the run directories.
- * @param options - `{ root, pluginRoot, fixtureDir, program, team }`.
+ * @param options - `{ root, pluginRoot, fixtureDir, program, subagentProgram, team }`.
  * @returns the paths the run and the collector need.
  */
-export async function buildProfile({ root, pluginRoot, fixtureDir, program, team = false }) {
+export async function buildProfile({ root, pluginRoot, fixtureDir, program, subagentProgram, team = false }) {
   const home = join(root, 'home');
   const profileDir = join(home, 'profiles', PROFILE_NAME);
   const pluginsDir = join(profileDir, 'plugins');
@@ -88,11 +92,15 @@ export async function buildProfile({ root, pluginRoot, fixtureDir, program, team
   const outDir = join(root, 'out');
   const scriptPath = join(root, 'script.json');
   const teamBoardPath = join(root, 'team-board.json');
+  const transcriptPath = join(root, 'tool-transcript.json');
   await Promise.all([mkdir(pluginsDir, { recursive: true }), mkdir(workdir, { recursive: true }), mkdir(outDir, { recursive: true })]);
   for (const file of FIXTURE_PLUGINS) {
     await copyFile(join(fixtureDir, file), join(pluginsDir, file));
   }
-  await writeFile(scriptPath, `${JSON.stringify({ responses: program }, null, 2)}\n`);
+  await writeFile(scriptPath, `${JSON.stringify({
+    responses: program,
+    ...(Array.isArray(subagentProgram) ? { subagentResponses: subagentProgram } : {}),
+  }, null, 2)}\n`);
   await writeFile(
     join(profileDir, 'package.json'),
     `${JSON.stringify({
@@ -103,6 +111,9 @@ export async function buildProfile({ root, pluginRoot, fixtureDir, program, team
     }, null, 2)}\n`,
   );
   await writeFile(join(profileDir, 'cordis.yml'), '[]\n');
-  await writeFile(join(profileDir, 'cordis.patch.yml'), patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, team }));
-  return { home, profileDir, workdir, outDir, scriptPath, teamBoardPath, taskTreeDir: join(profileDir, 'agent-task-tree') };
+  await writeFile(join(profileDir, 'cordis.patch.yml'), patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, transcriptPath, team }));
+  return {
+    home, profileDir, workdir, outDir, scriptPath, teamBoardPath, transcriptPath,
+    taskTreeDir: join(profileDir, 'agent-task-tree'),
+  };
 }

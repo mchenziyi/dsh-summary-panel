@@ -101,6 +101,7 @@ async function listScenarios() {
 function printArtefacts(artefacts) {
   const blocks = [
     ['tool-results.json', artefacts.toolResults],
+    ['tool-transcript.json', artefacts.toolTranscript],
     ['task-tree.json', artefacts.taskTree],
     ['team-board.json', artefacts.teamBoard],
   ];
@@ -122,7 +123,14 @@ async function runScenario(scenario, options) {
   const root = await mkdtemp(join(tmpdir(), `dsh-e2e-${scenario.name}-`));
   let keep = false;
   try {
-    const profile = await buildProfile({ root, pluginRoot: PLUGIN_ROOT, fixtureDir: FIXTURE_DIR, program: scenario.program, team: scenario.team === true });
+    const profile = await buildProfile({
+      root,
+      pluginRoot: PLUGIN_ROOT,
+      fixtureDir: FIXTURE_DIR,
+      program: scenario.program,
+      subagentProgram: scenario.subagentProgram,
+      team: scenario.team === true,
+    });
     console.log(`== ${scenario.name} — ${scenario.summary ?? ''}`);
     console.log(`   profile  ${profile.profileDir}`);
     console.log(`   workspace ${profile.workdir}`);
@@ -132,6 +140,7 @@ async function runScenario(scenario, options) {
       run,
       taskTreeDir: profile.taskTreeDir,
       teamBoardPath: profile.teamBoardPath,
+      transcriptPath: profile.transcriptPath,
       team: scenario.team === true,
     });
     let assertions = [];

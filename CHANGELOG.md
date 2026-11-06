@@ -12,6 +12,16 @@
 - `claim` 建立执行、`release` 结束执行；两者都是 B 类，因此不存在"先有执行权才能认领"的循环依赖。未建立任务树的工作线不受约束，普通问答不受影响。
 - 新增真实进程 e2e 场景 `execution-gate`：无树时放行 → 建树后 `write`/`bash` 被拒且磁盘无副作用 → claim 后放行 → release 后立刻再拒 → 全程 `task_tree_*` 可用。
 
+**标准模式单执行位与交接**
+
+- 同一工作线只有一个执行位：`claim` 会先看整条工作线，只要还有一条非终态执行，其他任何会话（包括 Lead 自己换任务）的认领都被拒绝；已死会话占着的位置也不会被后来者顶掉，必须显式 `release`。
+- 执行号由 Host 单调分配（`ex-1`、`ex-2`…），与 claim 戳一起写在任务树文件的同一次落盘：`workline.executions[]` 是执行账本，`task.owner.executionId` 是当前戳。结束的执行只追加 `endedAt`/`endReason`，永不复活；重新认领一定拿到新号。
+- 新增 `task_tree_write {"op":"assign","id","member"}`：`member` 是 spawn 返回值里的子会话 id 或 `"lead"`。分配只是路由，不产生执行；Host 会核对目标确实是本工作线下的 subagent 会话。
+- 交接闭环：Lead `release` → `assign` 子代理 → 子代理 `claim`/`release` → Lead `assign "lead"` + `claim`（新执行号）。只有持位者能写工作区，也只有持位者能 `release`/`complete` 自己的执行；Lead 在子代理持位期间不可写、不可代为完成。
+- 子代理只被允许 `claim`/`release`，且只能认领分配给自己的任务；其余任务树写操作仍被拒绝。未组成 Agent Team 即为标准模式，团队模式留给后续切片。
+- 完成、暂缓、归档都会结束对应的执行，终态任务（done/deferred/archived）不会挂着非终态执行。
+- 真实进程 e2e 新增 `execution-seat`：Lead 持位时子代理认领被拒 → 释放并分配后子代理可写而 Lead 不可写 → 子代理结束后 Lead 重新接手拿到新执行号 → 连续三个任务得到三个不同执行号；测试装置新增逐会话工具记录、子代理脚本队列、`{{subagentId}}` 模板与子代理回合等待。
+
 **授权不能被嵌套绕过**
 
 - 新建任务时，只有**直接父任务**已授权才继承批准；此前的实现会沿祖先链一路向上找，导致"显式 pending 的中间步骤 + 一个已授权的祖父"可以绕过人工边界。多套一层不再能开工。

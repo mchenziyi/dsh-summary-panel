@@ -1,7 +1,8 @@
 /**
- * Export the three facts the harness exists to observe:
+ * Export the facts the harness exists to observe:
  *
  *   tool-results.json  what the tools actually returned (from the run's NDJSON)
+ *   tool-transcript.json  every session's tool calls and results, subagents included
  *   task-tree.json     the task tree file the plugin persisted on disk
  *   team-board.json    the live Team board, when the profile composes one
  *
@@ -63,6 +64,22 @@ async function collectTaskTree({ taskTreeDir, sessionId }) {
   };
 }
 
+/** Read the in-process tool transcript (every session, subagents included). */
+async function collectToolTranscript(transcriptPath) {
+  let text;
+  try {
+    text = await readFile(transcriptPath, 'utf8');
+  } catch {
+    return { present: false, reason: 'the tool transcript probe wrote no snapshot', sessions: [] };
+  }
+  try {
+    const sessions = JSON.parse(text);
+    return { present: true, sessions: Array.isArray(sessions) ? sessions : [] };
+  } catch (error) {
+    return { present: false, reason: `the tool transcript probe wrote unparseable JSON: ${String(error?.message ?? error)}`, sessions: [] };
+  }
+}
+
 /** Read the fixture probe's last board snapshot, or explain why there is none. */
 async function collectTeamBoard({ teamBoardPath, team }) {
   let text;
@@ -85,11 +102,12 @@ async function collectTeamBoard({ teamBoardPath, team }) {
  * Write every artefact under `outDir`.
  * @returns the artefact bundle, also written as `run.jsonl` and `stderr.log`.
  */
-export async function collectArtefacts({ outDir, run, taskTreeDir, teamBoardPath, team }) {
+export async function collectArtefacts({ outDir, run, taskTreeDir, teamBoardPath, transcriptPath, team }) {
   await mkdir(outDir, { recursive: true });
   const tools = collectToolCalls(run.events);
   const taskTree = await collectTaskTree({ taskTreeDir, sessionId: run.sessionId });
   const teamBoard = await collectTeamBoard({ teamBoardPath, team });
+  const toolTranscript = await collectToolTranscript(transcriptPath);
   const artefacts = {
     run: {
       sessionId: run.sessionId,
@@ -102,11 +120,13 @@ export async function collectArtefacts({ outDir, run, taskTreeDir, teamBoardPath
       finalText: tools.finalText,
     },
     toolResults: { sessionId: run.sessionId, calls: tools.calls, finalText: tools.finalText },
+    toolTranscript,
     taskTree,
     teamBoard,
   };
   await Promise.all([
     writeFile(join(outDir, 'tool-results.json'), `${JSON.stringify(artefacts.toolResults, null, 2)}\n`),
+    writeFile(join(outDir, 'tool-transcript.json'), `${JSON.stringify(artefacts.toolTranscript, null, 2)}\n`),
     writeFile(join(outDir, 'task-tree.json'), `${JSON.stringify(artefacts.taskTree, null, 2)}\n`),
     writeFile(join(outDir, 'team-board.json'), `${JSON.stringify(artefacts.teamBoard, null, 2)}\n`),
     writeFile(join(outDir, 'run.json'), `${JSON.stringify(artefacts.run, null, 2)}\n`),

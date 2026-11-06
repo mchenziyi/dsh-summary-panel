@@ -17,6 +17,8 @@ import { MAX_BASIS, MIN_QUOTE, verifyUserQuote } from './evidence.js';
 
 const WRITE_DENIED_SUBAGENT = 'task_tree_write is reserved for the lead session; a subagent (or teammate) must report changes to the lead instead';
 const WRITE_DENIED_TEAMMATE = 'task_tree_write is reserved for the lead in an Agent Team; teammates report progress, blockers, and completion to the lead';
+/** The only task-tree ops a standard-mode subagent may call: its own seat. */
+const SUBAGENT_OPS = Object.freeze(['claim', 'release']);
 
 /** A JSON Schema subset node for `string | null`. */
 const NULLABLE_STRING = Object.freeze({ oneOf: [{ type: 'string' }, { type: 'null' }] });
@@ -55,7 +57,7 @@ const WRITE_PARAMETERS = Object.freeze({
         properties: {
           op: {
             type: 'string',
-            enum: ['init', 'reviseGoal', 'create', 'update', 'move', 'defer', 'resume', 'archive', 'restore', 'focus', 'claim', 'release', 'complete'],
+            enum: ['init', 'reviseGoal', 'create', 'update', 'move', 'defer', 'resume', 'archive', 'restore', 'focus', 'assign', 'claim', 'release', 'complete'],
             description: 'The operation to apply.',
           },
           id: { type: 'string', description: 'Target task id, e.g. "t3".' },
@@ -67,6 +69,10 @@ const WRITE_PARAMETERS = Object.freeze({
             type: 'array',
             items: { type: 'string' },
             description: 'The complete focus set for op "focus": it replaces the whole set instead of adding to it, so pass every task you are working on and [] to clear it.',
+          },
+          member: {
+            type: 'string',
+            description: 'For op "assign" (standard mode, lead session only): the subagent session id the lead read from the spawn result, or "lead" to hand the task back. Assignment is routing, not a claim: it gives no execution and changes no permission.',
           },
           title: { type: 'string', description: 'Short task name, 1..40 characters, single line.' },
           summary: { type: 'string', description: 'One-line hover summary, at most 240 characters.' },
@@ -216,6 +222,7 @@ const WRITE_OUTPUT = Object.freeze({
         properties: {
           op: { type: 'string' },
           id: { type: 'string' },
+          executionId: { type: 'string' },
         },
       },
     },
@@ -239,7 +246,7 @@ const WRITE_DESCRIPTION = [
   'A parent is complete only when nothing unfinished remains below it: pending, in_progress, blocked and deferred children all block it, while done and archived work does not. A completed parent that gains an unfinished child is shown as unfinished again and keeps its acceptance record; when that child finishes or is archived the parent is complete again. A new deliverable beneath it still needs its own acceptance, and one acceptance quote closes one task — never replay the same quote for another task.',
   'One confirmation closes one task: each acceptance quote binds to the task it names. If the user accepted several tasks in one sentence, quote the clause naming each one; if you cannot tell which task they accepted, ask instead of widening the scope.',
   'Completion, acceptance, and approval are separate. A top-level task is a delivered requirement and defaults to requiresUserAcceptance: true; its steps default to false and may be completed on your own verification with complete and no confirmedByUser. A task that requires acceptance cannot be completed by the agent: record the delivered work in progress or result, keep it in progress, and complete it only after the user accepts, with confirmedByUser: true and confirmationBasis quoting their acceptance — the quote must come after you reported the delivery, and the instruction that authorised the work does not count. Setting requiresUserAcceptance: false needs a real user instruction plus an acceptanceBasis quote; a quote that appears in no real user message is rejected, so never speak for the user. A self-verified completion can later be accepted by passing confirmedByUser: true plus confirmationBasis.',
-  'Only the lead maintains the tree; in an Agent Team, teammates report to the lead and never write the tree themselves.',
+  'Only the lead maintains the tree. In standard mode the whole workline shares ONE execution seat: while anyone holds it, every other claim is refused. To hand a task to a subagent, release it, assign the subagent session id you read from the spawn result, let the subagent claim and release it, then assign "lead" and claim again; the new claim gets a NEW execution id, and an ended execution is never revived. Assignment is routing, not a claim: it grants nothing by itself. A subagent may call claim and release only, and only for the task assigned to it; in an Agent Team, teammates report to the lead and never write the tree themselves.',
   'init runs once per workline and writes the immutable original goal plus the outline. When the user decides to change the project direction, call reviseGoal immediately with a reason quoting their decision — it does not need implementation to start. When you merely propose a direction, discuss it first.',
   'defer keeps the status and progress of a task that may come back later and removes it from the focus; it cannot be focused or claimed until resumed. archive means the task will not be done: it and its whole subtree leave the active tree with a reason and stay visible in the archive. A pending "not now" from the user is respected even for approved tasks.',
   'Every batch is validated first and applied atomically; on failure nothing is written.',
@@ -258,22 +265,56 @@ function callerOf(exec) {
   return { sessionId, header };
 }
 
-/** Refuse tree maintenance when the caller is not the lead session. */
-function assertWritable(ctx, agent, header, sessionId) {
+/**
+ * Decide what the caller may write.
+ *
+ * The lead maintains the whole tree. In standard mode a subagent may only
+ * claim (and release) a task the lead assigned to it: that is the handover, and
+ * it is not tree maintenance. In an Agent Team (a later slice) teammates are
+ * still refused outright.
+ *
+ * @returns `{ restricted }`; `restricted` means "only claim/release".
+ */
+function writableBy(ctx, agent, header, sessionId, standardMode) {
   if (sessionId === undefined) throw new Error('task_tree_write cannot resolve the calling session');
-  if (header !== undefined && header !== null && header.origin === 'subagent') {
-    throw new Error(WRITE_DENIED_SUBAGENT);
-  }
   const agentTeams = ctx.get('agentTeams');
-  if (agentTeams === undefined || typeof agentTeams.membership !== 'function') return;
-  let membership;
-  try {
-    membership = agentTeams.membership(agent);
-  } catch {
-    membership = undefined;
+  if (agentTeams !== undefined && typeof agentTeams.membership === 'function') {
+    let membership;
+    try {
+      membership = agentTeams.membership(agent);
+    } catch {
+      membership = undefined;
+    }
+    if (membership !== null && typeof membership === 'object' && membership.role === 'teammate') {
+      throw new Error(WRITE_DENIED_TEAMMATE);
+    }
   }
-  if (membership !== null && typeof membership === 'object' && membership.role === 'teammate') {
-    throw new Error(WRITE_DENIED_TEAMMATE);
+  if (header !== undefined && header !== null && header.origin === 'subagent') {
+    // A standard-mode subagent owns only its assigned seat; team mode refuses
+    // the write until its own slice defines claim-first dispatch.
+    if (!standardMode) throw new Error(WRITE_DENIED_SUBAGENT);
+    return { restricted: true };
+  }
+  return { restricted: false };
+}
+
+/** Validate that an assign target is a real subagent of this workline. */
+async function assertAssignTarget({ member, worklineId, sessions }) {
+  if (member === 'lead') return;
+  if (typeof member !== 'string' || member.trim() === '') {
+    throw new Error('assign member must be a subagent session id or "lead"');
+  }
+  const target = member.trim();
+  const header = await sessions.headerOf(target);
+  if (header === undefined) {
+    throw new Error(`assign member ${JSON.stringify(target)} is not a known session`);
+  }
+  if (header.origin !== 'subagent') {
+    throw new Error(`assign member ${JSON.stringify(target)} is not a subagent session`);
+  }
+  const targetWorkline = await sessions.rootSessionId(target, header);
+  if (targetWorkline !== worklineId) {
+    throw new Error(`assign member ${JSON.stringify(target)} belongs to workline ${targetWorkline}, not ${worklineId}`);
   }
 }
 
@@ -325,12 +366,31 @@ export function registerTaskTreeTools(ctx, { store, sessions }) {
     },
     async execute(args, exec) {
       const caller = callerOf(exec);
-      assertWritable(ctx, exec?.agent, caller.header, caller.sessionId);
+      if (caller.sessionId === undefined) throw new Error('task_tree_write cannot resolve the calling session');
       const ops = args !== null && typeof args === 'object' && !Array.isArray(args) ? args.ops : undefined;
       if (!Array.isArray(ops) || ops.length === 0) {
         throw new Error('ops must be a non-empty array of task tree operations');
       }
+      // Standard mode is "no Agent Team composed" (design v8 §3); the team
+      // slice is not part of this one.
+      const standardMode = ctx.get('agentTeams') === undefined;
+      const permission = writableBy(ctx, exec?.agent, caller.header, caller.sessionId, standardMode);
+      if (permission.restricted) {
+        // The handover gives a subagent exactly one power: its own seat.
+        for (const op of ops) {
+          if (op === null || typeof op !== 'object' || !SUBAGENT_OPS.includes(op.op)) {
+            throw new Error(WRITE_DENIED_SUBAGENT);
+          }
+        }
+      }
       const worklineId = await sessions.rootSessionId(caller.sessionId, caller.header);
+      if (!permission.restricted && standardMode) {
+        for (const op of ops) {
+          if (op !== null && typeof op === 'object' && op.op === 'assign') {
+            await assertAssignTarget({ member: op.member, worklineId, sessions });
+          }
+        }
+      }
       await store.ensure();
       // Approval and acceptance quotes are checked against the caller's own log:
       // the agent cannot approve work, or accept a delivery, in the user's name.
@@ -342,6 +402,7 @@ export function registerTaskTreeTools(ctx, { store, sessions }) {
         actorSessionId: caller.sessionId,
         isLive: sessions.isLive,
         verifyUserQuote: verifyQuote,
+        standardMode,
       }));
       return { ok: true, worklineId, applied: outcome.applied };
     },
