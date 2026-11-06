@@ -175,18 +175,18 @@ function verifyQuote(context, quote) {
   };
 }
 
-/** Whether an active ancestor of the task is approved for execution. */
-function approvedAncestor(state, task) {
-  const seen = new Set();
-  let cursor = task.parentId;
-  while (typeof cursor === 'string' && !seen.has(cursor)) {
-    seen.add(cursor);
-    const parent = state.tasks.find((candidate) => candidate.id === cursor);
-    if (parent === undefined || parent.archived === true) return false;
-    if (parent.executionApproval === 'approved') return true;
-    cursor = parent.parentId;
-  }
-  return false;
+/**
+ * Whether the direct parent is an approved, active scope to inherit from.
+ *
+ * Only the direct parent decides: an approved grandparent cannot approve work
+ * inside a step the user left unapproved, so one more level of nesting never
+ * tunnels back through a pending boundary.
+ */
+function approvedParent(state, parentId) {
+  if (typeof parentId !== 'string') return false;
+  const parent = state.tasks.find((candidate) => candidate.id === parentId);
+  if (parent === undefined || parent.archived === true) return false;
+  return parent.executionApproval === 'approved';
 }
 
 /** Refuse to start executing a task the user has not approved. */
@@ -766,7 +766,7 @@ function applyCreate(state, op, context) {
   const id = nextTaskId(state);
   // A normal step inside an approved scope inherits that approval; anything else
   // starts unapproved, including every top-level task.
-  const inherited = parentId !== null && approvedAncestor(state, { parentId });
+  const inherited = parentId !== null && approvedParent(state, parentId);
   const task = {
     id,
     worklineId: state.workline.id,
@@ -804,6 +804,9 @@ function applyCreate(state, op, context) {
   state.tasks.push(task);
   applyApproval(task, op, context);
   applyAcceptanceRequirement(task, op, context);
+  // The create path is the same execution gate as update: a task may not be
+  // born in progress unless the approval it carries is real.
+  if (status === 'in_progress') assertExecutable(task);
   state.workline.updatedAt = context.now;
   return { op: 'create', id };
 }
@@ -949,19 +952,37 @@ function applyResume(state, op, context) {
   return { op: 'resume', id };
 }
 
+/** Every task an archive of `task` would move: itself plus its live descendants. */
+function archiveSubtree(state, task) {
+  const collected = [];
+  const seen = new Set();
+  const stack = [task.id];
+  while (stack.length > 0) {
+    const currentId = stack.pop();
+    if (seen.has(currentId)) continue;
+    seen.add(currentId);
+    const current = state.tasks.find((candidate) => candidate.id === currentId);
+    if (current === undefined || current.archived) continue;
+    collected.push(current);
+    for (const child of childTasks(state, current.id)) stack.push(child.id);
+  }
+  return collected;
+}
+
 function applyArchive(state, op, context) {
   const id = requireTaskId(op);
   const task = findTask(state, id, { active: true });
-  const basis = applyUserDecision(task, op, context, 'archive it');
+  const subtree = archiveSubtree(state, task);
+  // The whole subtree leaves the delivery, so one in-flight descendant is enough
+  // to make the user's decision necessary — a pending container must not launder
+  // authorised work out of it.
+  const witness = subtree.find((node) => needsUserDecision(node));
+  const basis = witness === undefined
+    ? null
+    : applyUserDecision(witness, op, context, `archive ${task.id}`);
   const reason = singleLine(op.reason, 'reason', LIMITS.reason, { required: true });
   const batch = `${task.id}@${context.now}`;
-  const stack = [task.id];
-  const archived = [];
-  while (stack.length > 0) {
-    const currentId = stack.pop();
-    if (archived.includes(currentId)) continue;
-    const current = state.tasks.find((candidate) => candidate.id === currentId);
-    if (current === undefined || current.archived) continue;
+  for (const current of subtree) {
     current.archived = true;
     current.archiveReason = reason;
     current.archivedAt = context.now;
@@ -973,8 +994,6 @@ function applyArchive(state, op, context) {
     current.owner = null;
     removeFromFocus(state, current.id);
     touch(state, current, context.now);
-    archived.push(current.id);
-    for (const child of childTasks(state, current.id)) stack.push(child.id);
   }
   return { op: 'archive', id };
 }

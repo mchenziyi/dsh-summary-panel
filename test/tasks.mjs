@@ -953,6 +953,30 @@ function titles(snapshot) {
     { op: 'create', title: '邀请码', parentId: 't2' },
   ]).envelope;
   assert.equal(pendingParent.tasks.find((task) => task.title === '邀请码').executionApproval, 'pending');
+
+  // A pending step inside an approved scope must not be tunnelled through: the
+  // direct parent decides, so one more level down stays unapproved too.
+  const nested = envelopeAfter(base, [
+    { op: 'create', title: '多用户系统', parentId: 't1', executionApproval: 'pending' },
+    { op: 'create', title: '邀请码', parentId: 't2' },
+    { op: 'create', title: '邀请码校验', parentId: 't3' },
+  ]).envelope;
+  assert.equal(
+    nested.tasks.find((task) => task.title === '邀请码').executionApproval,
+    'pending',
+    'a pending parent blocks inheritance even under an approved ancestor',
+  );
+  assert.equal(
+    nested.tasks.find((task) => task.title === '邀请码校验').executionApproval,
+    'pending',
+    'inheritance never walks past the direct parent',
+  );
+
+  // Creating a task already in progress is the same gate as updating it.
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'create', title: '偷偷开工', status: 'in_progress' }]),
+    /is not approved for execution/,
+  );
 }
 
 {
@@ -1119,6 +1143,10 @@ function titles(snapshot) {
   assert.equal(verifyUserQuote(session, 'cwd is /tmp').ok, false, 'injected context is not user evidence');
   assert.equal(verifyUserQuote(session, '<system-reminder>').ok, false);
   assert.equal(verifyUserQuote(session, '').ok, false);
+  // A quote shorter than the floor proves nothing: one character appears in
+  // almost any sentence, so it must not count as the user's own words.
+  assert.equal(verifyUserQuote(session, '的').ok, false, 'a single character is not a quote');
+  assert.equal(verifyUserQuote(session, '服务').ok, false, 'a two-character fragment is not a quote');
   assert.equal(verifyUserQuote(session, 'x'.repeat(201)).ok, false);
   assert.equal(verifyUserQuote({}, '短链接服务').ok, false, 'a session without a log proves nothing');
 }
@@ -1842,6 +1870,25 @@ function titles(snapshot) {
     { op: 'archive', id: 't2', reason: '交付后归档' },
   ]).envelope;
   assert.equal(doneArchived.tasks[1].archived, true, 'finished work is archived without a basis');
+
+  // Archiving a container must not launder an in-flight child out of the
+  // delivery: the whole subtree leaves, so the decision covers all of it.
+  const container = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '登录功能' },
+    { op: 'create', title: '这轮整理' },
+    { op: 'create', parentId: 't1', title: '记住我', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'update', id: 't2', status: 'in_progress' },
+  ]).envelope;
+  assert.throws(
+    () => envelopeAfter(container, [{ op: 'archive', id: 't1', reason: '不做了' }]),
+    /quoting the user's decision/,
+    'an in-flight descendant makes the whole archive a delivery change',
+  );
+  const containerArchived = envelopeAfter(container, [
+    { op: 'archive', id: 't1', reason: '用户取消', userBasis: '不做了' },
+  ]).envelope;
+  assert.equal(containerArchived.tasks[1].archived, true);
+  assert.equal(containerArchived.tasks[1].archiveBasis, '不做了', 'the decision reaches the descendants it archived');
 }
 
 // ---------------------------------------------------------------------------

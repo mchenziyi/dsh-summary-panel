@@ -15,6 +15,13 @@
 /** Longest accepted quote, matching `LIMITS.basis` in `host/model.js`. */
 export const MAX_BASIS = 200;
 
+/**
+ * Shortest accepted quote, in code points, measured after whitespace removal.
+ * One or two characters match almost any sentence, so accepting them would turn
+ * provenance checking into a formality.
+ */
+export const MIN_QUOTE = 3;
+
 /** How many trailing events a scan looks at. */
 const SCAN_LIMIT = 1000;
 
@@ -97,6 +104,14 @@ export function verifyUserQuote(session, quote) {
     return { ok: false, reason: `the quote is longer than ${MAX_BASIS} characters` };
   }
   const needle = normalize(raw);
+  // A floor, not a judgement of meaning: one or two characters appear in almost
+  // any sentence, so they would let the agent manufacture consent out of noise.
+  if (Array.from(needle).length < MIN_QUOTE) {
+    return {
+      ok: false,
+      reason: `the quote is shorter than ${MIN_QUOTE} characters; quote the sentence the user actually wrote`,
+    };
+  }
   const messages = realUserMessages(session);
   if (messages.length === 0) return { ok: false, reason: 'no user message is available to compare against' };
   for (let index = messages.length - 1; index >= 0; index -= 1) {
