@@ -2066,10 +2066,13 @@ window.__ModuleLoader__.load({
           }
           if (typeof active.ownerSessionId === 'string' && active.ownerSessionId !== '') {
             const liveText = active.ownerLive === true ? t('tasks.detail.ownerLive') : t('tasks.detail.ownerGone');
+            const ownerLabel = typeof active.ownerName === 'string' && active.ownerName !== ''
+              ? active.ownerName
+              : active.ownerSessionId;
             fields.push(h(DetailField, {
               key: 'owner',
               label: t('tasks.detail.owner'),
-              value: `${active.ownerSessionId} · ${liveText}`,
+              value: `${ownerLabel} · ${liveText}`,
               mono: true,
             }));
           }

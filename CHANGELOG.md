@@ -2,6 +2,16 @@
 
 ## 未发布
 
+**团队模式：认领绑定（claim-first）**
+
+- 团队模式的绑定不再来自"分配"，而来自 Worker 自己的认领：Lead 用 `task_tree_write {"op":"dispatch","id","member","teamTaskId"}` 只写路由（不写 owner、不建执行、不改状态），被指名的 Worker 自己在 Team Board 上 `claim`；Host 在拿到 Board 提交后的真实返回值时写入执行。
+- 绑定由 Host 完成：从活 Agent 经 Team roster 解析出真实会话 id 与成员名（roster 的 `id` 是 Team 标识，真正的成员会话 id 取活 Agent 的 id），核对 `dispatch.member`、`Board.ownerName`、revision 恰好 +1 后，一次落盘写入 `status=in_progress` + `owner{sessionId,executionId,member}` + `executions[]`（`mode:"team"`, `teamTaskId`, `member`, `claimRevision`），并清空 `dispatch`。
+- 未绑定的 Worker 改文件一律被拒；认领成功后只有该 Worker 持有执行，其他成员既不能认领同一任务（dispatch 不匹配即拒），也不能在没有自己执行的情况下写文件。
+- 一个任务、一个会话最多一条非终态执行：guard 在认领前检查，绑定时再在树写锁内复核；树上的 `claim` 在团队模式被拒绝（执行只能由 Board claim 产生）。
+- Host 直接拒绝 `team_task_update reassign`（两种角色都拒）：`claim` 只能从 `pending` 开始，而 `reassign` 直接写 `in_progress + owner`，不存在"先分配再认领"的自洽路径；模型在参数里自报的 `owner` 等身份字段不参与任何判定。
+- `task_tree_read` 与面板显示执行者：任务行新增 `executor{kind,name,sessionId}`（Lead / 具名 teammate / subagent），任务详情优先显示成员名。
+- 真实进程 e2e 新增 `team-bind`：两个真实 Worker 各自认领、各自可写，未绑定写入被拒，跨成员认领/写入被拒，`reassign` 被拒且 Board 不变，树文件与账本记录真实会话 id；`team-lead` 同步改为证明团队 Lead 无法用树 `claim` 建立执行。测试装置新增按成员名分流的脚本队列与 `waitForTeammate`。
+
 **团队模式：Lead 只协调**
 
 - 模式判定按组合而非模型自报：插件上下文里存在 Agent Team 服务即为团队模式，标准模式的行为完全不变。

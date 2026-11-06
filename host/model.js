@@ -38,6 +38,7 @@ export const TASK_OPS = Object.freeze([
   'restore',
   'focus',
   'assign',
+  'dispatch',
   'claim',
   'release',
   'complete',
@@ -72,6 +73,7 @@ const OP_FIELDS = Object.freeze({
   restore: ['op', 'id'],
   focus: ['op', 'ids'],
   assign: ['op', 'id', 'member'],
+  dispatch: ['op', 'id', 'member', 'teamTaskId'],
   claim: ['op', 'id'],
   release: ['op', 'id'],
   complete: ['op', 'id', 'confirmedByUser', 'confirmationBasis', 'result'],
@@ -438,10 +440,16 @@ function normalizeTask(task, worklineId) {
     assignee: task.assignee === 'lead'
       ? 'lead'
       : (typeof task.assignee === 'string' && task.assignee !== '' ? task.assignee : null),
+    teamTaskId: typeof task.teamTaskId === 'string' && task.teamTaskId !== '' ? task.teamTaskId : null,
+    dispatch: task.dispatch !== null && typeof task.dispatch === 'object'
+      && typeof task.dispatch.member === 'string' && task.dispatch.member !== ''
+      ? { member: task.dispatch.member, at: numberOr(task.dispatch.at, 0) }
+      : null,
     owner: task.owner !== null && typeof task.owner === 'object' && typeof task.owner.sessionId === 'string'
       ? {
         sessionId: task.owner.sessionId,
         executionId: typeof task.owner.executionId === 'string' && task.owner.executionId !== '' ? task.owner.executionId : null,
+        member: typeof task.owner.member === 'string' && task.owner.member !== '' ? task.owner.member : null,
         since: numberOr(task.owner.since, 0),
       }
       : null,
@@ -482,6 +490,10 @@ function normalizeExecution(entry) {
     taskId: typeof entry.taskId === 'string' ? entry.taskId : '',
     sessionId: typeof entry.sessionId === 'string' ? entry.sessionId : '',
     attempt: Number.isInteger(entry.attempt) && entry.attempt > 0 ? entry.attempt : 1,
+    mode: entry.mode === 'team' ? 'team' : 'standard',
+    teamTaskId: typeof entry.teamTaskId === 'string' && entry.teamTaskId !== '' ? entry.teamTaskId : null,
+    member: typeof entry.member === 'string' && entry.member !== '' ? entry.member : null,
+    claimRevision: Number.isInteger(entry.claimRevision) && entry.claimRevision >= 0 ? entry.claimRevision : null,
     // This ticket only knows active/ended; cold and orphaned belong to the
     // recovery slice, so any unknown persisted state fails closed as active.
     state: entry.state === 'ended' ? 'ended' : 'active',
@@ -1187,7 +1199,7 @@ function endExecution(state, task, reason, now) {
 }
 
 /** Allocate the next monotonic execution id (`ex-1`, `ex-2`, ...). */
-function allocateExecution(state, taskId, sessionId, now) {
+function allocateExecution(state, taskId, sessionId, now, extra = {}) {
   const executionId = `ex-${state.workline.nextExecution}`;
   state.workline.nextExecution += 1;
   const attempt = state.workline.executions.filter((execution) => execution.taskId === taskId).length + 1;
@@ -1196,6 +1208,10 @@ function allocateExecution(state, taskId, sessionId, now) {
     taskId,
     sessionId,
     attempt,
+    mode: extra.mode === 'team' ? 'team' : 'standard',
+    teamTaskId: typeof extra.teamTaskId === 'string' && extra.teamTaskId !== '' ? extra.teamTaskId : null,
+    member: typeof extra.member === 'string' && extra.member !== '' ? extra.member : null,
+    claimRevision: Number.isInteger(extra.claimRevision) ? extra.claimRevision : null,
     state: 'active',
     startedAt: now,
     updatedAt: now,
@@ -1204,6 +1220,67 @@ function allocateExecution(state, taskId, sessionId, now) {
   });
   state.workline.executions = state.workline.executions.slice(-500);
   return executionId;
+}
+
+/**
+ * Commit the execution created by a Worker's successful Team-board claim
+ * (design v8 §6.1 step ⑦, §7.2).
+ *
+ * The board claim is the fact and the only source of the binding; this function
+ * never reads a model-supplied identity. It receives the roster-resolved
+ * `sessionId` and `member` name, refuses a task whose dispatch names someone
+ * else or that already holds an execution, and writes the claim stamp and the
+ * ledger entry together with the task status in the same tree record.
+ *
+ * @param envelope - the current persisted envelope.
+ * @param claim - `{ taskId, teamTaskId, sessionId, member, revision, now }`.
+ * @returns `{ envelope, executionId }`; throws {@link TaskTreeError} when the
+ *   evidence does not match and nothing may be written.
+ */
+export function bindTeamClaim(envelope, claim) {
+  const state = cloneEnvelope(envelope);
+  const now = numberOr(claim?.now, Date.now());
+  const taskId = typeof claim?.taskId === 'string' ? claim.taskId : '';
+  const teamTaskId = typeof claim?.teamTaskId === 'string' ? claim.teamTaskId : '';
+  const sessionId = typeof claim?.sessionId === 'string' ? claim.sessionId : '';
+  const member = typeof claim?.member === 'string' ? claim.member : '';
+  if (taskId === '' || teamTaskId === '' || sessionId === '' || member === '') {
+    fail('a Team claim must name its task, board task, resolved session id, and member');
+  }
+  const task = state.tasks.find((candidate) => candidate.id === taskId);
+  if (task === undefined) fail(`team claim names unknown task ${JSON.stringify(taskId)}`);
+  if (task.archived === true) fail(`task ${taskId} is archived and cannot be bound`);
+  if (task.deferred) fail(`task ${taskId} is deferred and cannot be bound`);
+  if (task.status === 'done') fail(`task ${taskId} is done and cannot be bound`);
+  assertExecutable(task);
+  if (task.teamTaskId !== teamTaskId) {
+    fail(`task ${taskId} is not associated with team task ${JSON.stringify(teamTaskId)}`);
+  }
+  if (task.dispatch === null || task.dispatch === undefined || task.dispatch.member !== member) {
+    const dispatchedTo = task.dispatch?.member ?? 'nobody';
+    fail(`task ${taskId} is dispatched to ${dispatchedTo}, not ${member}`);
+  }
+  if (task.owner !== null && task.owner !== undefined) {
+    fail(`task ${taskId} already holds execution ${task.owner.executionId ?? '(unknown)'}`);
+  }
+  const active = state.workline.executions.find((execution) => execution.state !== 'ended'
+    && (execution.taskId === taskId || execution.sessionId === sessionId));
+  if (active !== undefined) {
+    const where = active.taskId === taskId ? `task ${taskId}` : `session ${sessionId}`;
+    fail(`${where} already holds execution ${active.executionId}; one task and one session may hold at most one`);
+  }
+  const executionId = allocateExecution(state, taskId, sessionId, now, {
+    mode: 'team',
+    teamTaskId,
+    member,
+    claimRevision: Number.isInteger(claim.revision) ? claim.revision : undefined,
+  });
+  task.owner = { sessionId, executionId, member, since: now };
+  task.status = 'in_progress';
+  task.dispatch = null;
+  touch(state, task, now);
+  state.workline.updatedAt = now;
+  return { envelope: state, executionId };
 }
 
 function applyAssign(state, op, context) {
@@ -1225,10 +1302,48 @@ function applyAssign(state, op, context) {
   return { op: 'assign', id };
 }
 
+/**
+ * Route one team task to the Worker that should claim it (design v8 §6.1 ④).
+ *
+ * Dispatch is not assignment: it writes no owner and creates no execution. It
+ * only says which member should claim the Team board task, and the Worker's own
+ * claim is what the Host turns into an execution.
+ */
+function applyDispatch(state, op, context) {
+  const id = requireTaskId(op);
+  const actor = typeof context.actorSessionId === 'string' && context.actorSessionId !== '' ? context.actorSessionId : undefined;
+  if (actor === undefined) fail(`task ${id}: dispatch requires a calling session`);
+  if (standardModeOf(context)) fail('dispatch is a team-mode operation; there is no Agent Team to dispatch to');
+  if (actor !== state.workline.id) fail('dispatch is reserved for the Lead session');
+  const member = singleLine(op.member, 'member', LIMITS.shortText, { required: true });
+  const teamTaskId = singleLine(op.teamTaskId, 'teamTaskId', LIMITS.shortText, { required: true });
+  const task = findTask(state, id, { active: true });
+  if (task.deferred) fail(`task ${id} is deferred and cannot be dispatched`);
+  if (task.status === 'done') fail(`task ${id} is done and cannot be dispatched`);
+  assertExecutable(task);
+  if (task.owner !== null && task.owner !== undefined) {
+    fail(`task ${id} already holds an execution; it cannot be dispatched while it is being worked on`);
+  }
+  const clash = state.tasks.find((candidate) => candidate.id !== id
+    && candidate.teamTaskId === teamTaskId
+    && candidate.archived !== true);
+  if (clash !== undefined) fail(`team task ${teamTaskId} is already associated with task ${clash.id}`);
+  task.teamTaskId = teamTaskId;
+  task.dispatch = { member, at: context.now };
+  touch(state, task, context.now);
+  return { op: 'dispatch', id };
+}
+
 function applyClaim(state, op, context) {
   const id = requireTaskId(op);
   const actor = typeof context.actorSessionId === 'string' && context.actorSessionId !== '' ? context.actorSessionId : undefined;
   if (actor === undefined) fail(`task ${id}: claim requires a calling session`);
+  if (!standardModeOf(context)) {
+    fail(
+      `task ${id}: a team execution is created only by the Worker's own Team-board claim;`
+      + ' the Lead dispatches with task_tree_write {"op":"dispatch",...} and never claims here',
+    );
+  }
   const task = findTask(state, id, { active: true });
   if (task.deferred) fail(`task ${id} is deferred and cannot be claimed`);
   assertExecutable(task);
@@ -1333,6 +1448,7 @@ function applyOne(state, op, context) {
     case 'restore': return applyRestore(state, op, context);
     case 'focus': return applyFocus(state, op, context);
     case 'assign': return applyAssign(state, op, context);
+    case 'dispatch': return applyDispatch(state, op, context);
     case 'claim': return applyClaim(state, op, context);
     case 'release': return applyRelease(state, op, context);
     case 'complete': return applyComplete(state, op, context);
@@ -1384,6 +1500,15 @@ export function applyOps(envelope, ops, context = {}) {
   return { envelope: state, applied };
 }
 
+/** The execution holder as the user should see it: a Lead, a named teammate, or a session. */
+function executorOf(task, worklineId) {
+  const owner = task.owner;
+  if (owner === null || owner === undefined || typeof owner.sessionId !== 'string') return null;
+  const kind = owner.sessionId === worklineId ? 'lead' : (typeof owner.member === 'string' ? 'teammate' : 'subagent');
+  const name = kind === 'lead' ? 'lead' : (typeof owner.member === 'string' ? owner.member : owner.sessionId);
+  return { kind, name, sessionId: owner.sessionId };
+}
+
 /**
  * The `task_tree_read` payload (CONTRACT.md §3).
  * @param envelope - persisted envelope or undefined.
@@ -1419,6 +1544,7 @@ export function readSnapshot(envelope, worklineId, details = false, options = {}
       deferred: task.deferred === true,
       blocked: isBlocked(task),
       owner: task.owner !== null && task.owner !== undefined,
+      executor: executorOf(task, worklineId),
       depth,
     };
     if (details) {
@@ -1534,6 +1660,7 @@ export function httpSnapshot(envelope, worklineId, options = {}) {
     progress: task.progress,
     result: task.result ?? null,
     ownerSessionId: task.owner === null || task.owner === undefined ? null : task.owner.sessionId,
+    ownerName: task.owner === null || task.owner === undefined ? null : (task.owner.member ?? null),
     ownerLive: task.owner === null || task.owner === undefined ? false : isLive(task.owner.sessionId) === true,
     completion: completionOf(task),
     completionBasis: typeof task.completionBasis === 'string' && task.completionBasis !== '' ? task.completionBasis : null,

@@ -9,7 +9,7 @@
  * Both tools locate the caller's workline automatically: the chain of
  * `SessionHeader.parentSession` up to the root session. Writes are refused for
  * subagent sessions and for Agent Team teammates (only the lead maintains the
- * tree); reads are unrestricted.
+ * tree and dispatches team work); reads are unrestricted.
  */
 
 import { EXECUTION_APPROVALS, TASK_STATUSES, applyOps, readSnapshot } from './model.js';
@@ -57,7 +57,7 @@ const WRITE_PARAMETERS = Object.freeze({
         properties: {
           op: {
             type: 'string',
-            enum: ['init', 'reviseGoal', 'create', 'update', 'move', 'defer', 'resume', 'archive', 'restore', 'focus', 'assign', 'claim', 'release', 'complete'],
+            enum: ['init', 'reviseGoal', 'create', 'update', 'move', 'defer', 'resume', 'archive', 'restore', 'focus', 'assign', 'dispatch', 'claim', 'release', 'complete'],
             description: 'The operation to apply.',
           },
           id: { type: 'string', description: 'Target task id, e.g. "t3".' },
@@ -72,7 +72,11 @@ const WRITE_PARAMETERS = Object.freeze({
           },
           member: {
             type: 'string',
-            description: 'For op "assign" (standard mode, lead session only): the subagent session id the lead read from the spawn result, or "lead" to hand the task back. Assignment is routing, not a claim: it gives no execution and changes no permission.',
+            description: 'For op "assign" (standard mode, lead session only): the subagent session id the lead read from the spawn result, or "lead" to hand the task back. For op "dispatch" (team mode, lead only): the Team member name that should claim the task. Assignment and dispatch are routing, not a claim: neither gives an execution or changes any permission.',
+          },
+          teamTaskId: {
+            type: 'string',
+            description: 'For op "dispatch" (team mode, lead only): the Team-board task id the dispatched Worker must claim (for example "task-3"). The Host binds the execution only when that Worker\'s own board claim succeeds.',
           },
           title: { type: 'string', description: 'Short task name, 1..40 characters, single line.' },
           summary: { type: 'string', description: 'One-line hover summary, at most 240 characters.' },
@@ -193,6 +197,22 @@ const READ_OUTPUT = Object.freeze({
           deferred: { type: 'boolean' },
           blocked: { type: 'boolean' },
           owner: { type: 'boolean' },
+          executor: {
+            oneOf: [
+              { type: 'null' },
+              {
+                type: 'object',
+                additionalProperties: false,
+                required: ['kind', 'name', 'sessionId'],
+                properties: {
+                  kind: { type: 'string', enum: ['lead', 'teammate', 'subagent'] },
+                  name: { type: 'string' },
+                  sessionId: { type: 'string' },
+                },
+              },
+            ],
+            description: 'Who holds the active execution: a named teammate, the lead, or a subagent session. Null when nobody does.',
+          },
           depth: { type: 'integer' },
           summary: { type: 'string' },
           progress: { type: 'string' },
@@ -230,7 +250,7 @@ const WRITE_OUTPUT = Object.freeze({
 });
 
 const READ_DESCRIPTION = [
-  'Read the workline task tree: the goal (original and current), the current focus, and every active task in tree order with its depth, status, execution approval, whether it needs the user\'s acceptance, and whether it is settled (done with nothing unfinished below it).',
+  'Read the workline task tree: the goal (original and current), the current focus, and every active task in tree order with its depth, status, execution approval, whether it needs the user\'s acceptance, whether it is settled (done with nothing unfinished below it), and who holds its active execution (the executor name), if anyone.',
   'Call this at the start of a session or branch, before resuming interrupted work, before planning a large new chunk, and whenever you need to confirm the current goal, focus, approval, or task state; do not rebuild a tree that already exists.',
   'Pass details: true to also get each task summary, progress notes, result, completion kind, and approval basis. Archived tasks are omitted by default; pass includeArchived: true when you need to check what was cancelled before (reason, time, original location, progress), for example before proposing a direction the user may already have rejected.',
 ].join(' ');
@@ -246,7 +266,7 @@ const WRITE_DESCRIPTION = [
   'A parent is complete only when nothing unfinished remains below it: pending, in_progress, blocked and deferred children all block it, while done and archived work does not. A completed parent that gains an unfinished child is shown as unfinished again and keeps its acceptance record; when that child finishes or is archived the parent is complete again. A new deliverable beneath it still needs its own acceptance, and one acceptance quote closes one task — never replay the same quote for another task.',
   'One confirmation closes one task: each acceptance quote binds to the task it names. If the user accepted several tasks in one sentence, quote the clause naming each one; if you cannot tell which task they accepted, ask instead of widening the scope.',
   'Completion, acceptance, and approval are separate. A top-level task is a delivered requirement and defaults to requiresUserAcceptance: true; its steps default to false and may be completed on your own verification with complete and no confirmedByUser. A task that requires acceptance cannot be completed by the agent: record the delivered work in progress or result, keep it in progress, and complete it only after the user accepts, with confirmedByUser: true and confirmationBasis quoting their acceptance — the quote must come after you reported the delivery, and the instruction that authorised the work does not count. Setting requiresUserAcceptance: false needs a real user instruction plus an acceptanceBasis quote; a quote that appears in no real user message is rejected, so never speak for the user. A self-verified completion can later be accepted by passing confirmedByUser: true plus confirmationBasis.',
-  'Only the lead maintains the tree. In standard mode the whole workline shares ONE execution seat: while anyone holds it, every other claim is refused. To hand a task to a subagent, release it, assign the subagent session id you read from the spawn result, let the subagent claim and release it, then assign "lead" and claim again; the new claim gets a NEW execution id, and an ended execution is never revived. Assignment is routing, not a claim: it grants nothing by itself. A subagent may call claim and release only, and only for the task assigned to it; in an Agent Team, teammates report to the lead and never write the tree themselves. In an Agent Team the lead only coordinates: the host refuses it every class A tool (writing files, edit, shell, terminal, worktree, workflow, ralph, subagent spawn) even while a task execution is held, so spawn a teammate with spawn_teammate, send it the work, and keep the tree and the Team board to yourself.',
+  'Only the lead maintains the tree. In standard mode the whole workline shares ONE execution seat: while anyone holds it, every other claim is refused. To hand a task to a subagent, release it, assign the subagent session id you read from the spawn result, let the subagent claim and release it, then assign "lead" and claim again; the new claim gets a NEW execution id, and an ended execution is never revived. Assignment is routing, not a claim: it grants nothing by itself. A subagent may call claim and release only, and only for the task assigned to it. In an Agent Team the lead only coordinates: the host refuses it every class A tool (writing files, edit, shell, terminal, worktree, workflow, ralph, subagent spawn) even while a task execution is held, so spawn a teammate with spawn_teammate, send it the work, and keep the tree and the Team board to yourself. Team mode is claim-first: the lead creates the Team-board task and the tree task, associates them with task_tree_write {"op":"dispatch","id":"<task>","member":"<worker-name>","teamTaskId":"<task-N>"}, spawns that named teammate, and the Worker claims the board task itself with team_task_update {action:"claim"} — only that claim creates the execution, resolves the Worker identity through the Team roster, and turns the tree task in_progress with its executor. There is no assign and no reassign in team mode: the Host refuses team_task_update reassign, and the lead never claims a team task in the tree.',
   'init runs once per workline and writes the immutable original goal plus the outline. When the user decides to change the project direction, call reviseGoal immediately with a reason quoting their decision — it does not need implementation to start. When you merely propose a direction, discuss it first.',
   'defer keeps the status and progress of a task that may come back later and removes it from the focus; it cannot be focused or claimed until resumed. archive means the task will not be done: it and its whole subtree leave the active tree with a reason and stay visible in the archive. A pending "not now" from the user is respected even for approved tasks.',
   'Every batch is validated first and applied atomically; on failure nothing is written.',

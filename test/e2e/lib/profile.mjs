@@ -89,7 +89,7 @@ function patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, transcr
  * @param options - `{ root, pluginRoot, fixtureDir, program, subagentProgram, team }`.
  * @returns the paths the run and the collector need.
  */
-export async function buildProfile({ root, pluginRoot, fixtureDir, program, subagentProgram, team = false }) {
+export async function buildProfile({ root, pluginRoot, fixtureDir, program, subagentProgram, teamResponses, team = false }) {
   const home = join(root, 'home');
   const profileDir = join(home, 'profiles', PROFILE_NAME);
   const pluginsDir = join(profileDir, 'plugins');
@@ -105,6 +105,7 @@ export async function buildProfile({ root, pluginRoot, fixtureDir, program, suba
   await writeFile(scriptPath, `${JSON.stringify({
     responses: program,
     ...(Array.isArray(subagentProgram) ? { subagentResponses: subagentProgram } : {}),
+    ...(teamResponses !== null && typeof teamResponses === 'object' ? { teamResponses } : {}),
   }, null, 2)}\n`);
   await writeFile(
     join(profileDir, 'package.json'),

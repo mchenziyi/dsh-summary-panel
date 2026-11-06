@@ -6,10 +6,10 @@
  *
  *   1. team mode comes from the composed service, not from the task tree: with
  *      no tree yet, a class A `write` is already refused;
- *   2. the Lead still maintains the task tree (class B), and can be handed an
- *      execution (`claim`, which this ticket leaves as it was), proving the
- *      class A refusal is independent of anyone holding a seat — it is refused
- *      even then. The next slice may hold that seat through a Worker instead;
+ *   2. the Lead still maintains the task tree (class B), but cannot create an
+ *      execution with `claim` in team mode: only a dispatched Worker's own
+ *      Team-board claim binds one (ticket #6), so the refusal is independent of
+ *      any seat the Lead could have;
  *   3. every representative class A family is refused with one clear reason:
  *      workspace write/edit, shell, workflow, and terminal/worktree/ralph/
  *      subagent spawn (the team profile replaces or disables the shipped ones,
@@ -17,7 +17,7 @@
  *      sentinel file — no sentinel must appear);
  *   4. coordination stays available: create/list a team task, spawn a real
  *      teammate, list members, message it, wait, interrupt it, and read;
- *   5. after the seat is released, class A is still refused.
+ *   5. the tree is still there, with no Lead execution recorded.
  *
  * The refusal is observed in the Lead's real tool results and the workspace
  * (no refused call left anything behind), so it is the guard talking, not the
@@ -30,12 +30,12 @@ import { join } from 'node:path';
 export const name = 'team-lead';
 export const summary = 'In team mode the Lead coordinates only: every class A tool is refused, coordination still works';
 export const team = true;
-export const prompt = 'In this Agent Team, prove the Lead only coordinates: initialise a task tree, claim a task, try every kind of concrete work, then run the team coordination round. Use "prove the team lead only coordinates" as the approval basis.';
+export const prompt = 'In this Agent Team, prove the Lead only coordinates: initialise a task tree, try to claim a task (it must be refused), try every kind of concrete work, then run the team coordination round. Use "prove the team lead only coordinates" as the approval basis.';
 
 const APPROVED_TASK = {
   op: 'create',
   title: 'Lead coordination only',
-  summary: 'the task whose seat the Lead holds while class A is refused',
+  summary: 'the task the Lead may route but never execute itself',
   executionApproval: 'approved',
   approvalBasis: 'prove the team lead only coordinates',
   status: 'in_progress',
@@ -55,16 +55,16 @@ export const program = [
       ],
     },
   },
-  // 3. Class B: the Lead takes a task execution. The exception below must not
-  //    depend on this seat: class A is refused WITH it held.
+  // 3. Class B, but claim-first owns executions: the Lead may route a task,
+  //    never create an execution from the tree in team mode.
   { tool: 'task_tree_write', arguments: { ops: [{ op: 'claim', id: 't1' }] } },
-  // 4. Every representative class A family, with a seat held.
-  { tool: 'write', arguments: { file_path: 'lead-with-seat.txt', content: 'must not land\n' } },
+  // 4. Every representative class A family, with the tree present.
+  { tool: 'write', arguments: { file_path: 'lead-with-tree.txt', content: 'must not land\n' } },
   { tool: 'edit', arguments: { file_path: 'lead-edit-target.txt', old_string: 'nothing', new_string: 'must not land' } },
-  { tool: 'bash', arguments: { command: 'printf "must not land\\n" > shell-with-seat.txt', description: 'write a sentinel file as the Lead' } },
+  { tool: 'bash', arguments: { command: 'printf "must not land\\n" > shell-with-tree.txt', description: 'write a sentinel file as the Lead' } },
   { tool: 'workflow', arguments: { script: 'return 42;', meta: { name: 'lead-denied-workflow', description: 'must not run' } } },
   ...['terminal_open', 'create_worktree', 'ralph', 'subagent'].map((tool) => ({ tool, arguments: {} })),
-  // 5. Coordination stays available with the seat held and after the denials.
+  // 5. Coordination stays available after the denials.
   { tool: 'team_task_create', arguments: { subject: 'coordination smoke', description: 'the Lead coordinates while it cannot execute' } },
   { tool: 'team_task_list', arguments: {} },
   { tool: 'spawn_teammate', arguments: { name: 'worker-a', description: 'a real teammate that only stands by', prompt: 'Stand by. Do not write anything; reply that you are ready.' } },
@@ -74,9 +74,7 @@ export const program = [
   { tool: 'interrupt_agent', arguments: { target: 'worker-a' } },
   { tool: 'task_tree_read', arguments: {} },
   { tool: 'glob', arguments: { pattern: '*' } },
-  // 6. Release the seat: class A stays refused.
-  { tool: 'task_tree_write', arguments: { ops: [{ op: 'release', id: 't1' }] } },
-  { tool: 'write', arguments: { file_path: 'lead-after-release.txt', content: 'must not land\n' } },
+  // 6. The tree still records no Lead execution.
   { text: 'team lead exercised' },
 ];
 
@@ -139,24 +137,27 @@ export async function verify({ artefacts, workdir }) {
   refusedAsLead(assertions, callMatching(lead, 'write', (input) => input.file_path === 'lead-unmanaged.txt'), 'write with no task tree yet', 'write');
   check(assertions, 'the refused write left no file', (await exists(workdir, 'lead-unmanaged.txt')) === undefined, 'lead-unmanaged.txt');
 
-  // 2. Class B: the Lead maintains the tree and holds an execution.
+  // 2. Class B: the Lead maintains the tree, but cannot claim in team mode.
   const treeWrites = callsOf(lead, 'task_tree_write');
   check(assertions, 'the Lead initialised the tree and created a task (class B)', treeWrites[0]?.status === 'completed',
     treeWrites[0] === undefined ? 'no task_tree_write call' : `status=${treeWrites[0].status} result=${JSON.stringify(treeWrites[0].result)}`);
-  check(assertions, 'the Lead claimed a task, so a seat is held during the denials', treeWrites[1]?.status === 'completed',
+  check(assertions, 'the Lead cannot create a team execution from the tree',
+    treeWrites[1]?.status === 'error'
+    && typeof treeWrites[1].result === 'string'
+    && treeWrites[1].result.includes('Team-board claim'),
     treeWrites[1] === undefined ? 'no claim call' : `status=${treeWrites[1].status} result=${JSON.stringify(treeWrites[1].result)}`);
 
-  // 3. Every class A family refused while the seat is held.
-  const withSeat = callMatching(lead, 'write', (input) => input.file_path === 'lead-with-seat.txt');
-  refusedAsLead(assertions, withSeat, 'write while holding the seat', 'write');
-  check(assertions, 'the refused write left no file', (await exists(workdir, 'lead-with-seat.txt')) === undefined, 'lead-with-seat.txt');
-  refusedAsLead(assertions, callMatching(lead, 'edit', (input) => input.file_path === 'lead-edit-target.txt'), 'edit while holding the seat', 'edit');
+  // 3. Every class A family refused while the tree exists.
+  const withTree = callMatching(lead, 'write', (input) => input.file_path === 'lead-with-tree.txt');
+  refusedAsLead(assertions, withTree, 'write while the tree exists', 'write');
+  check(assertions, 'the refused write left no file', (await exists(workdir, 'lead-with-tree.txt')) === undefined, 'lead-with-tree.txt');
+  refusedAsLead(assertions, callMatching(lead, 'edit', (input) => input.file_path === 'lead-edit-target.txt'), 'edit with the tree present', 'edit');
   check(assertions, 'the refused edit left its target absent', (await exists(workdir, 'lead-edit-target.txt')) === undefined, 'lead-edit-target.txt');
-  refusedAsLead(assertions, callMatching(lead, 'bash', (input) => String(input.command).includes('shell-with-seat.txt')), 'bash while holding the seat', 'bash');
-  check(assertions, 'the refused bash left no file', (await exists(workdir, 'shell-with-seat.txt')) === undefined, 'shell-with-seat.txt');
-  refusedAsLead(assertions, callMatching(lead, 'workflow', (input) => input.meta?.name === 'lead-denied-workflow'), 'workflow while holding the seat', 'workflow');
+  refusedAsLead(assertions, callMatching(lead, 'bash', (input) => String(input.command).includes('shell-with-tree.txt')), 'bash with the tree present', 'bash');
+  check(assertions, 'the refused bash left no file', (await exists(workdir, 'shell-with-tree.txt')) === undefined, 'shell-with-tree.txt');
+  refusedAsLead(assertions, callMatching(lead, 'workflow', (input) => input.meta?.name === 'lead-denied-workflow'), 'workflow with the tree present', 'workflow');
   for (const tool of ['terminal_open', 'create_worktree', 'ralph', 'subagent']) {
-    refusedAsLead(assertions, callMatching(lead, tool, () => true), `${tool} while holding the seat`, tool);
+    refusedAsLead(assertions, callMatching(lead, tool, () => true), `${tool} with the tree present`, tool);
     check(assertions, `the refused ${tool} body never ran`, (await exists(workdir, `probe-ran-${tool}.txt`)) === undefined, `probe-ran-${tool}.txt`);
   }
 
@@ -171,25 +172,20 @@ export async function verify({ artefacts, workdir }) {
   check(assertions, 'a real teammate was spawned', spawned !== undefined && spawned.status === 'completed',
     spawned === undefined ? 'no spawn_teammate call' : JSON.stringify(spawned.result));
 
-  // 5. Release leaves class A refused.
-  check(assertions, 'the Lead released its seat (class B)', treeWrites[2]?.status === 'completed',
-    treeWrites[2] === undefined ? 'no release call' : `status=${treeWrites[2].status} result=${JSON.stringify(treeWrites[2].result)}`);
-  refusedAsLead(assertions, callMatching(lead, 'write', (input) => input.file_path === 'lead-after-release.txt'), 'write after releasing the seat', 'write');
-  check(assertions, 'the write refused after release left no file', (await exists(workdir, 'lead-after-release.txt')) === undefined, 'lead-after-release.txt');
+  // 5. The tree records no Lead execution.
   const classACalls = ['write', 'edit', 'bash', 'workflow', 'terminal_open', 'create_worktree', 'ralph', 'subagent']
     .flatMap((tool) => callsOf(lead, tool));
   check(assertions, 'the run tried every class A family and not one completed',
-    classACalls.length === 10 && classACalls.every((call) => call.status === 'error'),
+    classACalls.length === 9 && classACalls.every((call) => call.status === 'error'),
     `${classACalls.length} call(s): ${classACalls.map((call) => `${call.tool}:${call.status}`).join(', ')}`);
 
-  // The persisted tree: the seat was real, and release cleared it.
+  // The persisted tree stays task-only: no Lead execution, no owner.
   const tree = artefacts.taskTree.present === true ? artefacts.taskTree.tree : undefined;
-  check(assertions, 'the persisted tree kept the task in progress with no owner after release',
+  check(assertions, 'the persisted tree kept the task in progress with no owner',
     (tree?.tasks ?? []).length === 1 && tree.tasks[0].status === 'in_progress' && tree.tasks[0].owner === null,
     JSON.stringify((tree?.tasks ?? []).map((task) => [task.id, task.status, task.owner])));
   const executions = Array.isArray(tree?.workline?.executions) ? tree.workline.executions : [];
-  check(assertions, 'the tree records the Lead\'s seat as a real execution that ended by release',
-    executions.length === 1 && executions[0].state === 'ended' && executions[0].endReason === 'released',
+  check(assertions, 'the tree records no Lead execution at all', executions.length === 0,
     JSON.stringify(executions.map((execution) => [execution.executionId, execution.state, execution.endReason])));
 
   // The live Team board saw the Lead and the spawned teammate.
