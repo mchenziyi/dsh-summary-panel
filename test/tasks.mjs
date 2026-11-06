@@ -20,7 +20,7 @@ import {
 import { createTaskStore } from '../host/store.js';
 import { mountTaskTree } from '../host/mount.js';
 import { taskTreeReminderFor, TASK_TREE_REMINDER, TASK_TREE_START_REMINDER, TASK_TREE_PROMPT } from '../host/prompt.js';
-import { verifyUserQuote } from '../host/evidence.js';
+import { MAX_BASIS, MIN_QUOTE, verifyUserQuote } from '../host/evidence.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -1933,6 +1933,38 @@ function titles(snapshot) {
   const userBasis = write.parameters.properties.ops.items.properties.userBasis;
   assert.equal(typeof userBasis === 'object', true, 'userBasis must be a documented parameter');
   assert.equal(userBasis.description.includes("the user's own words deciding it"), true);
+
+  // The four quote parameters must render their range from the evidence.js
+  // constants, so a boundary change cannot leave a stale hardcoded number in
+  // the model-facing schema.
+  const quoteParameters = {
+    approvalBasis: write.parameters.properties.ops.items.properties.approvalBasis,
+    userBasis,
+    acceptanceBasis: write.parameters.properties.ops.items.properties.acceptanceBasis,
+    confirmationBasis: write.parameters.properties.ops.items.properties.confirmationBasis,
+  };
+  const quoteRange = `${MIN_QUOTE} to ${MAX_BASIS}`;
+  for (const [name, parameter] of Object.entries(quoteParameters)) {
+    assert.equal(typeof parameter === 'object' && parameter !== null, true, `${name} must be a documented parameter`);
+    assert.equal(
+      typeof parameter.description === 'string' && parameter.description.includes(quoteRange),
+      true,
+      `${name} description must include the "${quoteRange}" range rendered from evidence.js constants`,
+    );
+  }
+  // Guard the exact value this repo migrated away from. A literal that happens
+  // to equal the current constants renders identically, so only a known-stale
+  // value can be told apart from the interpolated one.
+  if (MIN_QUOTE !== 3) {
+    const staleParameterNames = Object.entries(quoteParameters)
+      .filter(([, parameter]) => typeof parameter?.description === 'string' && parameter.description.includes('3 to'))
+      .map(([name]) => name);
+    assert.deepEqual(
+      staleParameterNames,
+      [],
+      `quote parameter descriptions must not repeat the legacy hardcoded "3 to" range; found in: ${staleParameterNames.join(', ')}`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
