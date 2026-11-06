@@ -13,7 +13,7 @@
  */
 
 import { EXECUTION_APPROVALS, TASK_STATUSES, applyOps, readSnapshot } from './model.js';
-import { MIN_QUOTE, verifyUserQuote } from './evidence.js';
+import { MAX_BASIS, MIN_QUOTE, verifyUserQuote } from './evidence.js';
 
 const WRITE_DENIED_SUBAGENT = 'task_tree_write is reserved for the lead session; a subagent (or teammate) must report changes to the lead instead';
 const WRITE_DENIED_TEAMMATE = 'task_tree_write is reserved for the lead in an Agent Team; teammates report progress, blockers, and completion to the lead';
@@ -85,7 +85,7 @@ const WRITE_PARAMETERS = Object.freeze({
           },
           approvalBasis: {
             type: 'string',
-            description: `The user's own words that authorised the work (quote, ${MIN_QUOTE} to 200 characters). Required to approve a task whose parent is not approved; the host rejects a quote that does not appear in a real user message.`,
+            description: `The user's own words that authorised the work (quote, ${MIN_QUOTE} to ${MAX_BASIS} characters). Required to approve a task whose parent is not approved; the host rejects a quote that does not appear in a real user message.`,
           },
           progress: { type: 'string', description: 'Meaningful progress notes, at most 2000 characters.' },
           result: { type: 'string', description: 'Completion result, at most 500 characters.' },
@@ -93,7 +93,7 @@ const WRITE_PARAMETERS = Object.freeze({
           blockerUnblock: { type: 'string', description: 'What must happen to unblock the task.' },
           userBasis: {
             type: 'string',
-            description: `For op "defer"/"archive" on approved, unfinished work: the user's own words deciding it (quote, ${MIN_QUOTE} to 200 characters). Archiving takes the whole subtree, so an approved, unfinished descendant needs the quote too. Verified against the session log; an idea that never started and finished work need no quote.`,
+            description: `For op "defer"/"archive" on approved, unfinished work: the user's own words deciding it (quote, ${MIN_QUOTE} to ${MAX_BASIS} characters). Archiving takes the whole subtree, so an approved, unfinished descendant needs the quote too. Verified against the session log; an idea that never started and finished work need no quote.`,
           },
           deferredReason: { type: 'string', description: 'Why the task is deferred (op "defer"). Deferring is a pause, not a cancellation: deferred work still blocks the parent task from being completed.' },
           resumeCondition: { type: 'string', description: 'What would let the deferred task resume.' },
@@ -104,7 +104,7 @@ const WRITE_PARAMETERS = Object.freeze({
           },
           confirmationBasis: {
             type: 'string',
-            description: `The user's own words accepting the delivered work (quote, ${MIN_QUOTE} to 200 characters). Required with confirmedByUser: true, verified against the session log, and it must come after you reported the delivery.`,
+            description: `The user's own words accepting the delivered work (quote, ${MIN_QUOTE} to ${MAX_BASIS} characters). Required with confirmedByUser: true, verified against the session log, and it must come after you reported the delivery.`,
           },
           requiresUserAcceptance: {
             type: 'boolean',
@@ -112,7 +112,7 @@ const WRITE_PARAMETERS = Object.freeze({
           },
           acceptanceBasis: {
             type: 'string',
-            description: `The user's own words that waived the acceptance requirement (quote, ${MIN_QUOTE} to 200 characters). Required to set requiresUserAcceptance: false; the host rejects a quote that appears in no real user message.`,
+            description: `The user's own words that waived the acceptance requirement (quote, ${MIN_QUOTE} to ${MAX_BASIS} characters). Required to set requiresUserAcceptance: false; the host rejects a quote that appears in no real user message.`,
           },
           originalGoal: { type: 'string', description: 'The immutable original goal for op "init".' },
         },

@@ -10,9 +10,9 @@ let dirty = false;
 // Component keys invoked in the current pass. A key that was mounted before and
 // is missing now was unmounted, exactly like React's reconciler decides.
 let renderedPaths = new Set();
-// Every root that is mounted and the keys its last pass rendered. Keyed by root
-// because the panel and the entry button are separate slots that coexist, and
-// each keeps its own tree.
+// Every root whose components are still mounted, and the keys its last pass
+// rendered. Keyed by root because the panel and the entry button are separate
+// slots that coexist, each keeping its own tree.
 const mountedRoots = new Map();
 
 function slotsAt(path) {
@@ -210,16 +210,13 @@ function dropSlots(prefix) {
     unmountSlots(slots);
     hookStates.delete(key);
   }
+  for (const [root, paths] of [...mountedRoots.entries()]) {
+    if ([...paths].every((key) => key.startsWith(prefix))) mountedRoots.delete(root);
+  }
 }
 function unmountAll(prefix = 'root') {
   dropSlots(prefix);
   dirty = true;
-}
-
-// Drop a component's hook state so one test can mount it afresh — running its
-// cleanups first, because a real unmount is never silent.
-function resetSlots(prefix = 'root') {
-  dropSlots(prefix);
 }
 // The frame hands `shell.overlay` occupants a sessions snapshot hook. Each row
 // carries `retainedBy` counts; `mainView` marks the Session on screen.
@@ -521,7 +518,7 @@ await entryFor('s1');
   // The entry button lives in the session header, so it unmounts when the user
   // clicks "new session". The panel must follow the frame's session snapshot
   // instead of whatever session it was showing last.
-  resetSlots();
+  dropSlots('root');
   const panelFollowed = () => renderTree(panelEntry.component, { useSessions });
   setSessions({ s1: { id: 's1', retainedBy: { mainView: 1 } } });
   sessionSamples.set('s2', Object.assign({}, sessionSamples.get('s2'), { tasks: emptyTree, 'tasks/status': sessionBEmptyStatus }));
@@ -562,7 +559,7 @@ await entryFor('s1');
 // ---------------------------------------------------------------------------
 
 {
-  resetSlots();
+  dropSlots('root');
   setSessions({});
   sessionSamples.set('s1', { tasks: sessionATasks, 'tasks/status': sessionAStatus, git: sessionAGit, sources: samples.sources, subagents: samples.subagents, context: samples.context, outputs: samples.outputs });
   await entryFor('s1');
