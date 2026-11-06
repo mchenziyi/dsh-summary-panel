@@ -32,6 +32,22 @@ export const TASK_STATUSES = Object.freeze(['pending', 'in_progress', 'blocked',
  */
 export const EXECUTION_APPROVALS = Object.freeze(['approved', 'pending']);
 
+/**
+ * The execution lifecycle (design v8 I0, I10, I16, §8).
+ *
+ * - `active`: the Host resolved the worker session and it is live; this is the
+ *   ONLY state that grants class A permission.
+ * - `cold`: a persisted state for a session that is not live but whose record
+ *   still resolves. It grants no class A permission until the same session
+ *   returns to `active`; a restart keeps a provable worker `active` rather than
+ *   silently stripping it, because a session that is not live cannot act.
+ * - `orphaned` (shown as "executor lost"): the session can no longer be
+ *   resolved at all. It grants nothing, is never silently released and is never
+ *   handed to another session; only a Lead force-release ends it.
+ * - `ended`: terminal, never revived.
+ */
+export const EXECUTION_STATES = Object.freeze(['active', 'cold', 'orphaned', 'ended']);
+
 /** Every operation accepted by `task_tree_write`. */
 export const TASK_OPS = Object.freeze([
   'init',
@@ -82,7 +98,7 @@ const OP_FIELDS = Object.freeze({
   assign: ['op', 'id', 'member'],
   dispatch: ['op', 'id', 'member', 'teamTaskId'],
   claim: ['op', 'id'],
-  release: ['op', 'id'],
+  release: ['op', 'id', 'force', 'reason'],
   complete: ['op', 'id', 'confirmedByUser', 'confirmationBasis', 'result'],
 });
 
@@ -510,9 +526,19 @@ function normalizeExecution(entry) {
     // Set only when a restart rebuilt this row from the claim-intent journal
     // (the design's WAL), so the record still says how it came to exist.
     rebuiltFrom: typeof entry.rebuiltFrom === 'string' && entry.rebuiltFrom !== '' ? entry.rebuiltFrom : null,
-    // This ticket only knows active/ended; cold and orphaned belong to the
-    // recovery slice, so any unknown persisted state fails closed as active.
-    state: entry.state === 'ended' ? 'ended' : 'active',
+    // The lifecycle state (design v8 I0/I16). A record written before this
+    // slice has no state and was active by definition; any state this build
+    // cannot name fails CLOSED as orphaned, because an execution nobody can
+    // describe must never grant class A permission.
+    state: EXECUTION_STATES.includes(entry.state)
+      ? entry.state
+      : (entry.state === undefined || entry.state === null ? 'active' : 'orphaned'),
+    // The last interrupt_agent call the Host observed for this executor. A
+    // force release is refused until this is set AND the session is no longer
+    // running (design v8 §6.3, §8.3).
+    interruptedAt: typeof entry.interruptedAt === 'number' ? entry.interruptedAt : null,
+    // Human-readable bookkeeping, e.g. the Lead's reason for a force release.
+    note: typeof entry.note === 'string' && entry.note !== '' ? entry.note : null,
     startedAt: numberOr(entry.startedAt, 0),
     updatedAt: numberOr(entry.updatedAt, 0),
     endedAt: entry.endedAt === null || entry.endedAt === undefined ? null : numberOr(entry.endedAt, 0),
@@ -524,6 +550,26 @@ function normalizeExecution(entry) {
 function executionsOf(workline) {
   const raw = Array.isArray(workline.executions) ? workline.executions : [];
   return raw.map(normalizeExecution).filter((entry) => entry !== undefined).slice(-500);
+}
+
+/**
+ * One execution row of a workline, normalized, or undefined when the ledger
+ * has no such record. The stamp is an index; this is the record it points at.
+ */
+export function executionOf(workline, executionId) {
+  if (typeof executionId !== 'string' || executionId === '') return undefined;
+  return executionsOf(workline).find((execution) => execution.executionId === executionId);
+}
+
+/**
+ * The lifecycle state behind a task's claim stamp. `null` means the task holds
+ * no execution; `undefined` means it holds one the ledger cannot describe.
+ */
+export function executionStateOfTask(workline, task) {
+  const owner = task !== null && typeof task === 'object' ? task.owner : null;
+  if (owner === null || owner === undefined) return null;
+  const execution = executionOf(workline, owner.executionId);
+  return execution === undefined ? undefined : execution.state;
 }
 
 /** The next monotonically increasing execution number. */
@@ -1431,6 +1477,120 @@ export function clearTaskExecution(workline, task, { expectedExecutionId, reason
   return undefined;
 }
 
+/**
+ * Record an observed `interrupt_agent` call on the executions of one worker
+ * session (design v8 §6.3, §8.3).
+ *
+ * The interrupt itself is fire-and-return and proves only that the request was
+ * SENT, never that the worker stopped. It is therefore not end evidence: it
+ * only unlocks the force-release path, whose own readiness check still requires
+ * the session to be not running. Recording is idempotent (the first interrupt
+ * is kept), because a later release reads it as a precondition, not a clock.
+ *
+ * @param envelope - the current persisted envelope.
+ * @param input - `{ sessionId, now }`.
+ * @returns `{ envelope, changed, executionIds }`.
+ */
+export function markInterrupted(envelope, input) {
+  const state = cloneEnvelope(envelope);
+  const sessionId = typeof input?.sessionId === 'string' ? input.sessionId : '';
+  const now = numberOr(input?.now, Date.now());
+  const executionIds = [];
+  if (sessionId === '') return { envelope: state, changed: false, executionIds };
+  for (const execution of state.workline.executions) {
+    if (execution.state === 'ended') continue;
+    if (execution.sessionId !== sessionId) continue;
+    if (execution.interruptedAt !== null) continue;
+    execution.interruptedAt = now;
+    execution.updatedAt = now;
+    executionIds.push(execution.executionId);
+  }
+  if (executionIds.length > 0) state.workline.updatedAt = now;
+  return { envelope: state, changed: executionIds.length > 0, executionIds };
+}
+
+/** The model-readable reason a force release is refused, and the way out. */
+function forceReleaseStop({ taskId, detail }) {
+  return `task ${taskId} cannot be force-released: ${detail}. The Host keeps the execution and the task,`
+    + ' grants nobody its workspace permission, and never hands it to another session;'
+    + ' interrupt the worker with interrupt_agent, confirm it is not running (list_agents shows it inactive),'
+    + ' then write task_tree_write {"op":"release","id":"<task>","force":true,"reason":"..."} as the Lead.';
+}
+
+/**
+ * Whether the Lead may force-release one task's execution right now.
+ *
+ * This is the single source of truth shared by the tool (which must decide
+ * BEFORE it clears the Team board) and the pure task-tree op (which must decide
+ * again when it writes). A force release needs the Lead caller, a live
+ * execution, a recorded interrupt, and proof the worker is not running; the
+ * runner's liveness answer is authoritative, and an unreachable runner counts
+ * as running (fail closed).
+ *
+ * @param envelope - the persisted envelope.
+ * @param input - `{ taskId, actorSessionId, isRunning }`; `isRunning(sessionId)`
+ *   returns whether that worker session still has a running turn.
+ * @returns `{ ok: true, execution, task }` or `{ ok: false, reason }`.
+ */
+export function forceReleaseReadiness(envelope, input) {
+  const state = envelope !== null && typeof envelope === 'object' ? envelope : {};
+  const taskId = typeof input?.taskId === 'string' ? input.taskId : '';
+  const tasks = Array.isArray(state.tasks) ? state.tasks : [];
+  const task = tasks.find((candidate) => candidate !== null
+    && typeof candidate === 'object'
+    && candidate.id === taskId);
+  if (task === undefined) return { ok: false, reason: `unknown task ${JSON.stringify(taskId)}` };
+  if (task.archived === true) {
+    return { ok: false, reason: `task ${taskId} is archived and cannot hold a force release` };
+  }
+  const leadId = state.workline !== null && typeof state.workline === 'object' ? state.workline.id : undefined;
+  if (typeof input?.actorSessionId !== 'string' || input.actorSessionId === '' || input.actorSessionId !== leadId) {
+    return {
+      ok: false,
+      reason: `task ${taskId}: a force release is reserved for the Lead session (${leadId ?? 'unknown'})`,
+    };
+  }
+  const owner = task.owner;
+  if (owner === null || owner === undefined) {
+    return { ok: false, reason: `task ${taskId} holds no execution to force-release` };
+  }
+  const execution = executionsOf(state.workline).find((candidate) => candidate.executionId === owner.executionId);
+  if (execution === undefined) {
+    return {
+      ok: false,
+      reason: `task ${taskId}: the execution stamp names ${String(owner.executionId ?? 'no execution')}`
+        + ' but the ledger has no such record, so there is nothing the Host can prove or end',
+    };
+  }
+  if (execution.state === 'ended') {
+    return {
+      ok: false,
+      reason: `task ${taskId}: execution ${execution.executionId} already ended`
+        + ` (${execution.endReason ?? 'unknown reason'}) and is never revived`,
+    };
+  }
+  const isRunning = typeof input.isRunning === 'function' ? input.isRunning : undefined;
+  if (isRunning === undefined || isRunning(execution.sessionId) !== false) {
+    return {
+      ok: false,
+      reason: forceReleaseStop({
+        taskId,
+        detail: `session ${execution.sessionId} is still running, or the Host could not prove it stopped`,
+      }),
+    };
+  }
+  if (execution.interruptedAt === null) {
+    return {
+      ok: false,
+      reason: forceReleaseStop({
+        taskId,
+        detail: `the Host recorded no interrupt for execution ${execution.executionId}`,
+      }),
+    };
+  }
+  return { ok: true, execution, task };
+}
+
 /** Allocate the next monotonic execution id (`ex-1`, `ex-2`, ...). */
 function allocateExecution(state, taskId, sessionId, now, extra = {}) {
   const executionId = `ex-${state.workline.nextExecution}`;
@@ -1719,6 +1879,29 @@ function applyRelease(state, op, context) {
   const actor = typeof context.actorSessionId === 'string' && context.actorSessionId !== '' ? context.actorSessionId : undefined;
   if (actor === undefined) fail(`task ${id}: release requires a calling session`);
   const task = findTask(state, id, { active: true });
+  if (op.force !== undefined && typeof op.force !== 'boolean') fail('force must be a boolean');
+  if (op.force === true) {
+    // Force release is the only way out of an orphaned execution (design v8
+    // I16, §6.3, §8.3): the Lead must have interrupted the worker and the Host
+    // must prove it is no longer running. It ends the execution, ends that
+    // Worker's lifetime record and clears the stamp in one atomic write; the
+    // Team board is cleared by the tool before this write.
+    const readiness = forceReleaseReadiness(state, {
+      taskId: id,
+      actorSessionId: actor,
+      isRunning: context.isRunning,
+    });
+    if (readiness.ok !== true) fail(readiness.reason);
+    const reason = op.reason === undefined ? '' : singleLine(op.reason, 'reason', LIMITS.reason);
+    const record = state.workline.executions.find((execution) => execution.executionId
+      === readiness.execution.executionId);
+    if (record !== undefined && reason !== '') record.note = reason;
+    endExecutionRecord(state.workline, readiness.execution.executionId, 'force-terminated', context.now);
+    task.owner = null;
+    touch(state, task, context.now);
+    return { op: 'release', id, executionId: readiness.execution.executionId };
+  }
+  if (op.reason !== undefined) fail('reason is only meaningful together with force: true');
   const owner = task.owner;
   if (owner !== null && owner !== undefined && owner.sessionId !== actor) {
     fail(`task ${id} is held by session ${owner.sessionId}; only its holder can release it`);
@@ -1782,9 +1965,11 @@ function applyOne(state, op, context) {
  *
  * @param envelope - the current persisted envelope, or undefined for a new workline.
  * @param ops - the flat op objects from `task_tree_write`.
- * @param context - `{ worklineId, now, actorSessionId, isLive, verifyUserQuote }`;
+ * @param context - `{ worklineId, now, actorSessionId, isLive, verifyUserQuote, isRunning }`;
  *   `verifyUserQuote(quote)` returns `{ ok, reason?, seq? }` and gates every
- *   claim of user approval or user acceptance.
+ *   claim of user approval or user acceptance; `isRunning(sessionId)` is the
+ *   runtime's answer about a live worker turn (force release needs it, and an
+ *   absent answer counts as running — fail closed).
  * @returns `{ envelope, applied }`; throws {@link TaskTreeError} without side effects.
  */
 export function applyOps(envelope, ops, context = {}) {
@@ -1794,6 +1979,9 @@ export function applyOps(envelope, ops, context = {}) {
     ? context.actorSessionId
     : undefined;
   const isLive = typeof context.isLive === 'function' ? context.isLive : () => false;
+  // A force release must prove the worker stopped; when the runtime cannot
+  // answer, the pure model keeps treating the worker as running (fail closed).
+  const isRunning = typeof context.isRunning === 'function' ? context.isRunning : () => true;
   const verifyUserQuote = typeof context.verifyUserQuote === 'function' ? context.verifyUserQuote : undefined;
   // Standard mode is the absence of an Agent Team; team mode is a later slice.
   const standardMode = context.standardMode !== false;
@@ -1808,7 +1996,9 @@ export function applyOps(envelope, ops, context = {}) {
   const applied = [];
   for (let index = 0; index < ops.length; index += 1) {
     try {
-      applied.push(applyOne(state, ops[index], { worklineId, now, actorSessionId, isLive, verifyUserQuote, standardMode }));
+      applied.push(applyOne(state, ops[index], {
+        worklineId, now, actorSessionId, isLive, isRunning, verifyUserQuote, standardMode,
+      }));
     } catch (error) {
       const message = error instanceof TaskTreeError
         ? error.message
@@ -1853,6 +2043,7 @@ export function readSnapshot(envelope, worklineId, details = false, options = {}
     : { original: workline.goal.original, current: workline.goal.current };
   const settled = settledLookup(envelope.tasks);
   const tasks = orderedTree(envelope.tasks).map(({ task, depth }) => {
+    const executionState = executionStateOfTask(workline, task);
     const row = {
       id: task.id,
       parentId: task.parentId,
@@ -1865,6 +2056,11 @@ export function readSnapshot(envelope, worklineId, details = false, options = {}
       blocked: isBlocked(task),
       owner: task.owner !== null && task.owner !== undefined,
       executor: executorOf(task, worklineId),
+      // `orphaned` is the user-visible "executor lost": the worker session can
+      // no longer be resolved, so it grants no class A permission and is never
+      // released or reassigned on its own (design v8 I0/I16).
+      executorLost: executionState === 'orphaned',
+      executionState: executionState === undefined ? 'missing' : executionState,
       depth,
     };
     if (details) {
@@ -1982,6 +2178,9 @@ export function httpSnapshot(envelope, worklineId, options = {}) {
     ownerSessionId: task.owner === null || task.owner === undefined ? null : task.owner.sessionId,
     ownerName: task.owner === null || task.owner === undefined ? null : (task.owner.member ?? null),
     ownerLive: task.owner === null || task.owner === undefined ? false : isLive(task.owner.sessionId) === true,
+    // The panel shows "executor lost" instead of a merely offline owner when
+    // the worker session cannot be resolved at all (design v8 I16).
+    executorLost: executionStateOfTask(workline, task) === 'orphaned',
     completion: completionOf(task),
     completionBasis: typeof task.completionBasis === 'string' && task.completionBasis !== '' ? task.completionBasis : null,
     completedAt: typeof task.completedAt === 'number' ? task.completedAt : null,

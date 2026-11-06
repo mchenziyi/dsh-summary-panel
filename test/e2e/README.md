@@ -88,6 +88,17 @@ A passing run removes it unless `--keep` or `--out` was passed.
   restart: the board still owns the task, so the workline records one
   unresolved `unproven-claim` conflict, creates no execution, and the guard
   refuses a fresh Worker's claim before the board is touched.
+- `lost-executor` — force termination and a lost executor. Run 1 refuses a
+  force release while the worker is idle-without-interrupt and again while it is
+  really running, then interrupts it, confirms it stopped and force-releases it
+  (the board gives up ownership, the execution ends `force-terminated`, the
+  Worker's lifetime ends), proves the terminated worker's next write is
+  refused, and lets a new Worker claim the task with a NEW execution id.
+  Between the runs the harness deletes the new Worker's persisted Session (a
+  real loss of the session store); run 2 then shows the execution marked
+  `orphaned`/`executorLost` without being released, refuses another worker's
+  write, force-releases the lost execution after interrupting and confirming it,
+  and lets a third Worker claim the task with a third execution id.
 
 ## How the profile is built
 
@@ -142,8 +153,12 @@ for the wrong file.
 - Subagents are scripted through `subagentResponses`, the `{{subagentId}}`
   placeholder and `waitForSubagentTurns`. Named teammates use their own queues in
   `teamResponses` (resolved through the live roster) and the Lead can wait for a
-  teammate's turn with `waitForTeammate: "<name>"`; a teammate's session id is
-  never exposed to the model, so scenarios identify it from the tool transcript.
+  teammate's turn with `waitForTeammate: "<name>"` or
+  `waitForTeammateTurns: { name, turns }`; `waitForMemberStatus: { name,
+  status }` polls the member's live Agent (the scripted form of `list_agents`),
+  and `holdMs` makes one model call slow so the Agent is really running while
+  the Lead acts. A teammate's session id is never exposed to the model, so
+  scenarios identify it from the tool transcript.
 - A scripted model issues one tool call per step, so two calls can never be in
   flight at the same instant from its own turn. The seat scenarios therefore
   drive concurrency through `seat-race-probe.js`, a fixture tool that calls the

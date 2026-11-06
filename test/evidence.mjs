@@ -13,7 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  applyOps, bindTeamClaim, cloneEnvelope, recordConflict, unresolvedConflictFor,
+  applyOps, bindTeamClaim, cloneEnvelope, forceReleaseReadiness, httpSnapshot, markInterrupted,
+  readSnapshot, recordConflict, unresolvedConflictFor,
 } from '../host/model.js';
 import { appendIntent, journalPath, readJournal, unsettledIntents } from '../host/journal.js';
 import { convergeWorkline } from '../host/reconcile.js';
@@ -468,6 +469,218 @@ const INTENT = {
   const unreadable = readJournal(root, 'session-root');
   assert.equal(unreadable.entries.length, 0);
   assert.equal(unreadable.unparsed.length, 1);
+}
+
+
+// ---------------------------------------------------------------------------
+// executor lifecycle: a lost executor is marked, keeps the task, and grants no
+// permission; only an explicit Lead force release ends it (ticket #10, I0/I16)
+// ---------------------------------------------------------------------------
+
+/** A Team workline whose dispatched task was claimed and bound to worker-a. */
+function claimedTeamWorkline() {
+  return bindTeamClaim(dispatchedWorkline(), {
+    taskId: 't1', teamTaskId: 'task-1', sessionId: 'worker-session', member: 'worker-a', revision: 2, now: NOW,
+  }).envelope;
+}
+
+{
+  const claimed = claimedTeamWorkline();
+  const orphaned = convergeWorkline(claimed, {
+    now: NOW + 1, teamMode: true, board: BOARD_CLAIMED, journal: [], sessionStates: { 'worker-session': 'orphaned' },
+  });
+  assert.equal(orphaned.changed, true);
+  assert.equal(orphaned.envelope.workline.executions[0].state, 'orphaned', 'the lost executor is marked orphaned');
+  assert.equal(orphaned.envelope.tasks[0].owner.executionId, 'ex-1', 'the stamp is NOT silently cleared');
+  assert.equal(orphaned.conflicts.length, 0, 'a lost executor is an execution state, not a conflict');
+  assert.deepEqual(orphaned.actions.map((action) => action.kind), ['executor-lost']);
+
+  const row = readSnapshot(orphaned.envelope, 'session-root').tasks[0];
+  assert.equal(row.executorLost, true, 'the tool snapshot says "executor lost"');
+  assert.equal(row.executionState, 'orphaned');
+  assert.equal(row.owner, true, 'the task still records who held it');
+  assert.equal(httpSnapshot(orphaned.envelope, 'session-root', { isLive: () => false }).tasks[0].executorLost, true,
+    'the panel snapshot says "executor lost" too');
+
+  // Idempotent: a second restart does not invent a new state or release it.
+  const again = convergeWorkline(orphaned.envelope, {
+    now: NOW + 2, teamMode: true, board: BOARD_CLAIMED, journal: [], sessionStates: { 'worker-session': 'orphaned' },
+  });
+  assert.equal(again.changed, false);
+
+  // A running worker is NEVER marked lost: "active" is the live answer.
+  const active = convergeWorkline(claimed, {
+    now: NOW + 1, teamMode: true, board: BOARD_CLAIMED, journal: [], sessionStates: { 'worker-session': 'active' },
+  });
+  assert.equal(active.envelope.workline.executions[0].state, 'active');
+  assert.equal(readSnapshot(active.envelope, 'session-root').tasks[0].executorLost, false,
+    'an idle worker between turns is not lost');
+
+  // Not live, but the persisted session still resolves: the same session can
+  // resume, so the execution stays `active` (a restart must not strip a
+  // provable worker, and a session that is not live cannot call a tool at all).
+  const persistedOnly = convergeWorkline(claimed, {
+    now: NOW + 1, teamMode: true, board: BOARD_CLAIMED, journal: [], sessionStates: { 'worker-session': 'active' },
+  });
+  assert.equal(persistedOnly.envelope.workline.executions[0].state, 'active');
+  assert.equal(readSnapshot(persistedOnly.envelope, 'session-root').tasks[0].executorLost, false);
+
+  // A board that completed the task still ends an orphaned execution; a board
+  // that still owns it keeps the execution untouched (design I8/I16).
+  const boardCompleted = convergeWorkline(orphaned.envelope, {
+    now: NOW + 3,
+    teamMode: true,
+    board: { tasks: [{ id: 'task-1', status: 'completed', ownerName: 'worker-a', revision: 3 }] },
+    journal: [],
+  });
+  assert.equal(boardCompleted.envelope.workline.executions[0].state, 'ended');
+  assert.equal(boardCompleted.envelope.workline.executions[0].endReason, 'completed');
+  assert.equal(boardCompleted.envelope.tasks[0].owner, null);
+}
+
+// ---------------------------------------------------------------------------
+// force release: interrupt + proof it stopped, then the Lead ends it; a
+// refused release never reaches the board, and the ended worker cannot return
+// ---------------------------------------------------------------------------
+
+{
+  const claimed = claimedTeamWorkline();
+  const leadCtx = { ...CTX, standardMode: false };
+
+  // 1. Still running -> refused, even with the interrupt recorded.
+  const interrupted = markInterrupted(claimed, { sessionId: 'worker-session', now: NOW + 10 });
+  assert.equal(interrupted.changed, true);
+  assert.equal(interrupted.envelope.workline.executions[0].interruptedAt, NOW + 10);
+  assert.throws(
+    () => applyOps(interrupted.envelope, [{ op: 'release', id: 't1', force: true }], {
+      ...leadCtx, now: NOW + 11, isRunning: () => true,
+    }),
+    /still running/,
+  );
+  const runningCheck = forceReleaseReadiness(interrupted.envelope, {
+    taskId: 't1', actorSessionId: 'session-root', isRunning: () => true,
+  });
+  assert.equal(runningCheck.ok, false);
+  assert.match(runningCheck.reason, /still running/);
+
+  // 2. Stopped but never interrupted -> refused: a stopped worker alone is not
+  //    proof that the Lead asked it to stop.
+  assert.throws(
+    () => applyOps(claimed, [{ op: 'release', id: 't1', force: true }], {
+      ...leadCtx, now: NOW + 11, isRunning: () => false,
+    }),
+    /recorded no interrupt/,
+  );
+
+  // 3. Only the Lead may force-release, and only with a recorded interrupt.
+  assert.throws(
+    () => applyOps(interrupted.envelope, [{ op: 'release', id: 't1', force: true }], {
+      ...leadCtx, now: NOW + 11, actorSessionId: 'worker-session', isRunning: () => false,
+    }),
+    /reserved for the Lead/,
+  );
+
+  // 4. Interrupt + not running -> the Lead ends the execution, ends the
+  //    Worker's lifetime record, and clears the stamp in one atomic write.
+  const outcome = applyOps(interrupted.envelope, [
+    { op: 'release', id: 't1', force: true, reason: 'worker crashed and never came back' },
+  ], { ...leadCtx, now: NOW + 12, isRunning: () => false });
+  const released = outcome.envelope;
+  const execution = released.workline.executions[0];
+  assert.equal(outcome.applied[0].executionId, 'ex-1');
+  assert.equal(execution.state, 'ended');
+  assert.equal(execution.endReason, 'force-terminated');
+  assert.equal(execution.note, 'worker crashed and never came back');
+  assert.equal(released.tasks[0].owner, null, 'the board ownership is cleared');
+  assert.equal(released.tasks[0].status, 'in_progress', 'the task itself stays open for a new Worker');
+  const lifetime = workerLifetimeOf(released.workline, 'worker-session');
+  assert.equal(lifetime.state, 'ended');
+  assert.equal(lifetime.endReason, 'force-terminated');
+  assert.equal(workerLifetimeOf(released.workline, 'session-root'), undefined, 'the Lead has no lifetime record');
+
+  // 5. The force-terminated worker can never claim again: its lifetime binding
+  //    ended, and a reprocessed claim fails closed.
+  const redispatched = applyOps(released, [{ op: 'dispatch', id: 't1', member: 'worker-b', teamTaskId: 'task-1' }], {
+    ...leadCtx, now: NOW + 13, actorSessionId: 'session-root',
+  }).envelope;
+  assert.throws(
+    () => bindTeamClaim(redispatched, {
+      taskId: 't1', teamTaskId: 'task-1', sessionId: 'worker-session', member: 'worker-b', revision: 3, now: NOW + 14,
+    }),
+    /one task in its lifetime/,
+  );
+
+  // 6. A missing runtime answer fails closed: the pure model treats the worker
+  //    as running when no isRunning function was supplied.
+  assert.throws(
+    () => applyOps(interrupted.envelope, [{ op: 'release', id: 't1', force: true }], { ...leadCtx, now: NOW + 11 }),
+    /still running/,
+  );
+
+  // 7. Non-owners cannot force-release through a plain release either.
+  assert.throws(
+    () => applyOps(interrupted.envelope, [{ op: 'release', id: 't1' }], {
+      ...leadCtx, now: NOW + 11, actorSessionId: 'other-session',
+    }),
+    /only its holder can release it/,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// the execution gate: a lost or force-terminated executor grants no class A
+// permission, and the stamp's missing ledger record fails closed
+// ---------------------------------------------------------------------------
+
+{
+  const root = tempRoot();
+  const store = createTaskStore({ root, logger: { warn() {} } });
+  const worklineId = 'session-root';
+  const live = new Set(['session-root']);
+  const ctx = {
+    get(name) {
+      if (name === 'sessions') {
+        return { get: (id) => (live.has(id) ? { header: { id, ...(id === 'worker-session' ? { parentSession: 'session-root' } : {}) } } : undefined) };
+      }
+      if (name === 'agents') return { get: () => undefined };
+      return undefined;
+    },
+  };
+  const guard = createExecutionGuard({ ctx, store });
+  const call = (sessionId, tool = 'write') => ({
+    name: tool,
+    callId: 'call-guard',
+    agent: { id: sessionId, session: { header: { id: sessionId, ...(sessionId === 'worker-session' ? { parentSession: 'session-root' } : {}) } } },
+  });
+
+  const claimed = claimedTeamWorkline();
+  await store.update(worklineId, () => ({ envelope: claimed }));
+  assert.equal(guard(call('worker-session')), undefined, 'an active execution grants class A');
+
+  await store.update(worklineId, () => ({
+    envelope: convergeWorkline(claimed, {
+      now: NOW + 1, teamMode: true, board: BOARD_CLAIMED, journal: [], sessionStates: { 'worker-session': 'orphaned' },
+    }).envelope,
+  }));
+  const lost = guard(call('worker-session'));
+  assert.match(lost, /can no longer be resolved \(executor lost\)/);
+  assert.match(lost, /Only an `active` execution grants class A permission/);
+  assert.match(lost, /force-release/);
+
+  // Force-terminated: no stamp at all, but the lifetime record explains why.
+  const released = applyOps(markInterrupted(claimed, { sessionId: 'worker-session', now: NOW + 2 }).envelope, [
+    { op: 'release', id: 't1', force: true, reason: 'gone' },
+  ], { ...CTX, standardMode: false, now: NOW + 3, isRunning: () => false }).envelope;
+  await store.update(worklineId, () => ({ envelope: released }));
+  const terminated = guard(call('worker-session'));
+  assert.match(terminated, /was force-terminated/);
+  assert.match(terminated, /never write for this workline again/);
+
+  // A stamp whose ledger record is missing fails closed instead of granting.
+  const broken = cloneEnvelope(claimed);
+  broken.tasks[0].owner.executionId = 'ex-missing';
+  await store.update(worklineId, () => ({ envelope: broken }));
+  const missing = guard(call('worker-session'));
+  assert.match(missing, /the execution ledger has no record/);
 }
 
 console.log('evidence ok');

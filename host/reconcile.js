@@ -40,6 +40,9 @@
  *   it, and clear the stamp;
  * - a task that is done/deferred/archived → end whatever execution it holds
  *   (design I8);
+ * - an execution whose worker session can no longer be resolved → mark it
+ *   `orphaned` ("executor lost"); it keeps its stamp and is never silently
+ *   released or handed to another session (design I0/I16);
  * - anything the evidence cannot prove → record a conflict and change nothing
  *   that grants permission.
  *
@@ -113,11 +116,41 @@ export function convergeWorkline(envelope, facts) {
   const board = facts?.board !== undefined && facts.board !== null ? facts.board : undefined;
   const boardReadable = teamMode && board !== undefined;
   const journal = Array.isArray(facts?.journal) ? facts.journal : [];
+  // sessionId -> 'active' | 'orphaned', resolved by the runtime before this
+  // pure pass runs. A missing entry means "not resolved this time", so the
+  // execution keeps the state it had. A worker whose persisted session still
+  // resolves stays `active` even when it is not live: the same session can
+  // resume it, and marking it cold would silently strip a restartable worker.
+  // Only a session nothing can resolve becomes `orphaned` (executor lost).
+  const sessionStates = facts?.sessionStates !== null && typeof facts?.sessionStates === 'object'
+    ? facts.sessionStates
+    : {};
   const state = cloneEnvelope(envelope);
   let changed = false;
   const actions = [];
   const conflicts = [];
   const decisions = [];
+
+  // 0. Keep every non-terminal execution's lifecycle state honest (design v8
+  //    I0/I16). This is what marks a lost executor WITHOUT ending its
+  //    execution: the stamp stays, the worker keeps its lifetime record, and
+  //    nobody else is handed the task. `orphaned` grants no class A permission;
+  //    only the same session may return to `active`.
+  for (const execution of state.workline.executions) {
+    if (execution.state === 'ended') continue;
+    const resolved = sessionStates[execution.sessionId];
+    if (resolved !== 'active' && resolved !== 'orphaned') continue;
+    if (execution.state === resolved) continue;
+    execution.state = resolved;
+    execution.updatedAt = now;
+    changed = true;
+    actions.push({
+      kind: resolved === 'active' ? 'executor-active' : 'executor-lost',
+      taskId: execution.taskId,
+      executionId: execution.executionId,
+      sessionId: execution.sessionId,
+    });
+  }
 
   const stop = (kind, taskId, evidence) => {
     const conflict = recordConflict(state.workline, {
@@ -363,7 +396,7 @@ export function convergeWorkline(envelope, facts) {
  * member may read it. When it cannot be read, the pass reconciles the tree
  * alone and the next call tries again.
  */
-async function factsFor(ctx, exec, sessions) {
+async function factsFor(ctx, exec, sessions, store) {
   const agentTeams = teamServiceOf(ctx);
   const membership = agentTeams === undefined ? undefined : teamMembershipOf(agentTeams, exec?.agent);
   const caller = callerOf(exec);
@@ -373,6 +406,27 @@ async function factsFor(ctx, exec, sessions) {
       worklineId = await sessions.rootSessionId(caller.sessionId, caller.header);
     } catch {
       worklineId = undefined;
+    }
+  }
+  // Resolve every non-terminal executor before the pure pass runs: `active`
+  // (live, or persisted and able to resume) or `orphaned` (unresolvable =
+  // lost). The runtime, not the tree, owns this answer; when it cannot be read
+  // the pass keeps the persisted state instead of guessing (fail closed).
+  let sessionStates;
+  if (worklineId !== undefined) {
+    try {
+      const envelope = await store.read(worklineId);
+      const executions = Array.isArray(envelope?.workline?.executions) ? envelope.workline.executions : [];
+      const states = {};
+      for (const execution of executions) {
+        if (execution === null || typeof execution !== 'object' || execution.state === 'ended') continue;
+        const sessionId = execution.sessionId;
+        if (typeof sessionId !== 'string' || sessionId === '' || states[sessionId] !== undefined) continue;
+        states[sessionId] = await sessions.resolveSession(sessionId);
+      }
+      sessionStates = states;
+    } catch {
+      sessionStates = undefined;
     }
   }
   let board;
@@ -385,7 +439,7 @@ async function factsFor(ctx, exec, sessions) {
       /* an unreadable board proves nothing: reconcile the tree alone */
     }
   }
-  return { membership, caller, worklineId, teamMode: agentTeams !== undefined, board };
+  return { membership, caller, worklineId, teamMode: agentTeams !== undefined, board, sessionStates };
 }
 
 /**
@@ -466,7 +520,7 @@ export function registerEvidence(ctx, { store, sessions, logger = console } = {}
   }
 
   /** Reconcile one workline once, before the guard reads its snapshot. */
-  function reconcileOnce({ worklineId, board, teamMode }) {
+  function reconcileOnce({ worklineId, board, teamMode, sessionStates }) {
     const existing = reconciled.get(worklineId);
     if (existing !== undefined) return existing;
     let present;
@@ -490,7 +544,7 @@ export function registerEvidence(ctx, { store, sessions, logger = console } = {}
         outcome = await store.update(worklineId, (current) => {
           if (current === undefined) return undefined;
           converged = convergeWorkline(current, {
-            now: Date.now(), teamMode, board, journal: journal.entries,
+            now: Date.now(), teamMode, board, journal: journal.entries, sessionStates,
           });
           if (converged.changed !== true) return undefined;
           return { envelope: converged.envelope };
@@ -512,6 +566,10 @@ export function registerEvidence(ctx, { store, sessions, logger = console } = {}
           warn(`[summary-panel] workline ${worklineId}: rebuilt execution ${action.executionId} for task ${action.taskId} from the claim journal`);
         } else if (action.kind === 'journal-aborted') {
           warn(`[summary-panel] workline ${worklineId}: dropped a stale claim intent for task ${action.taskId}`);
+        } else if (action.kind === 'executor-lost') {
+          warn(`[summary-panel] workline ${worklineId}: executor ${action.sessionId} for task ${action.taskId}`
+            + ` (execution ${action.executionId}) can no longer be resolved; the execution is marked orphaned`
+            + ' (executor lost), still holds the task, and needs a Lead force release');
         }
       }
       return outcome;
@@ -549,11 +607,16 @@ export function registerEvidence(ctx, { store, sessions, logger = console } = {}
 
   const pre = async (exec, next) => {
     try {
-      const facts = await factsFor(ctx, exec, sessions);
+      const facts = await factsFor(ctx, exec, sessions, store);
       if (facts.worklineId !== undefined) {
         // Reconcile BEFORE deciding anything: the guard reads the store's
         // snapshot right after this hook, so it must see the converged state.
-        await reconcileOnce({ worklineId: facts.worklineId, board: facts.board, teamMode: facts.teamMode });
+        await reconcileOnce({
+          worklineId: facts.worklineId,
+          board: facts.board,
+          teamMode: facts.teamMode,
+          sessionStates: facts.sessionStates,
+        });
         const intent = claimIntent({ exec, membership: facts.membership, worklineId: facts.worklineId });
         if (intent !== undefined && appendIntent(store.root, facts.worklineId, intent)) {
           journaled.set(intent.requestId, { worklineId: facts.worklineId });
