@@ -7,6 +7,13 @@ let hookIndex = 0;
 let pendingEffects = [];
 let pendingCleanups = [];
 let dirty = false;
+// Component keys invoked in the current pass. A key that was mounted before and
+// is missing now was unmounted, exactly like React's reconciler decides.
+let renderedPaths = new Set();
+// The root rendered last and the keys it mounted, so a re-render of the same
+// root can tell which components really disappeared.
+let lastRoot = null;
+let lastRootPaths = new Set();
 
 function slotsAt(path) {
   let slots = hookStates.get(path);
@@ -60,7 +67,9 @@ function renderNode(node, path) {
   if (type === Fragment) { renderNode(props.children, path); return; }
   if (typeof type === 'function') {
     const savedSlots = currentSlots; const savedIndex = hookIndex;
-    const slots = slotsAt(`${path}#${type.name || 'anonymous'}`);
+    const key = `${path}#${type.name || 'anonymous'}`;
+    renderedPaths.add(key);
+    const slots = slotsAt(key);
     currentSlots = slots;
     hookIndex = 0;
     let result;
@@ -77,9 +86,18 @@ function renderNode(node, path) {
   if (typeof type === 'string') renderNode(props.children, path);
 }
 async function renderTree(Component, props, passes = 8) {
+  // Re-rendering the same root continues one tree, so a component that vanished
+  // since the previous render of that root really was unmounted. A different
+  // root is a different slot of the UI (the panel and the entry button coexist),
+  // and unmounting across them would be wrong.
+  let previous = Component === lastRoot ? lastRootPaths : new Set();
   for (let pass = 0; pass < passes; pass += 1) {
     dirty = false; output = []; pendingEffects = []; pendingCleanups = []; hookIndex = 0;
+    renderedPaths = new Set();
     renderNode(React.createElement(Component, props), 'root');
+    unmountVanished(previous);
+    previous = new Set(renderedPaths);
+    lastRootPaths = renderedPaths;
     for (const cleanup of pendingCleanups) { try { cleanup(); } catch (error) { errors.push(error); } }
     for (const { slot, index, fn } of pendingEffects) {
       try {
@@ -92,7 +110,39 @@ async function renderTree(Component, props, passes = 8) {
     await new Promise((resolve) => setTimeout(resolve, 25));
     if (!dirty) break;
   }
+  lastRoot = Component;
   return output.join(' ');
+}
+
+/**
+ * Unmount every component that was rendered in the previous pass of this tree
+ * but not in the current one: run its effect cleanups and drop its hook state.
+ * Scoped to one renderTree run on purpose — the panel and the entry button live
+ * in different slots of the real UI, so a component missing from this tree is
+ * not necessarily gone from the screen.
+ */
+function unmountVanished(previous) {
+  for (const key of previous) {
+    if (renderedPaths.has(key)) continue;
+    const slots = hookStates.get(key);
+    if (slots === undefined) continue;
+    unmountSlots(slots);
+    hookStates.delete(key);
+  }
+}
+
+/** Run one component's effect cleanups, last effect first, like React. */
+function unmountSlots(slots) {
+  for (let index = slots.effects.length - 1; index >= 0; index -= 1) {
+    const effect = slots.effects[index];
+    if (effect === undefined || typeof effect.cleanup !== 'function') continue;
+    try {
+      effect.cleanup();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  slots.effects = [];
 }
 
 const samples = {
@@ -159,19 +209,20 @@ globalThis.fetch = async (url) => {
 function unmountAll(prefix = 'root') {
   for (const [key, slots] of [...hookStates.entries()]) {
     if (!key.startsWith(prefix)) continue;
-    for (const effect of slots.effects) {
-      if (effect !== undefined && typeof effect.cleanup === 'function') {
-        try { effect.cleanup(); } catch (error) { errors.push(error); }
-      }
-    }
+    unmountSlots(slots);
     hookStates.delete(key);
   }
   dirty = true;
 }
 
-// Drop a component's hook state so one test can mount it afresh.
+// Drop a component's hook state so one test can mount it afresh — running its
+// cleanups first, because a real unmount is never silent.
 function resetSlots(prefix = 'root') {
-  for (const key of [...hookStates.keys()]) if (key.startsWith(prefix)) hookStates.delete(key);
+  for (const [key, slots] of [...hookStates.entries()]) {
+    if (!key.startsWith(prefix)) continue;
+    unmountSlots(slots);
+    hookStates.delete(key);
+  }
 }
 // The frame hands `shell.overlay` occupants a sessions snapshot hook. Each row
 // carries `retainedBy` counts; `mainView` marks the Session on screen.
@@ -247,6 +298,29 @@ if (panelEntry === undefined) throw new Error('summary panel overlay was not reg
 const text = await renderTree(panelEntry.component, {});
 const expected = ['Git', 'main', '分支 (3)', '最近提交', '输出内容', '子智能体', '来源', '子智能体会话', 'Researcher', '返回父会话', '当前任务', 'Host 半', '存储与工具', '登录功能', '修复 Token 过期'];
 const failures = [];
+
+// Harness self-test: a component that stops being rendered must run its cleanup
+// and lose its state. Every conditional-section case below depends on this, and
+// before it existed the suite could not see a leaked timer or a stale popover.
+{
+  const cleanups = [];
+  function Probe() {
+    const [count] = React.useState(0);
+    React.useEffect(() => () => { cleanups.push(count); }, []);
+    return `probe-${count}`;
+  }
+  function Holder({ show }) {
+    return show ? React.createElement(Probe) : 'gone';
+  }
+  const mounted = await renderTree(Holder, { show: true });
+  if (mounted !== 'probe-0') failures.push(`harness: probe did not mount (${mounted})`);
+  const unmounted = await renderTree(Holder, { show: false });
+  if (unmounted !== 'gone') failures.push(`harness: probe survived unmount (${unmounted})`);
+  if (cleanups.length !== 1) failures.push(`harness: unmount cleanup ran ${cleanups.length} times, expected 1`);
+  const remounted = await renderTree(Holder, { show: true });
+  if (remounted !== 'probe-0') failures.push(`harness: remount kept stale state (${remounted})`);
+  if (cleanups.length !== 1) failures.push('harness: remount ran an extra cleanup');
+}
 
 // Clicking a task opens the lightweight popover outside the list, and closing
 // it removes the detail text again.
