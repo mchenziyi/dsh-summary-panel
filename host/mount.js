@@ -21,6 +21,7 @@ import { createSeatTable, registerSeatObservers } from './reservation.js';
 import { registerTeamClaimBinding } from './binding.js';
 import { registerTeamExecutionEnd } from './team-lifetime.js';
 import { registerEvidence } from './reconcile.js';
+import { registerInterruptEvidence } from './recovery.js';
 
 /**
  * @param ctx - the plugin context.
@@ -89,6 +90,16 @@ export function mountTaskTree(ctx, options = {}) {
     logger.warn(`[summary-panel] team execution end disabled: ${String(error?.message ?? error)}`);
   }
 
+  // Interrupt evidence (ticket #10): a successful interrupt_agent records
+  // interruptedAt on that worker's execution. It is not end evidence — only a
+  // Lead force release may end an orphaned execution (design I16).
+  let recovery = false;
+  try {
+    recovery = registerInterruptEvidence(ctx, { store, sessions, logger });
+  } catch (error) {
+    logger.warn(`[summary-panel] interrupt evidence disabled: ${String(error?.message ?? error)}`);
+  }
+
   // Claim evidence (ticket #8): the intent journal is written before a board
   // claim, and the workline is reconciled once per process on the first tool
   // call. It is registered after the binding so that its post-execute
@@ -108,6 +119,6 @@ export function mountTaskTree(ctx, options = {}) {
   }
 
   return {
-    store, seats, tools, prompt, guard, binding, teamLifetime, evidence, seatObservers,
+    store, seats, tools, prompt, guard, binding, teamLifetime, evidence, recovery, seatObservers,
   };
 }

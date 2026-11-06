@@ -23,14 +23,23 @@
  *   session log contains n completed turns, which is the scripted form of
  *   polling `list_agents` until the child is inactive.
  *
- * A Team scenario needs named teammates, whose ids the model never sees. Two
- * more extensions cover that:
+ * A Team scenario needs named teammates, whose ids the model never sees. More
+ * extensions cover that:
  *
  * - `teamResponses` maps a roster name to its own program, resolved through the
  *   live Agent Team membership of the calling session.
  * - `waitForTeammate: "<name>"` holds the Lead's next request until that
  *   teammate has completed one turn, resolved through `listMembers` (the roster
- *   is the same authority the product uses).
+ *   is the same authority the product uses); `waitForTeammateTurns: { name,
+ *   turns }` waits for a later turn of the same teammate.
+ * - `waitForMemberStatus: { name, status: "running"|"inactive" }` holds the
+ *   next request until the roster member's live Agent is in that state. A real
+ *   model would poll `list_agents`; this scripted form removes the race from
+ *   "interrupt a worker that is definitely still running" and "confirm it
+ *   stopped".
+ * - `holdMs: n` makes one model call take that long, the scripted form of a
+ *   slow turn: the Agent really is running until the wait ends or the Lead
+ *   interrupts it.
  */
 
 import { readFileSync } from 'node:fs';
@@ -142,27 +151,50 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  /** Completed turns of one named teammate, resolved through the Team roster. */
-  async function waitForTeammateTurn(name, options) {
+  /** The roster id of one named teammate, resolved through the Lead's roster. */
+  async function rosterMemberId(name, options) {
     const deadline = Date.now() + 40_000;
-    let memberId;
-    while (memberId === undefined) {
+    while (true) {
       try {
         const lead = agentsOf().get?.(options?.sessionId);
         const teams = ctx.get('agentTeams');
         const row = teams?.listMembers?.(lead)?.find?.((member) => member.name === name);
-        memberId = row?.id;
+        if (typeof row?.id === 'string' && row.id !== '') return row.id;
       } catch {
-        memberId = undefined;
+        /* the roster may not be published yet */
       }
-      if (memberId === undefined) {
-        if (Date.now() > deadline) throw new Error(`scripted wait: teammate ${JSON.stringify(name)} never joined the roster`);
-        await delay(20);
-      }
+      if (Date.now() > deadline) throw new Error(`scripted wait: teammate ${JSON.stringify(name)} never joined the roster`);
+      await delay(20);
     }
-    while (turnEndsOf(memberId) < 1) {
+  }
+
+  /** Hold until one named teammate has completed `turns` turn(s). */
+  async function waitForTeammateTurns(name, turns, options) {
+    const memberId = await rosterMemberId(name, options);
+    const deadline = Date.now() + 40_000;
+    while (turnEndsOf(memberId) < turns) {
       if (Date.now() > deadline) {
-        throw new Error(`scripted wait: teammate ${JSON.stringify(name)} did not finish a turn in 40s`);
+        throw new Error(`scripted wait: teammate ${JSON.stringify(name)} did not finish ${turns} turn(s) in 40s`);
+      }
+      await delay(20);
+    }
+  }
+
+  /** Completed turns of one named teammate, resolved through the Team roster. */
+  async function waitForTeammateTurn(name, options) {
+    await waitForTeammateTurns(name, 1, options);
+  }
+
+  /** Hold until the named teammate's live Agent is running or inactive. */
+  async function waitForMemberStatus(name, status, options) {
+    const memberId = await rosterMemberId(name, options);
+    const deadline = Date.now() + 40_000;
+    const wantRunning = status === 'running';
+    while (true) {
+      const running = agentsOf().get?.(memberId)?.status === 'running';
+      if (running === wantRunning) return;
+      if (Date.now() > deadline) {
+        throw new Error(`scripted wait: teammate ${JSON.stringify(name)} never became ${status} in 40s`);
       }
       await delay(20);
     }
@@ -217,6 +249,17 @@ export function apply(ctx, config = {}) {
         }
         if (typeof response.waitForTeammate === 'string') {
           await waitForTeammateTurn(response.waitForTeammate, options);
+        }
+        if (Number.isInteger(response.holdMs) && response.holdMs > 0) {
+          await delay(Math.min(response.holdMs, 60_000));
+        }
+        if (Number.isInteger(response.waitForTeammateTurns?.turns)
+          && typeof response.waitForTeammateTurns?.name === 'string') {
+          await waitForTeammateTurns(response.waitForTeammateTurns.name, response.waitForTeammateTurns.turns, options);
+        }
+        if (typeof response.waitForMemberStatus?.name === 'string'
+          && (response.waitForMemberStatus.status === 'running' || response.waitForMemberStatus.status === 'inactive')) {
+          await waitForMemberStatus(response.waitForMemberStatus.name, response.waitForMemberStatus.status, options);
         }
         for (const chunk of chunksFor(enriched, serial, finishKind)) yield chunk;
       })();

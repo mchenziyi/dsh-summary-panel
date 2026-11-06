@@ -138,14 +138,78 @@ function worklineOf(ctx, sessionId, header) {
   return currentId;
 }
 
-/** Whether any live task in the tree carries this session's claim stamp. */
-function holdsExecution(tasks, sessionId) {
-  return tasks.some((task) => task !== null
+/** The live task in the tree that carries this session's claim stamp. */
+function stampedTask(tasks, sessionId) {
+  return tasks.find((task) => task !== null
     && typeof task === 'object'
     && task.archived !== true
     && task.owner !== null
     && typeof task.owner === 'object'
     && task.owner.sessionId === sessionId);
+}
+
+/** Whether the runtime still knows this session (a cold worker may wake up). */
+function liveNow(ctx, sessionId) {
+  if (typeof sessionId !== 'string' || sessionId === '') return false;
+  try {
+    if (ctx.get('sessions')?.get?.(sessionId) !== undefined) return true;
+  } catch {
+    /* fall through */
+  }
+  try {
+    return ctx.get('agents')?.get?.(sessionId) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The model-readable refusal of a stamp whose execution no longer grants
+ * permission (design v8 I0/I16, ticket #10). A lost executor is not silently
+ * released: the reason names the execution, says nobody else may take it, and
+ * gives the only way out (a Lead force release after interrupt + confirmation).
+ */
+export function executionLossReason({
+  tool, sessionId, task, execution, worklineId,
+}) {
+  const state = typeof execution?.state === 'string' && execution.state !== '' ? execution.state : 'orphaned';
+  const lost = state === 'orphaned';
+  const what = lost
+    ? 'its worker session can no longer be resolved (executor lost)'
+    : (state === 'cold'
+      ? 'its worker session is not live in this process (cold)'
+      : `it is ${state}`);
+  return [
+    `${tool} is a class A tool (workspace modification or code execution), and session ${sessionId}`
+    + ` holds execution ${execution?.executionId ?? '(unknown)'} on task ${task.id} of workline ${worklineId}, but ${what}.`,
+    'Only an `active` execution grants class A permission; a cold or lost execution grants none.',
+    'The execution is not released and the task is not handed to another session. The Lead must interrupt its worker'
+    + ` (interrupt_agent), confirm it is not running, then force-release it: task_tree_write {"op":"release","id":"${task.id}","force":true,"reason":"..."}.`,
+  ].join(' ');
+}
+
+/** The refusal of a Worker whose execution the Lead already force-terminated. */
+export function terminatedWorkerReason({ tool, sessionId, lifetime }) {
+  const where = typeof lifetime?.boundTaskId === 'string' ? `task ${lifetime.boundTaskId}` : 'its task';
+  return [
+    `${tool} is a class A tool (workspace modification or code execution), and session ${sessionId}`
+    + ` was force-terminated on ${where}${typeof lifetime?.executionId === 'string' ? ` (execution ${lifetime.executionId})` : ''}:`
+    + ' its execution ended and its one lifetime binding is ended, so it can never write for this workline again.',
+    'A retry needs a NEW Worker instance; the Lead re-dispatches the task and the new Worker claims it, which gets a NEW execution id.',
+  ].join(' ');
+}
+
+/** The refusal when the stamp names an execution the ledger does not hold. */
+export function executionMissingReason({
+  tool, sessionId, task, worklineId,
+}) {
+  return [
+    `${tool} is a class A tool (workspace modification or code execution), and session ${sessionId}`
+    + ` carries a claim stamp on task ${task.id} of workline ${worklineId}, but the execution ledger has no record`
+    + ` matching ${String(task.owner?.executionId ?? '(no execution id)')}.`,
+    'The index is not the truth and a missing record grants nothing (fail closed).',
+    'The Lead should read the task tree, reconcile the evidence, and let the worker claim again only if the tree says the task is free.',
+  ].join(' ');
 }
 
 /**
@@ -365,6 +429,26 @@ export function createExecutionGuard({ ctx, store, seats }) {
         sessionId: caller.sessionId,
       });
       if (request !== undefined) {
+        // In team mode the tree task and the Team-board task are the same work
+        // under two ids; a Lead's tree release must collide with a Worker's
+        // board claim on the task seat, or both could be in flight (I14).
+        if (agentTeams !== undefined && label === 'task_tree_write' && typeof worklineId === 'string') {
+          try {
+            const tree = store.snapshot(worklineId);
+            const ops = Array.isArray(exec?.arguments?.ops) ? exec.arguments.ops : [];
+            for (const op of ops) {
+              if (op === null || typeof op !== 'object' || (op.op !== 'release' && op.op !== 'complete')) continue;
+              const task = (Array.isArray(tree.tasks) ? tree.tasks : []).find((candidate) => candidate !== null
+                && typeof candidate === 'object'
+                && candidate.id === op.id);
+              if (task === null || task === undefined) continue;
+              if (typeof task.teamTaskId !== 'string' || task.teamTaskId === '') continue;
+              if (!request.keys.includes(`tk:${task.teamTaskId}`)) request.keys.push(`tk:${task.teamTaskId}`);
+            }
+          } catch {
+            /* an unreadable tree keeps the keys the seat request already has */
+          }
+        }
         const taken = seats.reserve({ requestId: exec?.callId, tool: label, ...request });
         if (taken.ok !== true) {
           return seatDenialReason({ tool: label, sessionId: caller.sessionId ?? '(unknown)', holder: taken.holder });
@@ -392,7 +476,37 @@ export function createExecutionGuard({ ctx, store, seats }) {
         : worklineOf(ctx, caller.sessionId, caller.header);
       const tree = store.snapshot(worklineId);
       if (tree.present !== true) return undefined;
-      if (holdsExecution(tree.tasks, caller.sessionId)) return undefined;
+      const stamped = stampedTask(tree.tasks, caller.sessionId);
+      if (stamped !== undefined) {
+        // The stamp is the index; the ledger row is the record. Only `active`
+        // grants class A permission (design v8 I0). A cold or orphaned
+        // execution is refused here, and the lock is never silently removed.
+        const executions = Array.isArray(tree.executions) ? tree.executions : undefined;
+        if (executions === undefined) return undefined;
+        const execution = executions.find((candidate) => candidate !== null
+          && typeof candidate === 'object'
+          && candidate.executionId === stamped.owner.executionId);
+        if (execution === undefined) {
+          return executionMissingReason({ tool: label, sessionId: caller.sessionId, task: stamped, worklineId });
+        }
+        const state = typeof execution.state === 'string' && execution.state !== '' ? execution.state : 'active';
+        if (state === 'active') return undefined;
+        // A cold or orphaned execution may come back to `active` for the SAME
+        // session (design I16), so a session the Host can resolve live again is
+        // allowed to continue its own work. A lost executor cannot be live, so
+        // this never widens permission for one.
+        if ((state === 'cold' || state === 'orphaned') && liveNow(ctx, caller.sessionId)) return undefined;
+        return executionLossReason({
+          tool: label, sessionId: caller.sessionId, task: stamped, execution: { ...execution, state }, worklineId,
+        });
+      }
+      const lifetime = tree.workers !== null && typeof tree.workers === 'object' && !Array.isArray(tree.workers)
+        ? tree.workers[caller.sessionId]
+        : undefined;
+      if (lifetime !== null && typeof lifetime === 'object'
+        && lifetime.state === 'ended' && lifetime.endReason === 'force-terminated') {
+        return terminatedWorkerReason({ tool: label, sessionId: caller.sessionId, lifetime });
+      }
       return denialReason({ tool: label, sessionId: caller.sessionId, worklineId });
     } catch (error) {
       // Fail closed: an unreadable gate never widens permission.

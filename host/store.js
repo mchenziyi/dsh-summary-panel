@@ -211,9 +211,19 @@ export function createTaskStore(options = {}) {
     const conflicts = Array.isArray(rawConflicts)
       ? rawConflicts.filter((conflict) => conflict !== null && typeof conflict === 'object' && conflict.resolvedAt === null)
       : undefined;
+    // The execution ledger travels with the tasks because the guard must decide
+    // SYNCHRONOUSLY whether the stamp's execution is still `active`: a cold or
+    // orphaned execution grants no class A permission even though the stamp (an
+    // index, not the truth) still names it (design v8 I0).
+    const executions = Array.isArray(workline.executions)
+      ? workline.executions.filter((execution) => execution !== null
+        && typeof execution === 'object'
+        && typeof execution.executionId === 'string')
+      : undefined;
     return {
       present: true,
       tasks,
+      ...(executions !== undefined && executions.length > 0 ? { executions } : {}),
       ...(workers !== undefined && Object.keys(workers).length > 0 ? { workers } : {}),
       ...(conflicts !== undefined && conflicts.length > 0 ? { conflicts } : {}),
     };
@@ -234,8 +244,10 @@ export function createTaskStore(options = {}) {
    * workline is unmanaged.
    *
    * @param worklineId - the root session id of the workline.
-   * @returns `{ present, tasks, workers?, unreadable? }`; `workers` is present
-   *   only once a Worker lifetime record exists, and `tasks` is read-only.
+   * @returns `{ present, tasks, executions?, workers?, conflicts?, unreadable? }`;
+   *   `executions` is present once a ledger row exists (the guard reads its
+   *   state), `workers` only once a lifetime record exists, and `tasks`,
+   *   `executions` and `workers` are read-only.
    */
   function snapshot(worklineId) {
     let file;

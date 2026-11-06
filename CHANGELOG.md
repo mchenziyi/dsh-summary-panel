@@ -2,6 +2,16 @@
 
 ## 未发布
 
+**失联与强制终止（执行调度 v8 的恢复切片，票据 #10）**
+
+- 执行状态从"活动/结束"扩为 `active | cold | orphaned | ended`：`active` 是唯一授予 A 类权限的状态；`orphaned` 就是用户看到的"执行者已失联"（`executorLost`）。重启对账会解析每个未终结执行的执行者会话：会话仍可解析（活着的，或已持久化、可作为同一会话恢复的）保持 `active`——正常的两轮空闲不会被误判；只有谁都解析不出来的会话转为 `orphaned`，此时执行戳、Worker 台账与 Board 归属全部保留，**绝不悄悄释放、也绝不改派给别的会话**。
+- 失联可见：`task_tree_read` 的任务行新增 `executorLost` 与 `executionState`，HTTP 面板载荷同步新增 `executorLost`，任务行显示"执行者已失联"徽标、详情显示"执行者已失联"；对账时在日志里点名执行号、任务与会话。
+- 强制释放只属于 Lead，且必须"先中断、再确认已停止"：Host 在 post-execute 观察成功的 `interrupt_agent`（团队按 roster 名字解析会话，标准模式按 `agent_id`）并把 `interruptedAt` 记到该会话的执行上；`task_tree_write {"op":"release","id","force":true,"reason"}` 的放行条件是调用者就是 Lead、执行未终结、Host 记过这个中断、并且运行时的 Agent 状态证明它当前不在 `running`（读不到就按"仍在运行"处理）。仍空闲但没有中断、或中断后仍在运行，都会被拒并说明原因。
+- 释放顺序与终态：团队模式先释放 Board（I13：Board 失败则账本保持原样、可重试），然后在同一次原子树写里结束执行（`endReason:"force-terminated"`，可带 Lead 的 `reason`）、结束该 Worker 的终身台账、清空执行戳；任务本身保持 `in_progress`，等待重新派发。被强制终止的 Worker 再写文件会被明确拒绝（`force-terminated` 理由），因为它的执行已结束、终身绑定也已结束；重试必须换新的 Worker 实例。
+- 新 Worker 接管：重新 `dispatch` 后，新 Worker 自己认领 Board 任务，得到新的执行号；失联与终止都不会复活旧执行。
+- 执行门禁改为读执行账本状态：只有 `active` 放行；`cold`/`orphaned` 只有在同一会话又能被解析为活着时才恢复（I16），否则明确拒绝并给出"Lead 先中断、确认停止、再强制释放"的出口。团队模式下 Lead 的树 `release`/`complete` 现在同时占用 Board 任务的 `tk:` 座位，避免与 Worker 的 Board 认领在途重叠。
+- 真实进程 e2e 新增 `lost-executor`（两轮）：空闲但未中断时强制释放被拒、Worker 真在运行时被拒、中断并确认停止后成功且终止的 Worker 再写被拒、新 Worker 拿到新执行号；轮次之间删除 worker-b 的持久化 Session 制造真实的"无法解析"，重启后执行被标为失联且仍持有任务、另一 Worker 不能写也不能接管，Lead 中断并确认后强制释放成功，worker-c 认领得到第三个执行号。测试装置新增 `waitForMemberStatus`、`waitForTeammateTurns` 与 `holdMs`（让脚本模型的某一轮真的慢下来，便于观察运行态）。
+
 **执行证据与崩溃对账（执行调度 v8 的证据切片）**
 
 - 只有认领证据才能建立执行：`dispatch` 只是路由，Board 上的 `ownerId` 单独也不构成证据。团队模式的判定要求"认领意图 + Board revision 恰好 +1 + owner 匹配 + Worker 未终结"同时成立，缺一即冲突，绝不猜执行者。
