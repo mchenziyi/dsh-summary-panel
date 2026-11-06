@@ -37,11 +37,19 @@
  * caller's tree comes from the store's synchronous snapshot (its in-process
  * cache, read from disk only when that workline has not been touched yet).
  *
+ * A committed execution is not enough on its own: the guard decides before the
+ * tree write, so a second claim would pass the same coarse checks while the
+ * first is still in flight. Every ownership-changing call therefore takes a
+ * synchronous seat from `host/reservation.js` here, before dispatch; the seat
+ * is released only by that call's own tool result (or its agent going idle),
+ * never by a timer.
+ *
  * A workline with no persisted tree is unmanaged: nothing is restricted, so
  * ordinary sessions are never affected (design §14.4).
  */
 
 import { workerLifetimeDenial, workerLifetimeOf } from './lifetime.js';
+import { seatDenialReason, seatRequestFor } from './reservation.js';
 
 const MAX_WORKLINE_DEPTH = 50;
 
@@ -328,10 +336,12 @@ export function denialReason({ tool, sessionId, worklineId }) {
 
 /**
  * Build the synchronous guard function.
- * @param options - `{ ctx, store }`; `store.snapshot(worklineId)` is sync.
+ * @param options - `{ ctx, store, seats }`; `store.snapshot(worklineId)` is sync
+ *   and `seats` (optional) is the concurrency seat table from
+ *   `host/reservation.js`.
  * @returns `(exec) => reason | undefined`; a returned string denies the call.
  */
-export function createExecutionGuard({ ctx, store }) {
+export function createExecutionGuard({ ctx, store, seats }) {
   return function executionGuard(exec) {
     const name = exec !== null && typeof exec === 'object' ? exec.name : undefined;
     const label = typeof name === 'string' && name !== '' ? name : '(unnamed tool)';
@@ -357,10 +367,44 @@ export function createExecutionGuard({ ctx, store }) {
         if (membership === undefined) {
           return teamClaimDenialReason({ sessionId, detail: 'the host cannot resolve the caller as a Team member' });
         }
+        let denial;
         try {
-          return teamClaimReason({ membership, store, exec });
+          denial = teamClaimReason({ membership, store, exec });
         } catch {
-          return teamClaimDenialReason({ sessionId, detail: 'the Host could not verify the dispatch for this claim' });
+          denial = teamClaimDenialReason({ sessionId, detail: 'the Host could not verify the dispatch for this claim' });
+        }
+        if (denial !== undefined) return denial;
+        // Allowed so far: the seat below still has to hand it to this call
+        // before the board may commit, so two in-flight claims cannot both win.
+      }
+    }
+
+    // A claim is not atomic with the tree write, so the seat is taken
+    // synchronously here, before dispatch: a second in-flight claim sees this
+    // one and is refused (design v8 §9, I14). Only real end-of-call evidence
+    // releases it — never a timer.
+    if (seats !== undefined) {
+      let worklineId;
+      try {
+        worklineId = membership?.role === 'teammate'
+          && membership.root !== null && typeof membership.root === 'object'
+          && typeof membership.root.id === 'string'
+          ? membership.root.id
+          : (caller.sessionId === undefined ? undefined : worklineOf(ctx, caller.sessionId, caller.header));
+      } catch {
+        worklineId = undefined;
+      }
+      const request = seatRequestFor({
+        tool: label,
+        args: exec?.arguments,
+        mode: agentTeams === undefined ? 'standard' : 'team',
+        worklineId,
+        sessionId: caller.sessionId,
+      });
+      if (request !== undefined) {
+        const taken = seats.reserve({ requestId: exec?.callId, tool: label, ...request });
+        if (taken.ok !== true) {
+          return seatDenialReason({ tool: label, sessionId: caller.sessionId ?? '(unknown)', holder: taken.holder });
         }
       }
     }
@@ -397,12 +441,13 @@ export function createExecutionGuard({ ctx, store }) {
 /**
  * Register the execution gate on the plugin context.
  * @param ctx - the plugin context.
- * @param deps - `{ store }` from `host/store.js`.
+ * @param deps - `{ store, seats }`; `seats` is optional so a host without the
+ *   released-evidence observers keeps the gate's committed-state behaviour.
  * @returns whether the guard was registered (false when the registry is absent).
  */
-export function registerExecutionGuard(ctx, { store }) {
+export function registerExecutionGuard(ctx, { store, seats }) {
   const tools = ctx.get('tools');
   if (tools === undefined || typeof tools.guard !== 'function') return false;
-  ctx.effect(() => tools.guard(createExecutionGuard({ ctx, store })), 'summary-panel: execution gate');
+  ctx.effect(() => tools.guard(createExecutionGuard({ ctx, store, seats })), 'summary-panel: execution gate');
   return true;
 }

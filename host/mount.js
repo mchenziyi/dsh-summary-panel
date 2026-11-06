@@ -16,6 +16,7 @@ import { createTaskHandlers } from './routes.js';
 import { registerTaskTreeTools } from './tools.js';
 import { registerTaskTreePrompt } from './prompt.js';
 import { registerExecutionGuard } from './guard.js';
+import { createSeatTable, registerSeatObservers } from './reservation.js';
 import { registerTeamClaimBinding } from './binding.js';
 import { registerTeamExecutionEnd } from './team-lifetime.js';
 
@@ -44,12 +45,24 @@ export function mountTaskTree(ctx, options = {}) {
     logger.warn(`[summary-panel] task tree tools disabled: ${String(error?.message ?? error)}`);
   }
 
+  // The concurrency seats are taken by the guard and released by real
+  // end-of-call evidence (a matching tool result, or the owning agent going
+  // idle). The table is in-process only: an index, not a fact source.
+  const seats = createSeatTable({ logger });
+  let seatObservers = false;
+  try {
+    seatObservers = registerSeatObservers(ctx, { seats, logger });
+  } catch (error) {
+    logger.warn(`[summary-panel] seat observers disabled: ${String(error?.message ?? error)}`);
+  }
+
   // The execution gate is registered after the tools it protects. It is a
   // monotonic guard, so it runs before dispatch and cannot be out-voted by a
-  // pre-execute listener.
+  // pre-execute listener. It only seats calls when the end-of-call observers
+  // are live: a reservation nothing can release would wedge every later claim.
   let guard = false;
   try {
-    guard = registerExecutionGuard(ctx, { store });
+    guard = registerExecutionGuard(ctx, { store, seats: seatObservers ? seats : undefined });
   } catch (error) {
     logger.warn(`[summary-panel] execution gate disabled: ${String(error?.message ?? error)}`);
   }
@@ -81,5 +94,5 @@ export function mountTaskTree(ctx, options = {}) {
     logger.warn(`[summary-panel] task tree prompt disabled: ${String(error?.message ?? error)}`);
   }
 
-  return { store, tools, prompt, guard, binding, teamLifetime };
+  return { store, seats, tools, prompt, guard, binding, teamLifetime, seatObservers };
 }
