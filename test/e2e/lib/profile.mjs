@@ -20,7 +20,7 @@ import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** Fixture files copied beside the generated patch file. */
-const FIXTURE_PLUGINS = ['scripted-llm.js', 'web-server-stub.js', 'connection-stub.js', 'team-board-probe.js', 'tool-transcript.js', 'class-a-probe.js', 'seat-race-probe.js'];
+const FIXTURE_PLUGINS = ['scripted-llm.js', 'web-server-stub.js', 'connection-stub.js', 'team-board-probe.js', 'tool-transcript.js', 'class-a-probe.js', 'seat-race-probe.js', 'crash-injector.js'];
 
 export const PROFILE_NAME = 'e2e';
 
@@ -36,7 +36,7 @@ function bundles({ team }) {
  * the fixture plugins travel with the profile and the panel is referenced by
  * absolute path.
  */
-function patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, transcriptPath, team }) {
+function patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, transcriptPath, team, crash }) {
   const rows = [
     `    - id: e2e-scripted-llm
       name: ./plugins/scripted-llm.js
@@ -66,6 +66,18 @@ function patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, transcr
     rows.push(`    - id: e2e-class-a-probe
       name: ./plugins/class-a-probe.js`);
   }
+  // The crash injector must run its post-execute listener BEFORE the plugin
+  // under test, so its SIGKILL lands between the Team board's commit and the
+  // Reins ledger write. Fixture plugins are inserted ahead of the panel.
+  if (crash !== undefined && crash !== false) {
+    const tool = typeof crash.tool === 'string' ? crash.tool : 'team_task_update';
+    const action = typeof crash.action === 'string' ? crash.action : undefined;
+    rows.push(`    - id: e2e-crash-injector
+      name: ./plugins/crash-injector.js
+      config:
+        tool: ${JSON.stringify(tool)}${action === undefined ? '' : `
+        action: ${JSON.stringify(action)}`}`);
+  }
   rows.push(`    - id: summary-panel
       name: ${JSON.stringify(pluginRoot)}
       config: {}`);
@@ -89,11 +101,28 @@ function patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, transcr
 }
 
 /**
+ * Write the scripted model program a run consumes.
+ *
+ * A multi-run scenario rewrites it between runs: each `dsh` process reads
+ * `script.json` once at boot, exactly like a real profile reads its config.
+ * @param profile - the value `buildProfile` returned.
+ * @param spec - `{ program, subagentProgram, teamResponses }`.
+ */
+export async function writeScript(profile, spec = {}) {
+  await writeFile(profile.scriptPath, `${JSON.stringify({
+    responses: Array.isArray(spec.program) ? spec.program : [],
+    ...(Array.isArray(spec.subagentProgram) ? { subagentResponses: spec.subagentProgram } : {}),
+    ...(spec.teamResponses !== null && typeof spec.teamResponses === 'object' ? { teamResponses: spec.teamResponses } : {}),
+  }, null, 2)}\n`);
+}
+
+/**
  * Create the profile, its fixture plugins, and the run directories.
- * @param options - `{ root, pluginRoot, fixtureDir, program, subagentProgram, team }`.
+ * @param options - `{ root, pluginRoot, fixtureDir, program, subagentProgram,
+ *   teamResponses, team, crash }`; `crash` adds the SIGKILL fixture.
  * @returns the paths the run and the collector need.
  */
-export async function buildProfile({ root, pluginRoot, fixtureDir, program, subagentProgram, teamResponses, team = false }) {
+export async function buildProfile({ root, pluginRoot, fixtureDir, program, subagentProgram, teamResponses, team = false, crash }) {
   const home = join(root, 'home');
   const profileDir = join(home, 'profiles', PROFILE_NAME);
   const pluginsDir = join(profileDir, 'plugins');
@@ -106,11 +135,11 @@ export async function buildProfile({ root, pluginRoot, fixtureDir, program, suba
   for (const file of FIXTURE_PLUGINS) {
     await copyFile(join(fixtureDir, file), join(pluginsDir, file));
   }
-  await writeFile(scriptPath, `${JSON.stringify({
-    responses: program,
-    ...(Array.isArray(subagentProgram) ? { subagentResponses: subagentProgram } : {}),
-    ...(teamResponses !== null && typeof teamResponses === 'object' ? { teamResponses } : {}),
-  }, null, 2)}\n`);
+  const profile = {
+    home, profileDir, workdir, outDir, scriptPath, teamBoardPath, transcriptPath,
+    taskTreeDir: join(profileDir, 'agent-task-tree'),
+  };
+  await writeScript(profile, { program, subagentProgram, teamResponses });
   await writeFile(
     join(profileDir, 'package.json'),
     `${JSON.stringify({
@@ -121,9 +150,8 @@ export async function buildProfile({ root, pluginRoot, fixtureDir, program, suba
     }, null, 2)}\n`,
   );
   await writeFile(join(profileDir, 'cordis.yml'), '[]\n');
-  await writeFile(join(profileDir, 'cordis.patch.yml'), patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, transcriptPath, team }));
-  return {
-    home, profileDir, workdir, outDir, scriptPath, teamBoardPath, transcriptPath,
-    taskTreeDir: join(profileDir, 'agent-task-tree'),
-  };
+  await writeFile(join(profileDir, 'cordis.patch.yml'), patchLayer({
+    fixtureDir, pluginRoot, scriptPath, teamBoardPath, transcriptPath, team, crash,
+  }));
+  return profile;
 }

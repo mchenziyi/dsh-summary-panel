@@ -2,6 +2,16 @@
 
 ## 未发布
 
+**执行证据与崩溃对账（执行调度 v8 的证据切片）**
+
+- 只有认领证据才能建立执行：`dispatch` 只是路由，Board 上的 `ownerId` 单独也不构成证据。团队模式的判定要求"认领意图 + Board revision 恰好 +1 + owner 匹配 + Worker 未终结"同时成立，缺一即冲突，绝不猜执行者。
+- 团队模式 Board 先行、账本后写，中间由一份 `fsync` 的认领意图日志兜住：Worker 认领前，Host 先把 roster 解析出的会话 id、成员名、期望 revision 与 Registry callId 追加到 `<workline>.claims.jsonl`；Board 提交后由 post-execute 写账本并把该意图标记 `committed`，调用失败则标记 `aborted`。日志是索引，丢了只会**减少**权限，不会给出执行。
+- 重启对账：进程内每条工作线在第一次工具调用前收敛一次（在 guard 读树之前）。Board 已提交而账本缺失时，按三件套把执行重建成恰好一条（`rebuiltFrom:"wal"`）；Board 已完成/已释放则结束执行并清掉执行戳；已关闭任务（`done`/`deferred`/`archived`）不得留有非终态执行；第二次重启不再产生任何新执行。
+- 证据矛盾进入冲突态：`workline.conflicts[]` 记录 `unproven-claim` / `claim-without-record` / `ended-but-owned` / `seat-ambiguous`，带触发证据、影响范围与未解除标记；不建、不删、不复活执行，并在 guard 里**先于 Board 调用**拒绝该任务的新认领，标准模式的 `claim` 同样被拒。冲突是工作线记录，不是执行状态，重复对账只记一条。
+- 三处镜像一次原子写：`allocateExecution` 现在同时写执行账本与 Worker 台账，`bindTeamClaim` 与标准 `claim` 不再各自追加一份；已结束的 Worker 记录保留并带 `executionId`。
+- 对账改三处镜像都带 `executionId` 守卫（I17）：Worker 台账已指向更新一轮时，旧一轮的结束是 no-op，不会清掉这一轮的数据。
+- 真实进程 e2e 新增 `execution-evidence`（只派发不产生执行、认领产生唯一执行、Worker 自己完成则结束执行）、`crash-reconcile`（真实 SIGKILL 落在 Board 提交与账本之间，重启收敛为恰好一条执行，二次重启不变）、`evidence-conflict`（意图日志丢失 + Board 仍有 owner → `unproven-claim` 冲突并拒绝新认领）。测试装置支持多轮与续跑会话（`runs`/`resume`/`expect:"crash"`/`after`）、新增崩溃注入 fixture 与认领日志导出；`npm test` 新增 `test/evidence.mjs`。
+
 **并发占位（执行调度 v8 的并发切片）**
 
 - 认领不再只靠"落盘后再查"：guard 在放行之前就同步占位，第二个在途认领立刻被拒，不会出现"两个都成功"的窗口。座位按三个维度取键：标准模式 `wl:<worklineId>`（整条工作线一个执行位）、执行者 `wk:<sessionId>`、任务 `tk:<taskId>`；团队模式只取后两个，多个 Worker 仍可并行。

@@ -197,16 +197,26 @@ export function createTaskStore(options = {}) {
 
   /**
    * The snapshot shape. The Worker lifetime records travel with the tasks they
-   * constrain, and the field is omitted when there are none so the common shape
-   * stays exactly `{ present, tasks }`.
+   * constrain, and the unresolved conflicts travel with them too, because a
+   * synchronous decision (the tool guard) must be able to see that a task is
+   * stopped without awaiting storage. Each field is omitted when empty so the
+   * common shape stays exactly `{ present, tasks }`.
    */
   function snapshotOf(envelope) {
     const tasks = Array.isArray(envelope.tasks) ? envelope.tasks : [];
-    const raw = envelope.workline !== null && typeof envelope.workline === 'object' ? envelope.workline.workers : undefined;
+    const workline = envelope.workline !== null && typeof envelope.workline === 'object' ? envelope.workline : {};
+    const raw = workline.workers;
     const workers = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : undefined;
-    return workers !== undefined && Object.keys(workers).length > 0
-      ? { present: true, tasks, workers }
-      : { present: true, tasks };
+    const rawConflicts = workline.conflicts;
+    const conflicts = Array.isArray(rawConflicts)
+      ? rawConflicts.filter((conflict) => conflict !== null && typeof conflict === 'object' && conflict.resolvedAt === null)
+      : undefined;
+    return {
+      present: true,
+      tasks,
+      ...(workers !== undefined && Object.keys(workers).length > 0 ? { workers } : {}),
+      ...(conflicts !== undefined && conflicts.length > 0 ? { conflicts } : {}),
+    };
   }
 
   /**

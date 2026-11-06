@@ -21,6 +21,7 @@ Every scenario exports three artefacts under `<temp>/out` (and prints them):
 | `tool-results.json` | `dsh --json` projected session events | what the tools actually returned, call by call |
 | `tool-transcript.json` | fixture probe over every `session/event` | every session's tool calls and results, subagents included |
 | `task-tree.json` | `<profile>/agent-task-tree/<session>.json` on disk | the persisted Reins task tree, not the tool's echo |
+| `claim-journal.json` | `<profile>/agent-task-tree/<session>.claims.jsonl` on disk | the claim-intent journal written before a Team-board claim |
 | `team-board.json` | fixture probe inside the live process | Agent Team state is in-memory only, so it must be captured before exit |
 
 A failed run keeps its temporary directory and prints `TEMP DIR KEPT: <path>`.
@@ -72,13 +73,28 @@ A passing run removes it unless `--keep` or `--out` was passed.
   releases its task, is refused a second one, a new subagent retries the same
   task with a new execution id, and the Lead (exempt) does three tasks with
   three distinct execution ids.
+- `execution-evidence` — only a real claim creates an execution: one board task
+  is dispatched to a Worker that never claims (no ledger row, no class A
+  permission, board still pending), the other is claimed and then completed by
+  its Worker (the journal records the intent before the board and the settlement
+  after it; the completed task's execution ends, the stamp clears, and the
+  Worker loses class A).
+- `crash-reconcile` — a real SIGKILL between the board commit and the ledger
+  write (run 1), then two resumed runs: the restart rebuilds exactly one
+  execution from the journal plus the replayed board (`rebuiltFrom:
+  "wal"`), the second restart leaves it unchanged, and the write the crashed
+  Worker never reached never landed.
+- `evidence-conflict` — the same crash with the journal removed before the
+  restart: the board still owns the task, so the workline records one
+  unresolved `unproven-claim` conflict, creates no execution, and the guard
+  refuses a fresh Worker's claim before the board is touched.
 
 ## How the profile is built
 
 `lib/profile.mjs` writes a normal custom profile under `$DSH_HOME/profiles/e2e`:
 the shipped `dsh-base` + `dsh-headless` bundles (plus the real
 `dsh-experimental-agent-team-profile` in team scenarios), the plugin under test
-by **absolute path** to this working tree, and five fixture plugins copied
+by **absolute path** to this working tree, and the fixture plugins copied
 beside it:
 
 - `scripted-llm.js` — a `scripted` LLM provider. The real agent loop, real tool
@@ -91,12 +107,33 @@ beside it:
   `create_worktree`, `ralph` and `subagent` with a body that writes a sentinel
   file, so a Lead refusal can be proven down to the tool body for class A tools
   the headless profile does not ship.
+- `crash-injector.js` — optional (`crash` in the scenario): SIGKILLs the process
+  in its own `tools/post-execute` listener after a committed board transition.
+  It is inserted before the plugin under test, so the crash lands between the
+  board write and the ledger write — the window reconciliation exists for.
 
 Isolation: `DSH_HOME` points at the temporary root (sessions, storages,
 credentials), `DSH_PROFILE_DIR` points at the temporary profile (the plugin
 stores its tree under it), and `DSH_PERMISSION_MODE=danger-full-access` picks
 the shipped preset whose approval policy is `never` — a headless run has no
 approval answerer. Nothing in the product is changed or switched on for tests.
+
+## Restart scenarios
+
+A scenario may export `runs` instead of `prompt`/`program`: each step drives one
+real `dsh` process against the same profile, and `verify` receives them all as
+`runs: [{ run, artefacts }]`.
+
+| step field | meaning |
+| --- | --- |
+| `prompt`, `program`, `teamResponses` | that run's scripted model program |
+| `resume: true` | adopt the first run's Session (`--session-id`), the workline and its tree |
+| `expect: 'crash'` | the process must die by a signal instead of exiting 0 |
+| `after({ profile, artefacts, sessionId })` | mutate the throwaway profile between runs (e.g. delete the journal) |
+
+`run.signal` exposes the terminating signal, and the collector resolves the tree
+and journal from the FIRST run's workline id, so a resumed run never looks
+for the wrong file.
 
 ## Limits
 
@@ -112,8 +149,8 @@ approval answerer. Nothing in the product is changed or switched on for tests.
   drive concurrency through `seat-race-probe.js`, a fixture tool that calls the
   real `tools.execute` pipeline twice without awaiting: pre-execute policy,
   guards, tool bodies, stores and the Team board are all the product's, only
-  the dispatch instant is scripted. Killing a session mid-turn (crash
-  injection) is still not built.
+  the dispatch instant is scripted. A crash scenario kills the whole process
+  mid-turn with the `crash-injector` fixture instead.
 - The harness assumes `dsh` is on `PATH` (override with `DSH_BIN`). It prefers
   a real PATH launcher over an npm-injected `node_modules/.bin` shim, because an
   ancestor project's older `dsh` may accept `--json` yet not resolve this

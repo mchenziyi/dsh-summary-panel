@@ -3,10 +3,11 @@
  *
  * index.js keeps its existing read-only routes and calls this once; the task
  * tree adds two GET routes, two agent tools, one prompt section, the execution
- * gate (a monotonic tool guard), and the Team claim binding (an awaited
- * post-execute observer). Every part degrades independently: a storage failure
- * only surfaces as `available: false`, a missing tool registry or prompt
- * service skips that part, and nothing here may fail the plugin load
+ * gate (a monotonic tool guard), the Team claim binding (an awaited
+ * post-execute observer), and the claim evidence pass (an intent journal plus
+ * one reconciliation per workline). Every part degrades independently: a
+ * storage failure only surfaces as `available: false`, a missing tool registry
+ * or prompt service skips that part, and nothing here may fail the plugin load
  * (CONTRACT.md §6).
  */
 
@@ -19,6 +20,7 @@ import { registerExecutionGuard } from './guard.js';
 import { createSeatTable, registerSeatObservers } from './reservation.js';
 import { registerTeamClaimBinding } from './binding.js';
 import { registerTeamExecutionEnd } from './team-lifetime.js';
+import { registerEvidence } from './reconcile.js';
 
 /**
  * @param ctx - the plugin context.
@@ -87,6 +89,17 @@ export function mountTaskTree(ctx, options = {}) {
     logger.warn(`[summary-panel] team execution end disabled: ${String(error?.message ?? error)}`);
   }
 
+  // Claim evidence (ticket #8): the intent journal is written before a board
+  // claim, and the workline is reconciled once per process on the first tool
+  // call. It is registered after the binding so that its post-execute
+  // settlement sees the ledger row the binding just wrote.
+  let evidence = false;
+  try {
+    evidence = registerEvidence(ctx, { store, sessions, logger });
+  } catch (error) {
+    logger.warn(`[summary-panel] claim evidence disabled: ${String(error?.message ?? error)}`);
+  }
+
   let prompt = false;
   try {
     prompt = registerTaskTreePrompt(ctx, { store });
@@ -94,5 +107,7 @@ export function mountTaskTree(ctx, options = {}) {
     logger.warn(`[summary-panel] task tree prompt disabled: ${String(error?.message ?? error)}`);
   }
 
-  return { store, seats, tools, prompt, guard, binding, teamLifetime, seatObservers };
+  return {
+    store, seats, tools, prompt, guard, binding, teamLifetime, evidence, seatObservers,
+  };
 }

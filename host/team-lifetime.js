@@ -22,41 +22,7 @@
  */
 
 import { endTeamExecution } from './model.js';
-
-/** The composed Agent Team service, when this profile has one. */
-function teamServiceOf(ctx) {
-  try {
-    const agentTeams = ctx.get('agentTeams');
-    return agentTeams !== null && typeof agentTeams === 'object' ? agentTeams : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** The roster-resolved membership of one live Agent; never model input. */
-function membershipOf(agentTeams, agent) {
-  if (agent === null || typeof agent !== 'object') return undefined;
-  let membership;
-  if (typeof agentTeams.tryMembership === 'function') {
-    try {
-      membership = agentTeams.tryMembership(agent);
-    } catch {
-      membership = undefined;
-    }
-  }
-  if (membership === undefined && typeof agentTeams.membership === 'function') {
-    try {
-      membership = agentTeams.membership(agent);
-    } catch {
-      membership = undefined;
-    }
-  }
-  if (membership === null || typeof membership !== 'object') return undefined;
-  if (typeof membership.id !== 'string' || membership.id === '') return undefined;
-  if (typeof membership.role !== 'string') return undefined;
-  if (typeof agent.id !== 'string' || agent.id === '') return undefined;
-  return { ...membership, sessionId: agent.id };
-}
+import { teamMembershipOf, teamServiceOf } from './roster.js';
 
 /**
  * The execution end a finished `team_task_update` call actually committed, or
@@ -88,7 +54,7 @@ function committedEnd(exec, result) {
 async function endClaim({ agentTeams, store, exec, result, logger }) {
   const ended = committedEnd(exec, result);
   if (ended === undefined) return false;
-  const membership = membershipOf(agentTeams, exec.agent);
+  const membership = teamMembershipOf(agentTeams, exec.agent);
   // Only a teammate's own transition ends its execution; a Lead's release of
   // another member's task is the explicit force-release path, not this one.
   if (membership === undefined || membership.role !== 'teammate') return false;

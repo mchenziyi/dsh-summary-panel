@@ -4,6 +4,7 @@
  *   tool-results.json  what the tools actually returned (from the run's NDJSON)
  *   tool-transcript.json  every session's tool calls and results, subagents included
  *   task-tree.json     the task tree file the plugin persisted on disk
+ *   claim-journal.json the claim-intent journal, when a Team claim wrote one
  *   team-board.json    the live Team board, when the profile composes one
  *
  * Every artefact is written under `<root>/out` even when absent, so a caller
@@ -64,6 +65,37 @@ async function collectTaskTree({ taskTreeDir, sessionId }) {
   };
 }
 
+/**
+ * Read the claim-intent journal for the workline.
+ *
+ * It lives beside the tree (`<workline>.claims.jsonl`), so a workline that
+ * never made a Team claim has no journal: that absence is itself evidence, so
+ * it is reported as such.
+ */
+async function collectClaimJournal({ taskTreeDir, worklineId }) {
+  if (typeof worklineId !== 'string' || worklineId === '') {
+    return { present: false, reason: 'the run reported no workline id', entries: [] };
+  }
+  const path = join(taskTreeDir, `${worklineId}.claims.jsonl`);
+  let text;
+  try {
+    text = await readFile(path, 'utf8');
+  } catch {
+    return { present: false, path, reason: 'no claim-intent journal was written for this workline', entries: [] };
+  }
+  const entries = [];
+  const unparsed = [];
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      entries.push(JSON.parse(line));
+    } catch {
+      unparsed.push(line);
+    }
+  }
+  return { present: true, path, entries, ...(unparsed.length > 0 ? { unparsed } : {}) };
+}
+
 /** Read the in-process tool transcript (every session, subagents included). */
 async function collectToolTranscript(transcriptPath) {
   let text;
@@ -102,10 +134,14 @@ async function collectTeamBoard({ teamBoardPath, team }) {
  * Write every artefact under `outDir`.
  * @returns the artefact bundle, also written as `run.jsonl` and `stderr.log`.
  */
-export async function collectArtefacts({ outDir, run, taskTreeDir, teamBoardPath, transcriptPath, team }) {
+export async function collectArtefacts({ outDir, run, taskTreeDir, teamBoardPath, transcriptPath, team, worklineId }) {
   await mkdir(outDir, { recursive: true });
   const tools = collectToolCalls(run.events);
-  const taskTree = await collectTaskTree({ taskTreeDir, sessionId: run.sessionId });
+  // A resumed run adopts an existing Session, so the workline that owns the
+  // tree and the journal is the first run's id, not whatever this run reported.
+  const workline = typeof worklineId === 'string' && worklineId !== '' ? worklineId : run.sessionId;
+  const taskTree = await collectTaskTree({ taskTreeDir, sessionId: workline });
+  const claimJournal = await collectClaimJournal({ taskTreeDir, worklineId: workline });
   const teamBoard = await collectTeamBoard({ teamBoardPath, team });
   const toolTranscript = await collectToolTranscript(transcriptPath);
   const artefacts = {
@@ -122,12 +158,14 @@ export async function collectArtefacts({ outDir, run, taskTreeDir, teamBoardPath
     toolResults: { sessionId: run.sessionId, calls: tools.calls, finalText: tools.finalText },
     toolTranscript,
     taskTree,
+    claimJournal,
     teamBoard,
   };
   await Promise.all([
     writeFile(join(outDir, 'tool-results.json'), `${JSON.stringify(artefacts.toolResults, null, 2)}\n`),
     writeFile(join(outDir, 'tool-transcript.json'), `${JSON.stringify(artefacts.toolTranscript, null, 2)}\n`),
     writeFile(join(outDir, 'task-tree.json'), `${JSON.stringify(artefacts.taskTree, null, 2)}\n`),
+    writeFile(join(outDir, 'claim-journal.json'), `${JSON.stringify(artefacts.claimJournal, null, 2)}\n`),
     writeFile(join(outDir, 'team-board.json'), `${JSON.stringify(artefacts.teamBoard, null, 2)}\n`),
     writeFile(join(outDir, 'run.json'), `${JSON.stringify(artefacts.run, null, 2)}\n`),
     writeFile(join(outDir, 'run.jsonl'), run.stdout),

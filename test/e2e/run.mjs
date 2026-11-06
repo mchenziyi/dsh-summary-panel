@@ -4,10 +4,11 @@
  *
  * One command does the whole loop: create a throwaway DSH profile, run a
  * scripted session against it (real `dsh` process, real headless agent loop,
- * real tools, real Agent Team), export the three observed facts — tool results,
- * the task tree file on disk, the live Team board — assert the scenario, then
- * clean everything up. A failed run keeps its temporary directory and says
- * where it is.
+ * real tools, real Agent Team), export what the run actually produced — tool
+ * results, the task tree and claim journal on disk, the live Team board —
+ * assert the scenario, then clean everything up. A crash scenario runs several
+ * real processes against one profile, resuming the first one's Session. A
+ * failed run keeps its temporary directory and says where it is.
  *
  * Only the model is scripted (a fixture adapter in the throwaway profile), so
  * runs are deterministic and need no credentials. Nothing here changes product
@@ -21,13 +22,13 @@
  *   node test/e2e/run.mjs --out DIR           # copy the artefacts to DIR
  */
 
-import { copyFile, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { buildProfile } from './lib/profile.mjs';
+import { buildProfile, writeScript } from './lib/profile.mjs';
 import { runSession } from './lib/session.mjs';
 import { collectArtefacts } from './lib/collect.mjs';
 
@@ -82,8 +83,12 @@ async function loadScenarios(names) {
     const modulePath = join(SCENARIO_DIR, `${name}.mjs`);
     if (!existsSync(modulePath)) throw new Error(`unknown scenario ${JSON.stringify(name)} (see --list)`);
     const module = await import(pathToFileURL(modulePath).href);
-    if (typeof module.prompt !== 'string' || !Array.isArray(module.program) || typeof module.verify !== 'function') {
-      throw new Error(`scenario ${name} must export prompt, program, and verify`);
+    const multi = Array.isArray(module.runs) && module.runs.length > 0;
+    if (typeof module.prompt !== 'string' || typeof module.verify !== 'function' || (!multi && !Array.isArray(module.program))) {
+      throw new Error(`scenario ${name} must export prompt, program (or runs), and verify`);
+    }
+    if (multi && module.runs.some((step) => typeof step?.prompt !== 'string' || !Array.isArray(step?.program))) {
+      throw new Error(`scenario ${name}: every run needs a prompt and a program`);
     }
     scenarios.push({ ...module, name: module.name ?? name });
   }
@@ -103,6 +108,7 @@ function printArtefacts(artefacts) {
     ['tool-results.json', artefacts.toolResults],
     ['tool-transcript.json', artefacts.toolTranscript],
     ['task-tree.json', artefacts.taskTree],
+    ['claim-journal.json', artefacts.claimJournal],
     ['team-board.json', artefacts.teamBoard],
   ];
   for (const [label, value] of blocks) {
@@ -123,57 +129,110 @@ async function runScenario(scenario, options) {
   const root = await mkdtemp(join(tmpdir(), `dsh-e2e-${scenario.name}-`));
   let keep = false;
   try {
+    // A crash/restart scenario drives several real `dsh` processes against one
+    // profile and one workline; every other scenario is a single run.
+    const steps = Array.isArray(scenario.runs) && scenario.runs.length > 0
+      ? scenario.runs
+      : [{
+        prompt: scenario.prompt,
+        program: scenario.program,
+        subagentProgram: scenario.subagentProgram,
+        teamResponses: scenario.teamResponses,
+      }];
     const profile = await buildProfile({
       root,
       pluginRoot: PLUGIN_ROOT,
       fixtureDir: FIXTURE_DIR,
-      program: scenario.program,
-      subagentProgram: scenario.subagentProgram,
-      teamResponses: scenario.teamResponses,
+      program: steps[0].program,
+      subagentProgram: steps[0].subagentProgram,
+      teamResponses: steps[0].teamResponses,
       team: scenario.team === true,
+      crash: scenario.crash,
     });
     console.log(`== ${scenario.name} — ${scenario.summary ?? ''}`);
     console.log(`   profile  ${profile.profileDir}`);
     console.log(`   workspace ${profile.workdir}`);
-    const run = runSession({ prompt: scenario.prompt, home: profile.home, profileDir: profile.profileDir, workdir: profile.workdir });
-    const artefacts = await collectArtefacts({
-      outDir: profile.outDir,
-      run,
-      taskTreeDir: profile.taskTreeDir,
-      teamBoardPath: profile.teamBoardPath,
-      transcriptPath: profile.transcriptPath,
-      team: scenario.team === true,
-    });
-    let assertions = [];
-    if (run.status !== 0) {
-      assertions.push({
-        label: 'the dsh process exited successfully',
-        ok: false,
-        detail: run.timedOut ? 'timed out' : `exit=${run.status}; stderr: ${run.stderr.trim().split('\n').slice(-6).join(' | ')}`,
+    const results = [];
+    const failures = [];
+    let worklineId;
+    for (let index = 0; index < steps.length; index += 1) {
+      const step = steps[index];
+      if (index > 0) await writeScript(profile, step);
+      const run = runSession({
+        prompt: step.prompt,
+        home: profile.home,
+        profileDir: profile.profileDir,
+        workdir: profile.workdir,
+        sessionId: step.resume === true ? worklineId : undefined,
       });
-    } else {
-      assertions = await scenario.verify({ artefacts, workdir: profile.workdir, sessionId: run.sessionId });
+      // The workline is the FIRST run's root Session: a resumed run reports that
+      // same id, and a crash leaves the tree it wrote behind.
+      if (worklineId === undefined) worklineId = run.sessionId;
+      const outDir = steps.length === 1 ? profile.outDir : join(profile.outDir, `run-${index + 1}`);
+      const artefacts = await collectArtefacts({
+        outDir,
+        run,
+        taskTreeDir: profile.taskTreeDir,
+        teamBoardPath: profile.teamBoardPath,
+        transcriptPath: profile.transcriptPath,
+        team: scenario.team === true,
+        worklineId,
+      });
+      const label = steps.length === 1 ? 'the dsh process' : `run ${index + 1}`;
+      if (step.expect === 'crash') {
+        if (run.status === 0) {
+          failures.push({ label: `${label} was expected to crash`, ok: false, detail: 'it exited successfully' });
+        } else {
+          console.log(`   ✓ ${label} crashed as injected (signal ${run.signal ?? 'none'})`);
+        }
+      } else if (run.status !== 0) {
+        failures.push({
+          label: `${label} exited successfully`,
+          ok: false,
+          detail: run.timedOut ? 'timed out' : `exit=${run.status}; stderr: ${run.stderr.trim().split('\n').slice(-6).join(' | ')}`,
+        });
+      }
+      results.push({ run, artefacts });
+      if (typeof step.after === 'function') {
+        await step.after({
+          profile, artefacts, workdir: profile.workdir, sessionId: worklineId,
+        });
+      }
+      if (failures.length > 0) break;
+    }
+    let assertions = failures;
+    const last = results[results.length - 1]?.artefacts;
+    if (failures.length === 0) {
+      assertions = await scenario.verify({
+        artefacts: last,
+        runs: results,
+        workdir: profile.workdir,
+        sessionId: worklineId,
+      });
     }
     for (const assertion of assertions) {
       console.log(`   ${assertion.ok ? '✓' : '✗'} ${assertion.label}${assertion.detail === undefined ? '' : ` (${assertion.detail})`}`);
     }
-    printArtefacts(artefacts);
-    const failures = assertions.filter((assertion) => !assertion.ok);
-    if (failures.length > 0) {
+    if (last !== undefined) printArtefacts(last);
+    const failed = assertions.filter((assertion) => !assertion.ok);
+    if (failed.length > 0) {
       keep = true;
-      console.log(`FAIL ${scenario.name}: ${failures.length} assertion(s) failed`);
+      console.log(`FAIL ${scenario.name}: ${failed.length} assertion(s) failed`);
       console.log(`TEMP DIR KEPT: ${root}`);
-      return { ok: false, root, keep: true, failures };
+      return { ok: false, root, keep: true, failures: failed };
     }
     if (options.out !== undefined) {
       const destination = join(options.out, scenario.name);
       await mkdir(destination, { recursive: true });
-      for (const file of await readdir(profile.outDir)) {
-        await copyFile(join(profile.outDir, file), join(destination, file));
+      for (const file of await readdir(profile.outDir, { recursive: true })) {
+        const source = join(profile.outDir, file);
+        if (!existsSync(source) || (await stat(source)).isDirectory()) continue;
+        await mkdir(dirname(join(destination, file)), { recursive: true });
+        await copyFile(source, join(destination, file));
       }
       console.log(`artefacts copied to ${destination}`);
     }
-    console.log(`PASS ${scenario.name} in ${run.durationMs} ms`);
+    console.log(`PASS ${scenario.name} in ${results.reduce((sum, result) => sum + result.run.durationMs, 0)} ms`);
     return { ok: true, root, keep: options.keep, failures: [] };
   } catch (error) {
     keep = true;

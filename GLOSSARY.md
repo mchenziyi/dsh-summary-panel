@@ -67,6 +67,30 @@ Agent Team 里的命名成员，身份由 roster 的 `member.id`（= 子会话 i
 **派发（dispatch）**
 Lead 让某个 Worker 去认领某个任务的路由提示。**派发不是分配**：分配事实是 Team Board 的 `ownerId`，由 claim 产生。
 
+**执行（execution）**
+一次"某会话持有某任务"的登记，写在 `workline.executions[]`，终态不可复活。
+**只有认领证据才能建立执行**：派发、分配、Board 上的 `ownerId` 单独都不算证据。
+
+**执行证据（claim evidence）**
+证明一次认领真的发生过的三件套：认领意图日志、Board revision 恰好 +1 且 owner 匹配、Worker 未终结。
+缺一即「冲突」，Host 绝不猜执行者。
+
+**认领意图日志（claim journal）**
+认领 Board 调用**之前** `fsync` 落盘的意图记录（`<workline>.claims.jsonl`）：roster 会话 id、成员名、期望 revision、Registry callId。
+是索引不是真相：丢了只会减少权限。崩溃后重启靠它把"Board 已提交、账本未写"补成一条执行。
+
+**执行账本 / Worker 台账 / 执行戳**
+三处镜像：`workline.executions[]`、`workline.workers{}`、`task.owner`。同一次原子写落盘；
+对账改它们时都带 `executionId` 守卫，旧一轮的决定不会清掉新一轮。
+
+**冲突（conflict）**
+证据矛盾时挂在工作线上的记录（`workline.conflicts[]`），不是执行状态。
+它阻止该任务的新认领、不建不删不复活执行，等人工处理。种类：`unproven-claim`、`claim-without-record`、`ended-but-owned`、`seat-ambiguous`。
+
+**对账（reconcile）**
+进程内每条工作线在第一次工具调用前（guard 判定之前）把三处镜像收敛为一致状态：可证明则重建一条执行，Board 已完成/释放则结束执行，无法证明则只记冲突。幂等，第二次重启不再产生新执行。
+_代码_：`host/reconcile.js` 的 `convergeWorkline`。
+
 ---
 
 ## 交付与校验
