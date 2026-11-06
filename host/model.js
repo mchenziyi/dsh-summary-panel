@@ -764,8 +764,8 @@ function applyCreate(state, op, context) {
   const progress = op.progress === undefined ? '' : multiLine(op.progress, 'progress', LIMITS.progress);
   const order = op.order === undefined ? nextOrder(state, parentId, undefined) : normalizeOrder(op.order);
   const id = nextTaskId(state);
-  // A normal step inside an approved scope inherits that approval; anything else
-  // starts unapproved, including every top-level task.
+  // A step created directly inside an approved parent inherits that approval;
+  // anything else starts unapproved, including every top-level task.
   const inherited = parentId !== null && approvedParent(state, parentId);
   const task = {
     id,
@@ -976,10 +976,10 @@ function applyArchive(state, op, context) {
   // The whole subtree leaves the delivery, so one in-flight descendant is enough
   // to make the user's decision necessary — a pending container must not launder
   // authorised work out of it.
-  const witness = subtree.find((node) => needsUserDecision(node));
-  const basis = witness === undefined
+  const blockingDescendant = subtree.find((node) => needsUserDecision(node));
+  const basis = blockingDescendant === undefined
     ? null
-    : applyUserDecision(witness, op, context, `archive ${task.id}`);
+    : applyUserDecision(blockingDescendant, op, context, `archive ${task.id}`);
   const reason = singleLine(op.reason, 'reason', LIMITS.reason, { required: true });
   const batch = `${task.id}@${context.now}`;
   for (const current of subtree) {

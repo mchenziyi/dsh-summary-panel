@@ -16,11 +16,12 @@
 export const MAX_BASIS = 200;
 
 /**
- * Shortest accepted quote, in code points, measured after whitespace removal.
- * One or two characters match almost any sentence, so accepting them would turn
- * provenance checking into a formality.
+ * Shortest accepted quote, in characters as typed (same domain as MAX_BASIS).
+ * A single character matches almost any sentence, so accepting one would turn
+ * provenance checking into a formality; two are how people actually answer
+ * ("ok", "同意", "可以"), so the floor stops there.
  */
-export const MIN_QUOTE = 3;
+export const MIN_QUOTE = 2;
 
 /** How many trailing events a scan looks at. */
 const SCAN_LIMIT = 1000;
@@ -100,18 +101,18 @@ function normalize(text) {
 export function verifyUserQuote(session, quote) {
   const raw = typeof quote === 'string' ? quote.trim() : '';
   if (raw === '') return { ok: false, reason: 'the quote is empty' };
+  // Both bounds count the words as the user typed them, so one quote is never
+  // measured two ways.
   if (Array.from(raw).length > MAX_BASIS) {
     return { ok: false, reason: `the quote is longer than ${MAX_BASIS} characters` };
   }
-  const needle = normalize(raw);
-  // A floor, not a judgement of meaning: one or two characters appear in almost
-  // any sentence, so they would let the agent manufacture consent out of noise.
-  if (Array.from(needle).length < MIN_QUOTE) {
+  if (Array.from(raw).length < MIN_QUOTE) {
     return {
       ok: false,
-      reason: `the quote is shorter than ${MIN_QUOTE} characters; quote the sentence the user actually wrote`,
+      reason: `the quote is shorter than ${MIN_QUOTE} characters; quote the words the user actually wrote`,
     };
   }
+  const needle = normalize(raw);
   const messages = realUserMessages(session);
   if (messages.length === 0) return { ok: false, reason: 'no user message is available to compare against' };
   for (let index = messages.length - 1; index >= 0; index -= 1) {

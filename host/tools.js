@@ -13,7 +13,7 @@
  */
 
 import { EXECUTION_APPROVALS, TASK_STATUSES, applyOps, readSnapshot } from './model.js';
-import { verifyUserQuote } from './evidence.js';
+import { MIN_QUOTE, verifyUserQuote } from './evidence.js';
 
 const WRITE_DENIED_SUBAGENT = 'task_tree_write is reserved for the lead session; a subagent (or teammate) must report changes to the lead instead';
 const WRITE_DENIED_TEAMMATE = 'task_tree_write is reserved for the lead in an Agent Team; teammates report progress, blockers, and completion to the lead';
@@ -85,7 +85,7 @@ const WRITE_PARAMETERS = Object.freeze({
           },
           approvalBasis: {
             type: 'string',
-            description: 'The user\'s own words that authorised the work (quote, at most 200 characters). Required to approve a task whose parent is not approved; the host rejects a quote that does not appear in a real user message.',
+            description: `The user's own words that authorised the work (quote, ${MIN_QUOTE} to 200 characters). Required to approve a task whose parent is not approved; the host rejects a quote that does not appear in a real user message.`,
           },
           progress: { type: 'string', description: 'Meaningful progress notes, at most 2000 characters.' },
           result: { type: 'string', description: 'Completion result, at most 500 characters.' },
@@ -93,7 +93,7 @@ const WRITE_PARAMETERS = Object.freeze({
           blockerUnblock: { type: 'string', description: 'What must happen to unblock the task.' },
           userBasis: {
             type: 'string',
-            description: 'For op "defer"/"archive" on approved, unfinished work: the user\'s own words deciding it (quote, 3 to 200 characters). Archiving takes the whole subtree, so an approved, unfinished descendant needs the quote too. Verified against the session log; an idea that never started and finished work need no quote.',
+            description: `For op "defer"/"archive" on approved, unfinished work: the user's own words deciding it (quote, ${MIN_QUOTE} to 200 characters). Archiving takes the whole subtree, so an approved, unfinished descendant needs the quote too. Verified against the session log; an idea that never started and finished work need no quote.`,
           },
           deferredReason: { type: 'string', description: 'Why the task is deferred (op "defer"). Deferring is a pause, not a cancellation: deferred work still blocks the parent task from being completed.' },
           resumeCondition: { type: 'string', description: 'What would let the deferred task resume.' },
@@ -104,7 +104,7 @@ const WRITE_PARAMETERS = Object.freeze({
           },
           confirmationBasis: {
             type: 'string',
-            description: 'The user\'s own words accepting the delivered work (quote, at most 200 characters). Required with confirmedByUser: true, verified against the session log, and it must come after you reported the delivery.',
+            description: `The user's own words accepting the delivered work (quote, ${MIN_QUOTE} to 200 characters). Required with confirmedByUser: true, verified against the session log, and it must come after you reported the delivery.`,
           },
           requiresUserAcceptance: {
             type: 'boolean',
@@ -112,7 +112,7 @@ const WRITE_PARAMETERS = Object.freeze({
           },
           acceptanceBasis: {
             type: 'string',
-            description: 'The user\'s own words that waived the acceptance requirement (quote, at most 200 characters). Required to set requiresUserAcceptance: false; the host rejects a quote that appears in no real user message.',
+            description: `The user's own words that waived the acceptance requirement (quote, ${MIN_QUOTE} to 200 characters). Required to set requiresUserAcceptance: false; the host rejects a quote that appears in no real user message.`,
           },
           originalGoal: { type: 'string', description: 'The immutable original goal for op "init".' },
         },
@@ -233,9 +233,9 @@ const WRITE_DESCRIPTION = [
   'Placement changes neither permission nor acceptance: a child still needs its own executionApproval (new scope under an approved parent must be created pending), and a child the user will judge on its own needs requiresUserAcceptance: true just like a top-level task. "Accept it separately" is not a reason to lift work out of the feature it belongs to. Do not reorganize existing tasks: move is not part of normal maintenance, and never move, archive or defer a task only to unblock a completion.',
   'Maintain the workline task tree (lead session only). The tree covers the whole life of the work: idea, discussion, approval, execution, acceptance, and cancellation. Write when the user raises an idea, states or changes a requirement, decides to execute, defer, or cancel something, or confirms delivery — and when a task starts, progresses, pauses, or blocks. Do not wait for code to be written: record what is worth tracking when it appears, before you answer.',
   'Keep titles short (1..40 characters) and put explanations in summary; refine an existing task instead of creating a near-duplicate. Do not create a node for a trivial fix or an intermediate step: record it in the current task progress instead.',
-  'executionApproval separates permission from progress. "approved" means the user asked for this work or agreed to it; "pending" means an idea, a proposal, or scope you invented, which may be discussed and planned but not started. A task created directly under an approved parent inherits approval — only the direct parent decides, so approval never tunnels through a pending step; everything else starts pending. Approving a task whose parent is not approved requires approvalBasis quoting the user\'s own words — the host rejects a quote that appears in no real user message or is shorter than 3 characters. A pending task cannot become in_progress or be claimed.',
+  `executionApproval separates permission from progress. "approved" means the user asked for this work or agreed to it; "pending" means an idea, a proposal, or scope you invented, which may be discussed and planned but not started. A task created directly under an approved parent inherits approval — only the direct parent decides, so approval never tunnels through a pending step; everything else starts pending. Approving a task whose parent is not approved requires approvalBasis quoting the user\'s own words — the host rejects a quote that appears in no real user message or is shorter than ${MIN_QUOTE} characters. A pending task cannot become in_progress or be claimed.`,
   'Starting to execute is its own sequence: create or read the task to get its real id, set the status to in_progress, then call focus with that id before the first file edit or command — for example {"op":"focus","ids":["<id>"]}, where ids is the COMPLETE focus set (it replaces the previous set, [] clears it). Creating a task as in_progress does not set the focus, and neither does claim: status says how far the task is, focus says what you are working on now, claim says which session owns it. Focus may name a pending, still-unapproved task because it is under discussion; that is attention, not permission, so never approve a task or start coding just to make it focusable, and do not focus every in_progress task "just in case". Completing a task clears it from the focus, so move the focus to the next task in the same write.',
-  'Notes are not execution: a discussion or progress note does not start a task, and starting work on a recorded idea reuses that task (same id, same history) while approving it also decides requiresUserAcceptance. Deferring or archiving an approved, unfinished task changes the current delivery and needs userBasis quoting the user\'s decision; ideas that never started and finished work are tidied freely.',
+  'Notes are not execution: a discussion or progress note does not start a task, and starting work on a recorded idea reuses that task (same id, same history) while approving it also decides requiresUserAcceptance. Deferring or archiving an approved, unfinished task changes the current delivery and needs userBasis quoting the user\'s decision; archiving takes the whole subtree, so an approved, unfinished descendant needs that quote too. Ideas that never started and finished work are tidied freely.',
   'A parent is complete only when nothing unfinished remains below it: pending, in_progress, blocked and deferred children all block it, while done and archived work does not. A completed parent that gains an unfinished child is shown as unfinished again and keeps its acceptance record; when that child finishes or is archived the parent is complete again. A new deliverable beneath it still needs its own acceptance, and one acceptance quote closes one task — never replay the same quote for another task.',
   'One confirmation closes one task: each acceptance quote binds to the task it names. If the user accepted several tasks in one sentence, quote the clause naming each one; if you cannot tell which task they accepted, ask instead of widening the scope.',
   'Completion, acceptance, and approval are separate. A top-level task is a delivered requirement and defaults to requiresUserAcceptance: true; its steps default to false and may be completed on your own verification with complete and no confirmedByUser. A task that requires acceptance cannot be completed by the agent: record the delivered work in progress or result, keep it in progress, and complete it only after the user accepts, with confirmedByUser: true and confirmationBasis quoting their acceptance — the quote must come after you reported the delivery, and the instruction that authorised the work does not count. Setting requiresUserAcceptance: false needs a real user instruction plus an acceptanceBasis quote; a quote that appears in no real user message is rejected, so never speak for the user. A self-verified completion can later be accepted by passing confirmedByUser: true plus confirmationBasis.',

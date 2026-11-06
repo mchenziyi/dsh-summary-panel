@@ -10,10 +10,10 @@ let dirty = false;
 // Component keys invoked in the current pass. A key that was mounted before and
 // is missing now was unmounted, exactly like React's reconciler decides.
 let renderedPaths = new Set();
-// The root rendered last and the keys it mounted, so a re-render of the same
-// root can tell which components really disappeared.
-let lastRoot = null;
-let lastRootPaths = new Set();
+// Every root that is mounted and the keys its last pass rendered. Keyed by root
+// because the panel and the entry button are separate slots that coexist, and
+// each keeps its own tree.
+const mountedRoots = new Map();
 
 function slotsAt(path) {
   let slots = hookStates.get(path);
@@ -86,18 +86,17 @@ function renderNode(node, path) {
   if (typeof type === 'string') renderNode(props.children, path);
 }
 async function renderTree(Component, props, passes = 8) {
-  // Re-rendering the same root continues one tree, so a component that vanished
-  // since the previous render of that root really was unmounted. A different
-  // root is a different slot of the UI (the panel and the entry button coexist),
-  // and unmounting across them would be wrong.
-  let previous = Component === lastRoot ? lastRootPaths : new Set();
+  // A re-rendered root continues its own tree, so a component that vanished
+  // since that root's previous pass really was unmounted. Roots are tracked
+  // separately: rendering one root never disturbs another's bookkeeping.
+  let previous = mountedRoots.get(Component) ?? new Set();
   for (let pass = 0; pass < passes; pass += 1) {
     dirty = false; output = []; pendingEffects = []; pendingCleanups = []; hookIndex = 0;
     renderedPaths = new Set();
     renderNode(React.createElement(Component, props), 'root');
     unmountVanished(previous);
     previous = new Set(renderedPaths);
-    lastRootPaths = renderedPaths;
+    mountedRoots.set(Component, renderedPaths);
     for (const cleanup of pendingCleanups) { try { cleanup(); } catch (error) { errors.push(error); } }
     for (const { slot, index, fn } of pendingEffects) {
       try {
@@ -110,7 +109,6 @@ async function renderTree(Component, props, passes = 8) {
     await new Promise((resolve) => setTimeout(resolve, 25));
     if (!dirty) break;
   }
-  lastRoot = Component;
   return output.join(' ');
 }
 
@@ -131,10 +129,9 @@ function unmountVanished(previous) {
   }
 }
 
-/** Run one component's effect cleanups, last effect first, like React. */
+/** Run one component's effect cleanups in declaration order, like React. */
 function unmountSlots(slots) {
-  for (let index = slots.effects.length - 1; index >= 0; index -= 1) {
-    const effect = slots.effects[index];
+  for (const effect of slots.effects) {
     if (effect === undefined || typeof effect.cleanup !== 'function') continue;
     try {
       effect.cleanup();
@@ -206,23 +203,23 @@ globalThis.fetch = async (url) => {
 };
 // Run every stored cleanup and forget the hook state: React's unmount path,
 // which is how the session header disappears on the welcome page.
-function unmountAll(prefix = 'root') {
+/** Run every effect cleanup under one path prefix and forget those components. */
+function dropSlots(prefix) {
   for (const [key, slots] of [...hookStates.entries()]) {
     if (!key.startsWith(prefix)) continue;
     unmountSlots(slots);
     hookStates.delete(key);
   }
+}
+function unmountAll(prefix = 'root') {
+  dropSlots(prefix);
   dirty = true;
 }
 
 // Drop a component's hook state so one test can mount it afresh — running its
 // cleanups first, because a real unmount is never silent.
 function resetSlots(prefix = 'root') {
-  for (const [key, slots] of [...hookStates.entries()]) {
-    if (!key.startsWith(prefix)) continue;
-    unmountSlots(slots);
-    hookStates.delete(key);
-  }
+  dropSlots(prefix);
 }
 // The frame hands `shell.overlay` occupants a sessions snapshot hook. Each row
 // carries `retainedBy` counts; `mainView` marks the Session on screen.
@@ -300,8 +297,10 @@ const expected = ['Git', 'main', '分支 (3)', '最近提交', '输出内容', '
 const failures = [];
 
 // Harness self-test: a component that stops being rendered must run its cleanup
-// and lose its state. Every conditional-section case below depends on this, and
-// before it existed the suite could not see a leaked timer or a stale popover.
+// and lose its state — including when another root was rendered in between,
+// which is how the suite interleaves the panel and the entry button. Every
+// conditional-section case below depends on this, and before it existed the
+// suite could not see a leaked timer or a stale popover.
 {
   const cleanups = [];
   function Probe() {
@@ -312,11 +311,16 @@ const failures = [];
   function Holder({ show }) {
     return show ? React.createElement(Probe) : 'gone';
   }
+  function OtherRoot() {
+    return 'other';
+  }
   const mounted = await renderTree(Holder, { show: true });
   if (mounted !== 'probe-0') failures.push(`harness: probe did not mount (${mounted})`);
+  const other = await renderTree(OtherRoot, {});
+  if (other !== 'other') failures.push(`harness: second root rendered ${other}`);
   const unmounted = await renderTree(Holder, { show: false });
   if (unmounted !== 'gone') failures.push(`harness: probe survived unmount (${unmounted})`);
-  if (cleanups.length !== 1) failures.push(`harness: unmount cleanup ran ${cleanups.length} times, expected 1`);
+  if (cleanups.length !== 1) failures.push(`harness: unmount across an interleaved root ran ${cleanups.length} cleanups, expected 1`);
   const remounted = await renderTree(Holder, { show: true });
   if (remounted !== 'probe-0') failures.push(`harness: remount kept stale state (${remounted})`);
   if (cleanups.length !== 1) failures.push('harness: remount ran an extra cleanup');

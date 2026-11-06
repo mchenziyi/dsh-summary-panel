@@ -1143,10 +1143,10 @@ function titles(snapshot) {
   assert.equal(verifyUserQuote(session, 'cwd is /tmp').ok, false, 'injected context is not user evidence');
   assert.equal(verifyUserQuote(session, '<system-reminder>').ok, false);
   assert.equal(verifyUserQuote(session, '').ok, false);
-  // A quote shorter than the floor proves nothing: one character appears in
-  // almost any sentence, so it must not count as the user's own words.
+  // The floor rejects single-character noise, not short but real answers: "ok",
+  // "同意" and two-character phrases are how people actually accept work.
   assert.equal(verifyUserQuote(session, '的').ok, false, 'a single character is not a quote');
-  assert.equal(verifyUserQuote(session, '服务').ok, false, 'a two-character fragment is not a quote');
+  assert.deepEqual(verifyUserQuote(session, '服务'), { ok: true, seq: 2, time: 2000 }, 'two characters are a real quote');
   assert.equal(verifyUserQuote(session, 'x'.repeat(201)).ok, false);
   assert.equal(verifyUserQuote({}, '短链接服务').ok, false, 'a session without a log proves nothing');
 }
