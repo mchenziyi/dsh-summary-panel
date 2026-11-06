@@ -43,8 +43,9 @@
 - 生命周期：执行授权 `approved|pending`、需用户验收 `requiresUserAcceptance`、自验与用户验收分离
 - 完成判定：父任务只有整棵活动子树完成才算完成，`settled` 派生
 - 归档：归档 / 恢复 / 归档批次 / 归档查询（`includeArchived`）
-- 协作边界：子会话与 teammate 不能写任务树；只有 Lead 维护树
+- 协作边界：只有 Lead 维护任务树；标准模式下的子代理只能 `claim`/`release` 分配给自己的任务，team 模式下 teammate 仍不能写树
 - 执行门禁（标准模式）：A 类工具（改工作区 / 跑代码）必须持有该工作线的活动执行；`claim` 建立、`release` 结束，两者与其余任务管理工具都是 B 类，不需要执行权；只读工具永远放行；未建任务树的工作线不受约束
+- 单执行位与交接（标准模式）：整条工作线只有一个执行位，`executions[]` + `task.owner.executionId` 与树同一次落盘；`assign` 只做路由；交接按 Lead release → assign 子代理 → 子代理 claim/release → assign "lead" + claim 闭环，执行号单调递增且终态不可复活
 - 界面：悬浮面板、入口呼吸灯、右栏任务详情 tab、行旁浮层、跟随主视图会话
 
 ## 测试
@@ -54,7 +55,7 @@
 | 文件 | 覆盖 |
 |---|---|
 | `test/host.mjs` | 只读路由、git 解析、来源聚合、子智能体列表、会话上下文 |
-| `test/tasks.mjs` | 域逻辑与工具 schema（含真实注册 schema 的子集校验）、store 同步快照、执行门禁分类与三类授权 |
+| `test/tasks.mjs` | 域逻辑与工具 schema（含真实注册 schema 的子集校验）、store 同步快照、执行门禁分类与三类授权、单执行位/交接/执行账本 |
 | `test/client.mjs` | React harness：hook 顺序检测、effect cleanup、多会话载荷、可挂起响应 |
 
 ## 已知限制
@@ -71,7 +72,7 @@
 |---|---|---|
 | 需求文档 | `~/Desktop/AI-TodoList/REQUIREMENTS.md` | 已冻结的 MVP 需求 |
 | 实现契约 | `~/Desktop/AI-TodoList/CONTRACT.md` | Host/Client 唯一接口约定；与需求冲突以它为准 |
-| 执行调度设计 v8 | `docs/plans/dsh-execution-scheduling-v8.md` | 已冻结；本版实现了标准模式的执行门禁切片（任务 #3） |
+| 执行调度设计 v8 | `docs/plans/dsh-execution-scheduling-v8.md` | 已冻结；已实现标准模式的执行门禁（#3）与单执行位/交接（#4）切片 |
 | 变更记录 | `CHANGELOG.md` | 每版做了什么 |
 
 > 需求与契约两份文档仍在 `Desktop/AI-TodoList`，不在本仓库——agent 读仓库时看不到它们。是否迁入仓库尚未决定。

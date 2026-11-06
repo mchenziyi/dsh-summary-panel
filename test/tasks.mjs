@@ -201,26 +201,181 @@ function titles(snapshot) {
 
   const claimed = envelopeAfter(resumed, [{ op: 'claim', id: 't1' }]).envelope;
   assert.equal(claimed.tasks[0].owner.sessionId, 'session-root');
+  // The claim stamp and the ledger entry are written together, and the id is
+  // monotonic from ex-1.
+  assert.equal(claimed.tasks[0].owner.executionId, 'ex-1');
+  assert.equal(claimed.workline.executions.at(-1).executionId, 'ex-1');
+  assert.equal(claimed.workline.executions.at(-1).state, 'active');
 
-  // Another live session cannot steal the claim.
+  // Standard mode has ONE execution seat for the whole workline: another session
+  // cannot steal it, and neither can a session whose owner is no longer live —
+  // ending that execution needs an explicit release.
   assert.throws(
     () => envelopeAfter(claimed, [{ op: 'claim', id: 't1' }], {
       actorSessionId: 'session-other',
       isLive: () => true,
     }),
-    /claimed by live session/,
+    /one execution seat, held by session session-root/,
   );
-  // A dead owner can be replaced.
-  const taken = envelopeAfter(claimed, [{ op: 'claim', id: 't1' }], {
-    actorSessionId: 'session-other',
-    isLive: () => false,
-  }).envelope;
-  assert.equal(taken.tasks[0].owner.sessionId, 'session-other');
+  assert.throws(
+    () => envelopeAfter(claimed, [{ op: 'claim', id: 't1' }], {
+      actorSessionId: 'session-other',
+      isLive: () => false,
+    }),
+    /one execution seat/,
+  );
+  // I2: the same session cannot hold a second seat on another task.
+  const twoTasks = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: 'A', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+    { op: 'create', title: 'B', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+    { op: 'claim', id: 't1' },
+  ]).envelope;
+  assert.throws(
+    () => envelopeAfter(twoTasks, [{ op: 'claim', id: 't2' }]),
+    /already holds execution ex-1 on task t1/,
+  );
+  // The single-seat rule is standard mode only: with an Agent Team composed the
+  // seat is per task (the team slice owns its own worker rules).
+  const teamMode = envelopeAfter(twoTasks, [{ op: 'claim', id: 't2' }], { standardMode: false }).envelope;
+  assert.equal(teamMode.tasks[1].owner.sessionId, 'session-root');
+  // A claim is not idempotent: re-claiming the held task is a mistake, not a
+  // silent second execution.
+  assert.throws(
+    () => envelopeAfter(claimed, [{ op: 'claim', id: 't1' }]),
+    /already holds execution ex-1/,
+  );
+  // Only the holder ends the execution, and the next claim gets a NEW id.
+  assert.throws(
+    () => envelopeAfter(claimed, [{ op: 'release', id: 't1' }], { actorSessionId: 'session-other' }),
+    /only its holder can release it/,
+  );
+  const released = envelopeAfter(claimed, [{ op: 'release', id: 't1' }]).envelope;
+  assert.equal(released.tasks[0].owner, null);
+  assert.equal(released.workline.executions.at(-1).state, 'ended');
+  assert.equal(released.workline.executions.at(-1).endReason, 'released');
+  const reclaim = envelopeAfter(released, [{ op: 'claim', id: 't1' }]).envelope;
+  assert.equal(reclaim.tasks[0].owner.executionId, 'ex-2');
+  assert.notEqual(reclaim.tasks[0].owner.executionId, claimed.tasks[0].owner.executionId);
 
   assert.throws(
     () => envelopeAfter(base, [{ op: 'claim', id: 't1' }]),
     /must be in_progress/,
   );
+}
+
+// ---------------------------------------------------------------------------
+// model: standard-mode handover — assign is routing, claim is the execution
+// ---------------------------------------------------------------------------
+
+{
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: 'A', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+    { op: 'create', title: 'B', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+  ]).envelope;
+  const claimed = envelopeAfter(base, [{ op: 'claim', id: 't1' }]).envelope;
+
+  // Only the lead assigns, and not while the task is held.
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'assign', id: 't1', member: 'session-child' }], { actorSessionId: 'session-child' }),
+    /assign is reserved for the lead session/,
+  );
+  assert.throws(
+    () => envelopeAfter(claimed, [{ op: 'assign', id: 't1', member: 'session-child' }]),
+    /holds an active execution/,
+  );
+
+  // Release -> assign: the subagent id is routing only, no execution is made.
+  const released = envelopeAfter(claimed, [{ op: 'release', id: 't1' }]).envelope;
+  const assigned = envelopeAfter(released, [{ op: 'assign', id: 't1', member: 'session-child' }]).envelope;
+  assert.equal(assigned.tasks[0].assignee, 'session-child');
+  assert.equal(assigned.tasks[0].owner, null);
+  assert.equal(assigned.workline.executions.length, 1, 'assignment creates no execution record');
+
+  // Assignment is not a claim: the lead cannot claim it back, and another
+  // subagent cannot claim it either.
+  assert.throws(
+    () => envelopeAfter(assigned, [{ op: 'claim', id: 't1' }]),
+    /assigned to subagent session-child/,
+  );
+  assert.throws(
+    () => envelopeAfter(assigned, [{ op: 'claim', id: 't1' }], { actorSessionId: 'session-other' }),
+    /not to session session-other/,
+  );
+
+  // The assigned subagent claims (ex-2), and the seat is now its own.
+  const childClaim = envelopeAfter(assigned, [{ op: 'claim', id: 't1' }], { actorSessionId: 'session-child' }).envelope;
+  assert.equal(childClaim.tasks[0].owner.sessionId, 'session-child');
+  assert.equal(childClaim.tasks[0].owner.executionId, 'ex-2');
+  assert.throws(
+    () => envelopeAfter(childClaim, [{ op: 'claim', id: 't2' }], { actorSessionId: 'session-child' }),
+    /already holds execution ex-2/,
+  );
+  // The lead cannot end someone else's execution: release, complete and
+  // status=done are all refused while the subagent holds it.
+  assert.throws(
+    () => envelopeAfter(childClaim, [{ op: 'release', id: 't1' }]),
+    /only its holder can release it/,
+  );
+  assert.throws(
+    () => envelopeAfter(childClaim, [{ op: 'complete', id: 't1' }]),
+    /held by session session-child; only its holder can complete it/,
+  );
+  assert.throws(
+    () => envelopeAfter(childClaim, [{ op: 'update', id: 't1', status: 'done' }]),
+    /held by session session-child; only its holder can complete it/,
+  );
+
+  // The subagent releases; the lead takes it back only after assigning it to
+  // itself, and that claim is a new execution id (ex-3), never ex-1/ex-2.
+  const childReleased = envelopeAfter(childClaim, [{ op: 'release', id: 't1' }], { actorSessionId: 'session-child' }).envelope;
+  assert.equal(childReleased.workline.executions.at(-1).endReason, 'released');
+  assert.throws(
+    () => envelopeAfter(childReleased, [{ op: 'claim', id: 't1' }]),
+    /assigned to subagent session-child/,
+  );
+  const handedBack = envelopeAfter(childReleased, [{ op: 'assign', id: 't1', member: 'lead' }]).envelope;
+  const reclaim = envelopeAfter(handedBack, [{ op: 'claim', id: 't1' }]).envelope;
+  assert.equal(reclaim.tasks[0].owner.executionId, 'ex-3');
+  assert.deepEqual(
+    reclaim.workline.executions.filter((execution) => execution.taskId === 't1').map((execution) => execution.state),
+    ['ended', 'ended', 'active'],
+  );
+}
+
+{
+  // Completion, deferral and archive each end the execution, so no terminal
+  // task (I8) can keep a non-terminal execution alive.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: 'A', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+    { op: 'create', title: 'B', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+    { op: 'create', title: 'C', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+    { op: 'claim', id: 't1' },
+  ]).envelope;
+  const completed = envelopeAfter(base, [{ op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '没问题了，验收通过' }]).envelope;
+  assert.equal(completed.tasks[0].owner, null);
+  assert.equal(completed.workline.executions.at(-1).endReason, 'completed');
+  assert.equal(completed.workline.executions.at(-1).state, 'ended');
+  // Re-claiming after completion is impossible; the ended id is not reused.
+  assert.throws(() => envelopeAfter(completed, [{ op: 'claim', id: 't1' }]), /must be in_progress/);
+  const next = envelopeAfter(completed, [{ op: 'claim', id: 't2' }]).envelope;
+  assert.equal(next.tasks[1].owner.executionId, 'ex-2');
+
+  const deferred = envelopeAfter(completed, [
+    { op: 'claim', id: 't2' },
+    { op: 'defer', id: 't2', deferredReason: '先做别的', userBasis: '开始吧' },
+  ]).envelope;
+  assert.equal(deferred.tasks[1].owner, null);
+  assert.equal(deferred.workline.executions.at(-1).endReason, 'deferred');
+
+  const archived = envelopeAfter(completed, [
+    { op: 'claim', id: 't3' },
+    { op: 'archive', id: 't3', reason: '不做了', userBasis: '记住我那个不做了' },
+  ]).envelope;
+  assert.equal(archived.workline.executions.at(-1).endReason, 'archived');
+  assert.equal(archived.workline.executions.at(-1).state, 'ended');
 }
 
 // ---------------------------------------------------------------------------
@@ -549,6 +704,94 @@ function titles(snapshot) {
     ),
     /reserved for the lead session/,
   );
+}
+
+// ---------------------------------------------------------------------------
+// tools: the standard-mode handover through the real tool path
+// ---------------------------------------------------------------------------
+
+{
+  const root = tempRoot();
+  const registeredTools = new Map();
+  let registeredGuard;
+  const headers = new Map([
+    ['session-root', { id: 'session-root' }],
+    ['session-child', { id: 'session-child', parentSession: 'session-root', origin: 'subagent' }],
+  ]);
+  const ctx = {
+    effect: (factory) => factory(),
+    get(name) {
+      if (name === 'sessions') {
+        return {
+          get: (id) => (headers.has(id) ? { header: headers.get(id) } : undefined),
+        };
+      }
+      if (name === 'tools') {
+        return {
+          register: (definition) => { registeredTools.set(definition.name, definition); return () => {}; },
+          guard: (fn) => { registeredGuard = fn; return () => {}; },
+        };
+      }
+      if (name === 'systemPrompt') return undefined;
+      return undefined;
+    },
+  };
+  mountTaskTree(ctx, { root, logger: { warn() {} }, route: () => {} });
+  const write = registeredTools.get('task_tree_write');
+  const userMessage = (text) => [{
+    type: 'user/message',
+    seq: 1,
+    time: Date.now(),
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text }] },
+  }];
+  const sessionFor = (header) => ({ id: header.id, header, seq: 2, snapshotEvents: () => userMessage('开始吧') });
+  const lead = { agent: { id: 'session-root', session: sessionFor(headers.get('session-root')) } };
+  const child = { agent: { id: 'session-child', session: sessionFor(headers.get('session-child')) } };
+  const classified = (sessionId) => (tool) => ({ name: tool, agent: { id: sessionId, session: sessionFor(headers.get(sessionId)) } });
+
+  // The Lead sets up and claims.
+  await write.execute({
+    ops: [
+      { op: 'init', originalGoal: '交接' },
+      { op: 'create', title: '交接任务', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+      { op: 'claim', id: 't1' },
+    ],
+  }, lead);
+  assert.match(registeredGuard(classified('session-child')('write')), /holds no active execution/);
+
+  // Release and assign to the child, using the session id from the spawn result.
+  await write.execute({ ops: [{ op: 'release', id: 't1' }] }, lead);
+  const assigned = await write.execute({ ops: [{ op: 'assign', id: 't1', member: 'session-child' }] }, lead);
+  assert.equal(assigned.applied[0].op, 'assign');
+  // A non-subagent or unknown member is refused.
+  await assert.rejects(
+    () => write.execute({ ops: [{ op: 'assign', id: 't1', member: 'session-root' }] }, lead),
+    /is not a subagent session/,
+  );
+  await assert.rejects(
+    () => write.execute({ ops: [{ op: 'assign', id: 't1', member: 'session-ghost' }] }, lead),
+    /is not a known session/,
+  );
+
+  // The subagent claims through the same tool; only claim/release are allowed.
+  const childClaim = await write.execute({ ops: [{ op: 'claim', id: 't1' }] }, child);
+  assert.equal(childClaim.applied[0].executionId, 'ex-2');
+  assert.equal(registeredGuard(classified('session-child')('write')), undefined, 'the subagent may now write');
+  assert.match(registeredGuard(classified('session-root')('write')), /holds no active execution/, 'the lead may not');
+  await assert.rejects(
+    () => write.execute({ ops: [{ op: 'init', originalGoal: 'again' }] }, child),
+    /reserved for the lead session/,
+  );
+  await assert.rejects(
+    () => write.execute({ ops: [{ op: 'assign', id: 't1', member: 'lead' }] }, child),
+    /reserved for the lead session/,
+  );
+  await write.execute({ ops: [{ op: 'release', id: 't1' }] }, child);
+
+  // The lead takes it back with a fresh execution id.
+  await write.execute({ ops: [{ op: 'assign', id: 't1', member: 'lead' }] }, lead);
+  const reclaim = await write.execute({ ops: [{ op: 'claim', id: 't1' }] }, lead);
+  assert.equal(reclaim.applied[0].executionId, 'ex-3');
 }
 
 // ---------------------------------------------------------------------------

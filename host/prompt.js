@@ -93,7 +93,7 @@ export const TASK_TREE_PROMPT = [
   '',
   '**One confirmation closes one task.** Each acceptance quote binds to the task it names: a message that accepted one thing cannot be replayed to accept another. If the user accepts several tasks in one sentence, quote the clause that names each one separately. When you cannot tell which task the user accepted, ask them instead of widening the scope.',
   '',
-  'Only the lead session maintains the tree. In an Agent Team, teammates report progress, blockers, and completion to the lead and never write the tree themselves.',
+  'Only the lead session maintains the tree. In standard mode the whole workline shares one execution seat: while it is held, every other claim is refused. To hand a task to a subagent, release it, assign the subagent session id from the spawn result, let the subagent claim and release it, then assign `"lead"` and claim again — the new claim gets a new execution id and an ended execution is never revived. Assignment is routing, not a claim. A subagent may only claim and release the task assigned to it; in an Agent Team, teammates report progress, blockers, and completion to the lead and never write the tree themselves.',
   '',
   'Goals: the original goal is immutable. When the user decides to change the direction of the project, record it immediately with `reviseGoal` and a reason that names their decision — a decided direction change is recorded even when implementation is deferred, and it does not need the work to start. When you are only proposing a direction, discuss it first and revise the goal after the user agrees. A new plan under discussion is a task, not a goal change.',
   '',

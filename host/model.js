@@ -37,6 +37,7 @@ export const TASK_OPS = Object.freeze([
   'archive',
   'restore',
   'focus',
+  'assign',
   'claim',
   'release',
   'complete',
@@ -70,6 +71,7 @@ const OP_FIELDS = Object.freeze({
   archive: ['op', 'id', 'reason', 'userBasis'],
   restore: ['op', 'id'],
   focus: ['op', 'ids'],
+  assign: ['op', 'id', 'member'],
   claim: ['op', 'id'],
   release: ['op', 'id'],
   complete: ['op', 'id', 'confirmedByUser', 'confirmationBasis', 'result'],
@@ -385,6 +387,8 @@ export function createEmptyEnvelope(worklineId, now) {
       outline: '',
       focus: [],
       nextSeq: 1,
+      nextExecution: 1,
+      executions: [],
     },
     tasks: [],
   };
@@ -431,8 +435,15 @@ function normalizeTask(task, worklineId) {
     blocker: task.blocker !== null && typeof task.blocker === 'object' && typeof task.blocker.reason === 'string'
       ? { reason: task.blocker.reason, unblock: typeof task.blocker.unblock === 'string' ? task.blocker.unblock : '' }
       : null,
+    assignee: task.assignee === 'lead'
+      ? 'lead'
+      : (typeof task.assignee === 'string' && task.assignee !== '' ? task.assignee : null),
     owner: task.owner !== null && typeof task.owner === 'object' && typeof task.owner.sessionId === 'string'
-      ? { sessionId: task.owner.sessionId, since: numberOr(task.owner.since, 0) }
+      ? {
+        sessionId: task.owner.sessionId,
+        executionId: typeof task.owner.executionId === 'string' && task.owner.executionId !== '' ? task.owner.executionId : null,
+        since: numberOr(task.owner.since, 0),
+      }
       : null,
     completion: task.completion === 'user-confirmed' || task.completion === 'self' ? task.completion : null,
     completionBasis: typeof task.completionBasis === 'string' && task.completionBasis !== '' ? task.completionBasis : null,
@@ -461,6 +472,43 @@ function normalizeTask(task, worklineId) {
   };
 }
 
+/** One execution record from the workline ledger, or undefined when unusable. */
+function normalizeExecution(entry) {
+  if (entry === null || typeof entry !== 'object' || typeof entry.executionId !== 'string' || entry.executionId === '') {
+    return undefined;
+  }
+  return {
+    executionId: entry.executionId,
+    taskId: typeof entry.taskId === 'string' ? entry.taskId : '',
+    sessionId: typeof entry.sessionId === 'string' ? entry.sessionId : '',
+    attempt: Number.isInteger(entry.attempt) && entry.attempt > 0 ? entry.attempt : 1,
+    // This ticket only knows active/ended; cold and orphaned belong to the
+    // recovery slice, so any unknown persisted state fails closed as active.
+    state: entry.state === 'ended' ? 'ended' : 'active',
+    startedAt: numberOr(entry.startedAt, 0),
+    updatedAt: numberOr(entry.updatedAt, 0),
+    endedAt: entry.endedAt === null || entry.endedAt === undefined ? null : numberOr(entry.endedAt, 0),
+    endReason: typeof entry.endReason === 'string' && entry.endReason !== '' ? entry.endReason : null,
+  };
+}
+
+/** Every usable execution in the persisted ledger, oldest first. */
+function executionsOf(workline) {
+  const raw = Array.isArray(workline.executions) ? workline.executions : [];
+  return raw.map(normalizeExecution).filter((entry) => entry !== undefined).slice(-500);
+}
+
+/** The next monotonically increasing execution number. */
+function nextExecutionOf(workline, executions) {
+  const stored = Number.isInteger(workline.nextExecution) && workline.nextExecution > 0 ? workline.nextExecution : 0;
+  let highest = 0;
+  for (const execution of executions) {
+    const match = /^ex-(\d+)$/.exec(execution.executionId);
+    if (match !== null) highest = Math.max(highest, Number(match[1]));
+  }
+  return Math.max(stored, highest + 1, 1);
+}
+
 /** Copy an envelope into the mutable draft the batch is applied to. */
 export function cloneEnvelope(envelope) {
   if (envelope === null || typeof envelope !== 'object') fail('workline record must be an object');
@@ -468,6 +516,7 @@ export function cloneEnvelope(envelope) {
   if (workline === null || typeof workline !== 'object') fail('workline record is missing workline data');
   if (typeof workline.id !== 'string' || workline.id === '') fail('workline record is missing its id');
   const tasks = Array.isArray(envelope.tasks) ? envelope.tasks.filter((task) => task !== null && typeof task === 'object' && typeof task.id === 'string') : [];
+  const executions = executionsOf(workline);
   return {
     version: 1,
     workline: {
@@ -478,6 +527,8 @@ export function cloneEnvelope(envelope) {
       outline: typeof workline.outline === 'string' ? workline.outline : '',
       focus: Array.isArray(workline.focus) ? workline.focus.filter((id) => typeof id === 'string') : [],
       nextSeq: Number.isInteger(workline.nextSeq) && workline.nextSeq > 0 ? workline.nextSeq : 1,
+      executions,
+      nextExecution: nextExecutionOf(workline, executions),
     },
     tasks: tasks.map((task) => normalizeTask(task, workline.id)),
   };
@@ -659,6 +710,13 @@ function settledLookup(tasks) {
   return settled;
 }
 
+/** Only the session holding an execution may end it (a lead included). */
+function assertEndsOwnExecution(task, actor) {
+  if (task.owner === null || task.owner === undefined) return;
+  if (task.owner.sessionId === actor) return;
+  fail(`task ${task.id} is held by session ${task.owner.sessionId}; only its holder can complete it`);
+}
+
 function finishTask(state, task, now, basis) {
   assertDeliveryComplete(state, task);
   if (basis === null && task.requiresUserAcceptance === true) {
@@ -668,6 +726,7 @@ function finishTask(state, task, now, basis) {
       + ' with confirmedByUser: true and confirmationBasis quoting their acceptance',
     );
   }
+  endExecution(state, task, 'completed', now);
   task.status = 'done';
   task.completion = basis === null ? 'self' : 'user-confirmed';
   task.completionBasis = basis;
@@ -787,6 +846,7 @@ function applyCreate(state, op, context) {
     progress,
     result: null,
     blocker: null,
+    assignee: null,
     owner: null,
     completion: null,
     completionBasis: null,
@@ -844,6 +904,7 @@ function applyUpdate(state, op, context) {
     if (status === 'done') {
       if (task.status !== 'done') {
         if (task.deferred) fail(`task ${id}: resume the deferred task before completing it`);
+        assertEndsOwnExecution(task, context.actorSessionId);
         assertDeliveryComplete(state, task);
         finishTask(state, task, context.now, confirmationBasisFor(state, task, op, context));
       }
@@ -936,6 +997,7 @@ function applyDefer(state, op, context) {
   if (op.resumeCondition !== undefined) task.resumeCondition = condition === '' ? null : condition;
   task.deferred = true;
   if (op.userBasis !== undefined) task.deferredBasis = singleLine(op.userBasis, 'userBasis', LIMITS.basis);
+  endExecution(state, task, 'deferred', context.now);
   task.owner = null;
   removeFromFocus(state, task.id);
   touch(state, task, context.now);
@@ -991,6 +1053,7 @@ function applyArchive(state, op, context) {
     current.archiveHistory = Array.isArray(current.archiveHistory) ? current.archiveHistory : [];
     current.archiveHistory.push(basis === null ? { at: context.now, reason } : { at: context.now, reason, basis });
     current.archiveHistory = current.archiveHistory.slice(-20);
+    endExecution(state, current, 'archived', context.now);
     current.owner = null;
     removeFromFocus(state, current.id);
     touch(state, current, context.now);
@@ -1079,6 +1142,89 @@ function applyFocus(state, op, context) {
   return { op: 'focus' };
 }
 
+/** Whether the standard-mode single-seat rule applies (no Agent Team composed). */
+function standardModeOf(context) {
+  return context.standardMode !== false;
+}
+
+/**
+ * The workline's one non-terminal execution, from the claim stamps first and
+ * the ledger as a fail-closed backstop. `undefined` means the seat is free.
+ */
+function activeSeat(state) {
+  for (const task of state.tasks) {
+    if (task.archived === true || task.owner === null || task.owner === undefined) continue;
+    return {
+      taskId: task.id,
+      sessionId: task.owner.sessionId,
+      executionId: task.owner.executionId ?? null,
+    };
+  }
+  const ledger = state.workline.executions.find((execution) => execution.state !== 'ended');
+  if (ledger === undefined) return undefined;
+  return { taskId: ledger.taskId, sessionId: ledger.sessionId, executionId: ledger.executionId };
+}
+
+/** End the task's active execution, if any; an ended execution is never revived. */
+function endExecution(state, task, reason, now) {
+  const owner = task.owner;
+  if (owner === null || owner === undefined) return undefined;
+  const executions = state.workline.executions;
+  let record = typeof owner.executionId === 'string'
+    ? executions.find((execution) => execution.executionId === owner.executionId)
+    : undefined;
+  if (record === undefined) {
+    // A legacy claim stamp predates the ledger; keep the record honest rather
+    // than inventing a backdated id.
+    return undefined;
+  }
+  if (record.state === 'ended') return record.executionId;
+  record.state = 'ended';
+  record.endedAt = now;
+  record.updatedAt = now;
+  record.endReason = reason;
+  return record.executionId;
+}
+
+/** Allocate the next monotonic execution id (`ex-1`, `ex-2`, ...). */
+function allocateExecution(state, taskId, sessionId, now) {
+  const executionId = `ex-${state.workline.nextExecution}`;
+  state.workline.nextExecution += 1;
+  const attempt = state.workline.executions.filter((execution) => execution.taskId === taskId).length + 1;
+  state.workline.executions.push({
+    executionId,
+    taskId,
+    sessionId,
+    attempt,
+    state: 'active',
+    startedAt: now,
+    updatedAt: now,
+    endedAt: null,
+    endReason: null,
+  });
+  state.workline.executions = state.workline.executions.slice(-500);
+  return executionId;
+}
+
+function applyAssign(state, op, context) {
+  const id = requireTaskId(op);
+  const actor = typeof context.actorSessionId === 'string' && context.actorSessionId !== '' ? context.actorSessionId : undefined;
+  if (actor === undefined) fail(`task ${id}: assign requires a calling session`);
+  if (actor !== state.workline.id) fail('assign is reserved for the lead session');
+  if (!standardModeOf(context)) fail('assign is a standard-mode operation; an Agent Team dispatches instead');
+  if (op.member === undefined) fail('member is required (a subagent session id, or "lead")');
+  const member = singleLine(op.member, 'member', LIMITS.shortText, { required: true });
+  const task = findTask(state, id, { active: true });
+  if (task.deferred) fail(`task ${id} is deferred and cannot be assigned`);
+  if (task.status === 'done') fail(`task ${id} is done and cannot be assigned`);
+  if (task.owner !== null && task.owner !== undefined) {
+    fail(`task ${id} holds an active execution; release it before assigning the task`);
+  }
+  task.assignee = member;
+  touch(state, task, context.now);
+  return { op: 'assign', id };
+}
+
 function applyClaim(state, op, context) {
   const id = requireTaskId(op);
   const actor = typeof context.actorSessionId === 'string' && context.actorSessionId !== '' ? context.actorSessionId : undefined;
@@ -1087,19 +1233,62 @@ function applyClaim(state, op, context) {
   if (task.deferred) fail(`task ${id} is deferred and cannot be claimed`);
   assertExecutable(task);
   if (task.status !== 'in_progress') fail(`task ${id} must be in_progress to claim (current: ${task.status})`);
-  const owner = task.owner;
-  if (owner !== null && owner.sessionId !== actor) {
-    const live = typeof context.isLive === 'function' ? context.isLive(owner.sessionId) === true : false;
-    if (live) fail(`task ${id} is claimed by live session ${owner.sessionId}`);
+
+  if (standardModeOf(context)) {
+    // I3: the whole standard-mode workline shares one execution seat. A claim
+    // by anyone while it is held is refused, including a second claim by the
+    // holder itself (I2) and a subagent claim while the lead holds it.
+    const seat = activeSeat(state);
+    if (seat !== undefined) {
+      const holder = seat.executionId === null ? 'an active execution' : `execution ${seat.executionId}`;
+      if (seat.sessionId === actor) {
+        const where = seat.taskId === id ? `task ${id}` : `task ${seat.taskId}`;
+        fail(`session ${actor} already holds ${holder} on ${where}; release it before claiming another task`);
+      }
+      fail(
+        `workline ${state.workline.id} has one execution seat, held by session ${seat.sessionId}`
+        + ` on task ${seat.taskId} (${holder}); it must be released before session ${actor} can claim`,
+      );
+    }
+  } else {
+    const owner = task.owner;
+    if (owner !== null && owner.sessionId !== actor) {
+      const live = typeof context.isLive === 'function' ? context.isLive(owner.sessionId) === true : false;
+      if (live) fail(`task ${id} is claimed by live session ${owner.sessionId}`);
+    }
   }
-  task.owner = { sessionId: actor, since: context.now };
+
+  // Assignment is routing, not a claim: a subagent may only claim the task the
+  // lead assigned to its own live session, and the lead may claim a task that
+  // was handed back to it.
+  const lead = actor === state.workline.id;
+  if (task.assignee !== null && task.assignee !== undefined) {
+    if (lead && task.assignee !== 'lead') {
+      fail(`task ${id} is assigned to subagent ${task.assignee}; assign it to "lead" before claiming it`);
+    }
+    if (!lead && task.assignee !== actor) {
+      fail(`task ${id} is assigned to ${task.assignee}, not to session ${actor}`);
+    }
+  } else if (!lead) {
+    fail(`task ${id}: a subagent may only claim a task the lead assigned to its session`);
+  }
+
+  const executionId = allocateExecution(state, id, actor, context.now);
+  task.owner = { sessionId: actor, executionId, since: context.now };
   touch(state, task, context.now);
-  return { op: 'claim', id };
+  return { op: 'claim', id, executionId };
 }
 
 function applyRelease(state, op, context) {
   const id = requireTaskId(op);
+  const actor = typeof context.actorSessionId === 'string' && context.actorSessionId !== '' ? context.actorSessionId : undefined;
+  if (actor === undefined) fail(`task ${id}: release requires a calling session`);
   const task = findTask(state, id, { active: true });
+  const owner = task.owner;
+  if (owner !== null && owner !== undefined && owner.sessionId !== actor) {
+    fail(`task ${id} is held by session ${owner.sessionId}; only its holder can release it`);
+  }
+  endExecution(state, task, 'released', context.now);
   task.owner = null;
   touch(state, task, context.now);
   return { op: 'release', id };
@@ -1108,6 +1297,8 @@ function applyRelease(state, op, context) {
 function applyComplete(state, op, context) {
   const id = requireTaskId(op);
   const task = findTask(state, id, { active: true });
+  const actor = typeof context.actorSessionId === 'string' && context.actorSessionId !== '' ? context.actorSessionId : undefined;
+  assertEndsOwnExecution(task, actor);
   if (task.status === 'done') {
     if (task.completion === 'user-confirmed') fail(`task ${id} is already done`);
     if (op.result !== undefined) task.result = multiLine(op.result, 'result', LIMITS.result);
@@ -1141,6 +1332,7 @@ function applyOne(state, op, context) {
     case 'archive': return applyArchive(state, op, context);
     case 'restore': return applyRestore(state, op, context);
     case 'focus': return applyFocus(state, op, context);
+    case 'assign': return applyAssign(state, op, context);
     case 'claim': return applyClaim(state, op, context);
     case 'release': return applyRelease(state, op, context);
     case 'complete': return applyComplete(state, op, context);
@@ -1167,6 +1359,8 @@ export function applyOps(envelope, ops, context = {}) {
     : undefined;
   const isLive = typeof context.isLive === 'function' ? context.isLive : () => false;
   const verifyUserQuote = typeof context.verifyUserQuote === 'function' ? context.verifyUserQuote : undefined;
+  // Standard mode is the absence of an Agent Team; team mode is a later slice.
+  const standardMode = context.standardMode !== false;
   if (!Array.isArray(ops) || ops.length === 0) fail('ops must be a non-empty array');
   if (ops.length > LIMITS.maxOps) fail(`ops must contain at most ${LIMITS.maxOps} entries`);
   const state = envelope === undefined || envelope === null
@@ -1178,7 +1372,7 @@ export function applyOps(envelope, ops, context = {}) {
   const applied = [];
   for (let index = 0; index < ops.length; index += 1) {
     try {
-      applied.push(applyOne(state, ops[index], { worklineId, now, actorSessionId, isLive, verifyUserQuote }));
+      applied.push(applyOne(state, ops[index], { worklineId, now, actorSessionId, isLive, verifyUserQuote, standardMode }));
     } catch (error) {
       const message = error instanceof TaskTreeError
         ? error.message

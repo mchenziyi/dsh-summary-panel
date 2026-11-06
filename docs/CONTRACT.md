@@ -63,7 +63,8 @@ TaskRecord = {
   progress: string           // 进展记录，可多段，<= 2000 字符
   result?: string            // 完成结果，<= 500 字符
   blocker?: { reason: string, unblock: string } | null
-  owner?: { sessionId: string, since: number } | null   // 执行占用
+  assignee?: 'lead' | string | null // 标准模式：本任务被分配给哪个会话（仅路由）
+  owner?: { sessionId: string, executionId: string, since: number } | null   // 当前执行占用
   completion?: 'user-confirmed' | 'self'
   completedAt?: number
   createdAt: number
@@ -80,7 +81,7 @@ TaskRecord = {
 5. `deferred` 是标记而非状态：不改 `status`、不重置进度；暂缓任务不能有焦点、不能被领取。
 6. `archived` 任务从活跃树移除，其整棵子树一并归档；已归档任务仍有子任务未归档视为数据错误（应用归档时递归）。
 7. `focus` 中的任务必须未归档、未暂缓；设置焦点时若状态为 `pending` 则改为 `in_progress`；移除焦点不改变状态。
-8. 领取（claim）要求任务未归档、未暂缓、状态为 `in_progress`；被其他**仍存活**会话占用时拒绝；占用者会话已不存活时允许接管。释放只清 `owner`。
+8. 领取（claim）要求任务未归档、未暂缓、状态为 `in_progress`、已执行授权；标准模式下整条工作线只有一个执行位，任何非终态执行存在时其他认领一律拒绝（含 Lead 换任务、子代理认领、已死会话占位）；只有持位者能 `release`/`complete` 自己的执行。分配（assign）不是认领，不产生执行。
 9. 目标：`original` 只能写一次；`reviseGoal` 必须带 `reason`，追写 `changes`，并把 `current` 改为新值（调用方已向用户确认）。
 10. 工具写操作：调用者 `header.origin === 'subagent'` 时拒绝（团队 Teammate 也是 subagent）；若 `agentTeams.membership(agent).role === 'teammate'` 也拒绝。读操作不限制。
 
@@ -109,10 +110,11 @@ TaskRecord = {
 ```
 {
   op: 'init'|'reviseGoal'|'create'|'update'|'move'|'defer'|'resume'|
-      'archive'|'focus'|'claim'|'release'|'complete'
+      'archive'|'focus'|'assign'|'claim'|'release'|'complete'
   id?: string
   parentId?: string | null
   ids?: string[]
+  member?: string           // assign：子会话 id 或 "lead"（仅标准模式 Lead）
   title?: string
   summary?: string
   outline?: string
@@ -140,7 +142,8 @@ TaskRecord = {
 - `defer` / `resume`：见不变量 5。
 - `archive`：递归归档子树，清焦点与占用。
 - `focus`：**整体替换**焦点集合（`ids: []` 表示清空）。
-- `claim` / `release`：执行占用。
+- `assign`：标准模式 Lead 把任务路由给子会话或收回给自己；只能在没有活动执行时分配，分配本身不产生执行。
+- `claim` / `release`：执行占用。标准模式下全工作线只有一个执行位；每次 claim 分配新的单调 `executionId`，结束的执行只追加终态，不复活。
 - `complete`：等价 `update status='done'`，但必须 `confirmedByUser: true`；校验子任务；写 `completion='user-confirmed'`。
 - 一次调用内先全量校验再写入；返回 `{ ok: true, worklineId, applied: [{op, id?}] }` 或抛出可读错误（含任务 id 与原因）。
 

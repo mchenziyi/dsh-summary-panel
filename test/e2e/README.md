@@ -19,6 +19,7 @@ Every scenario exports three artefacts under `<temp>/out` (and prints them):
 | artefact | source | why |
 | --- | --- | --- |
 | `tool-results.json` | `dsh --json` projected session events | what the tools actually returned, call by call |
+| `tool-transcript.json` | fixture probe over every `session/event` | every session's tool calls and results, subagents included |
 | `task-tree.json` | `<profile>/agent-task-tree/<session>.json` on disk | the persisted Reins task tree, not the tool's echo |
 | `team-board.json` | fixture probe inside the live process | Agent Team state is in-memory only, so it must be captured before exit |
 
@@ -34,6 +35,10 @@ A passing run removes it unless `--keep` or `--out` was passed.
 - `execution-gate` — class A tools (`write`, `bash`) are refused before `claim`
   and again after `release`, with no side effect on disk; task-management tools
   keep working and an unmanaged workline stays free.
+- `execution-seat` — standard-mode single execution seat: the Lead holds it,
+  a real continuable subagent's claim is refused, the Lead releases and assigns
+  it, the subagent claims/writes/releases, and the Lead reclaims with a NEW
+  execution id; three sequential Lead tasks get three distinct ids.
 - `team-board` — the profile composes the real Agent Team; a board task is
   created through the shipped `team_task_create` tool and exported.
 
@@ -62,8 +67,9 @@ approval answerer. Nothing in the product is changed or switched on for tests.
 
 - The model is scripted, not a real provider: runs are deterministic and need
   no credentials, but a scenario can only see the tool calls its script makes.
-- Team scenarios cover the Lead and its board; spawning a teammate is not yet
-  scripted.
+- Standard-mode subagents are scripted through `subagentResponses`, the
+  `{{subagentId}}` placeholder and `waitForSubagentTurns`; a team scenario's
+  `spawn_teammate` is not scripted yet.
 - Killing a session mid-turn (crash injection) and concurrent multi-session
   scenarios are not built yet; the profile/run/export loop they need is in
   place.
