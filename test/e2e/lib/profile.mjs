@@ -20,7 +20,7 @@ import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** Fixture files copied beside the generated patch file. */
-const FIXTURE_PLUGINS = ['scripted-llm.js', 'web-server-stub.js', 'connection-stub.js', 'team-board-probe.js', 'tool-transcript.js'];
+const FIXTURE_PLUGINS = ['scripted-llm.js', 'web-server-stub.js', 'connection-stub.js', 'team-board-probe.js', 'tool-transcript.js', 'class-a-probe.js'];
 
 export const PROFILE_NAME = 'e2e';
 
@@ -56,6 +56,11 @@ function patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, transcr
       name: ./plugins/team-board-probe.js
       config:
         out: ${JSON.stringify(teamBoardPath)}`);
+    // The team profile replaces `tool-subagent` and disables `ralph`; these
+    // named stubs stand in for the class A tools the headless profile does not
+    // ship, so a refusal can be proven down to the tool body.
+    rows.push(`    - id: e2e-class-a-probe
+      name: ./plugins/class-a-probe.js`);
   }
   rows.push(`    - id: summary-panel
       name: ${JSON.stringify(pluginRoot)}

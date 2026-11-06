@@ -46,6 +46,7 @@
 - 协作边界：只有 Lead 维护任务树；标准模式下的子代理只能 `claim`/`release` 分配给自己的任务，team 模式下 teammate 仍不能写树
 - 执行门禁（标准模式）：A 类工具（改工作区 / 跑代码）必须持有该工作线的活动执行；`claim` 建立、`release` 结束，两者与其余任务管理工具都是 B 类，不需要执行权；只读工具永远放行；未建任务树的工作线不受约束
 - 单执行位与交接（标准模式）：整条工作线只有一个执行位，`executions[]` + `task.owner.executionId` 与树同一次落盘；`assign` 只做路由；交接按 Lead release → assign 子代理 → 子代理 claim/release → assign "lead" + claim 闭环，执行号单调递增且终态不可复活
+- 团队模式 Lead 只协调：Agent Team 服务被组合即为团队模式；Lead 的 A 类工具（写文件、`edit`、shell、`terminal_*`、worktree、`workflow`、`ralph`、子代理派生）在执行之前一律被拒，且不依赖是否持有任务执行；`spawn_teammate`/消息/等待/列成员/两个任务系统/只读工具照常，任务树仍归 Lead 维护、teammate 不能写树
 - 界面：悬浮面板、入口呼吸灯、右栏任务详情 tab、行旁浮层、跟随主视图会话
 
 ## 测试
@@ -72,7 +73,7 @@
 |---|---|---|
 | 需求文档 | `~/Desktop/AI-TodoList/REQUIREMENTS.md` | 已冻结的 MVP 需求 |
 | 实现契约 | `~/Desktop/AI-TodoList/CONTRACT.md` | Host/Client 唯一接口约定；与需求冲突以它为准 |
-| 执行调度设计 v8 | `docs/plans/dsh-execution-scheduling-v8.md` | 已冻结；已实现标准模式的执行门禁（#3）与单执行位/交接（#4）切片 |
+| 执行调度设计 v8 | `docs/plans/dsh-execution-scheduling-v8.md` | 已冻结；已实现标准模式的执行门禁（#3）、单执行位/交接（#4）与团队模式 Lead 只协调（#5）切片 |
 | 变更记录 | `CHANGELOG.md` | 每版做了什么 |
 
 > 需求与契约两份文档仍在 `Desktop/AI-TodoList`，不在本仓库——agent 读仓库时看不到它们。是否迁入仓库尚未决定。

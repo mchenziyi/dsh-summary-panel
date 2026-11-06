@@ -2,6 +2,13 @@
 
 ## 未发布
 
+**团队模式：Lead 只协调**
+
+- 模式判定按组合而非模型自报：插件上下文里存在 Agent Team 服务即为团队模式，标准模式的行为完全不变。
+- 团队模式下 Lead 一律被拒所有 A 类工具（写文件、`edit`、shell、`terminal_*`、worktree、`workflow`、`ralph`、子代理派生），**即使它持有任务执行**；拒绝发生在工具执行之前，与提示词无关，理由写明"Lead 只协调"并指向 `spawn_teammate`。
+- 协调类照常可用：`spawn_teammate`、`send_message`、`wait_agent`、`list_agents`、`interrupt_agent`、两个任务系统、只读工具。任务树的维护仍归 Lead；teammate 写树依旧被拒。
+- 真实进程 e2e 新增 `team-lead`：无树、持位、释放后三种状态下全部 A 类代表工具被拒且磁盘无副作用；队伍任务、真实 teammate 的派生与消息、只读工具照常。测试装置顺带修正为优先选择真实 PATH 上的 `dsh`，避免 npm 注入的祖先 `node_modules/.bin` 旧启动器在团队 profile 下解析不到 bundle。
+
 执行门禁（执行调度 v8 的第一切片），以及审计后修复的三处授权/交付边界漏洞与一处引用校验下限：
 
 **执行门禁（标准模式）**

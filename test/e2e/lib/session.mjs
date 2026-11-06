@@ -10,7 +10,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 let resolvedBin;
 
@@ -18,8 +18,9 @@ let resolvedBin;
  * Launchers to try, in PATH order. `--json` is an app arg, so the top-level
  * `--help` cannot advertise it: the capability is proven by the first real run
  * that does not answer "unknown option '--json'". Under `npm run` an ancestor
- * `node_modules/.bin` can put an older launcher first, which is exactly the case
- * this retry handles.
+ * `node_modules/.bin` can put an older launcher first; when that launcher still
+ * accepts `--json` but cannot resolve this profile's bundles, the retry cannot
+ * notice, so a real PATH launcher is preferred over a dependency shim.
  * @returns candidate paths, deduplicated and existing.
  */
 function launcherCandidates() {
@@ -31,7 +32,11 @@ function launcherCandidates() {
     const candidate = join(dir, 'dsh');
     if (!candidates.includes(candidate) && existsSync(candidate)) candidates.push(candidate);
   }
-  return candidates;
+  const isDependencyShim = (candidate) => candidate.includes(`${sep}node_modules${sep}.bin${sep}`);
+  return [
+    ...candidates.filter((candidate) => !isDependencyShim(candidate)),
+    ...candidates.filter((candidate) => isDependencyShim(candidate)),
+  ];
 }
 
 /** Whether a launcher rejected the flag this harness depends on. */

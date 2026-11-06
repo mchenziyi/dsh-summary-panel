@@ -1,6 +1,6 @@
 /**
- * The execution gate (design v8 §3, §10): class A tools need an active
- * execution for the caller's workline.
+ * The execution gate (design v8 §3, §7, §10): class A tools need an active
+ * execution for the caller's workline, and a Team Lead never gets one.
  *
  * Tools are classified into three classes:
  *
@@ -11,6 +11,17 @@
  *   ownership; it never needs an execution. This is what makes `claim` itself
  *   possible without a circular dependency.
  * - **C — read-only.** Always allowed.
+ *
+ * Two modes, decided by composition rather than by model input:
+ *
+ * - **Standard mode** (no Agent Team service): the one execution seat rule
+ *   above.
+ * - **Team mode** (the Agent Team service is composed): the Lead is a pure
+ *   coordinator. Every class A tool is refused for the Lead — including shell,
+ *   because one `sed -i` would bypass the file tools — and it is refused before
+ *   the workline is even consulted, so it does not depend on who holds a seat.
+ *   Teammates keep the standard execution rule; dispatch and claim-first
+ *   binding are a later slice, and this gate must never grant them early.
  *
  * The classification is **default-deny**: only tools that provably read (C) or
  * provably manage tasks/executions (B) are allow-listed; anything else —
@@ -122,6 +133,67 @@ function holdsExecution(tasks, sessionId) {
     && task.owner.sessionId === sessionId);
 }
 
+/**
+ * Team mode is decided by composition: the Agent Team service exists in this
+ * plugin context. Nothing the model says can turn it off, and a profile without
+ * the service keeps exactly its standard-mode behaviour.
+ */
+function teamServiceOf(ctx) {
+  try {
+    const agentTeams = ctx.get('agentTeams');
+    return agentTeams !== null && typeof agentTeams === 'object' ? agentTeams : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The caller's Team role, resolved from the live Agent by the Team roster
+ * itself — never from model input. `tryMembership` is the non-throwing probe;
+ * `membership` is the fallback for a service that only exposes the strict one.
+ * @returns `'lead'`, `'teammate'`, or `undefined` when the caller is not a Team
+ *   member (for example a provider-owned subagent inside a team profile).
+ */
+function teamRoleOf(agentTeams, agent) {
+  if (agent === null || typeof agent !== 'object') return undefined;
+  let membership;
+  let resolved = false;
+  if (typeof agentTeams.tryMembership === 'function') {
+    try {
+      membership = agentTeams.tryMembership(agent);
+      resolved = true;
+    } catch {
+      /* fall through to the strict resolver */
+    }
+  }
+  if (!resolved && typeof agentTeams.membership === 'function') {
+    try {
+      membership = agentTeams.membership(agent);
+    } catch {
+      /* an unresolved identity is not a proven Lead */
+    }
+  }
+  if (membership !== null && typeof membership === 'object' && typeof membership.role === 'string') {
+    return membership.role;
+  }
+  return undefined;
+}
+
+/**
+ * The model-readable team-mode denial. It says who the caller is, which tools
+ * are refused, and what it should do instead — coordination stays open.
+ */
+export function leadDenialReason({ tool, sessionId }) {
+  return [
+    `${tool} is a class A tool (workspace modification or code execution), and session ${sessionId}`
+    + ' is the Lead of an Agent Team, which only coordinates.',
+    'In team mode the Lead runs no concrete work: writing files, edit, shell, terminal, worktree, workflow,'
+    + ' ralph and subagent spawn are all refused, even while a task execution is held.',
+    'Spawn a teammate with spawn_teammate and send it the task; the Lead keeps task_tree_* and team_task_*'
+    + ' for coordination.',
+  ].join(' ');
+}
+
 /** The model-readable denial. It names the missing execution and the way out. */
 export function denialReason({ tool, sessionId, worklineId }) {
   return [
@@ -148,6 +220,12 @@ export function createExecutionGuard({ ctx, store }) {
         + ' class A tools require a session holding an active execution for its workline.';
     }
     try {
+      // Team mode first: a Lead is refused before the workline is consulted, so
+      // no claim and no tree can ever widen its permission.
+      const agentTeams = teamServiceOf(ctx);
+      if (agentTeams !== undefined && teamRoleOf(agentTeams, exec?.agent) === 'lead') {
+        return leadDenialReason({ tool: label, sessionId: caller.sessionId });
+      }
       const worklineId = worklineOf(ctx, caller.sessionId, caller.header);
       const tree = store.snapshot(worklineId);
       if (tree.present !== true) return undefined;
