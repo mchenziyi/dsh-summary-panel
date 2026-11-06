@@ -22,6 +22,7 @@
 | `host/mount.js` | 任务树的装配点；任一部分失败只降级该功能，不拖垮插件 |
 | `host/model.js` | 纯域逻辑：`applyOps`、状态机、`assertDeliveryComplete`、`isSettled`、验收引用校验 |
 | `host/tools.js` | `task_tree_read` / `task_tree_write` 两个模型工具（普通 ToolDefinition，不依赖 `@deepseek-ai/*`） |
+| `host/guard.js` | 执行门禁：A/B/C 三类工具分类（默认拒绝）与 `ctx.tools.guard` 单调守卫；身份取活 Agent，任务树走同步快照 |
 | `host/prompt.js` | 系统提示词段落与两档提醒（START / 每轮） |
 | `host/store.js` | 每工作线一个 JSON；tmp+rename 原子写、per-workline 串行链、`.corrupt-<ts>` 隔离 |
 | `host/evidence.js` | 真实用户消息识别与引用校验 |
@@ -43,6 +44,7 @@
 - 完成判定：父任务只有整棵活动子树完成才算完成，`settled` 派生
 - 归档：归档 / 恢复 / 归档批次 / 归档查询（`includeArchived`）
 - 协作边界：子会话与 teammate 不能写任务树；只有 Lead 维护树
+- 执行门禁（标准模式）：A 类工具（改工作区 / 跑代码）必须持有该工作线的活动执行；`claim` 建立、`release` 结束，两者与其余任务管理工具都是 B 类，不需要执行权；只读工具永远放行；未建任务树的工作线不受约束
 - 界面：悬浮面板、入口呼吸灯、右栏任务详情 tab、行旁浮层、跟随主视图会话
 
 ## 测试
@@ -52,7 +54,7 @@
 | 文件 | 覆盖 |
 |---|---|
 | `test/host.mjs` | 只读路由、git 解析、来源聚合、子智能体列表、会话上下文 |
-| `test/tasks.mjs` | 域逻辑与工具 schema（含真实注册 schema 的子集校验） |
+| `test/tasks.mjs` | 域逻辑与工具 schema（含真实注册 schema 的子集校验）、store 同步快照、执行门禁分类与三类授权 |
 | `test/client.mjs` | React harness：hook 顺序检测、effect cleanup、多会话载荷、可挂起响应 |
 
 ## 已知限制
@@ -69,7 +71,7 @@
 |---|---|---|
 | 需求文档 | `~/Desktop/AI-TodoList/REQUIREMENTS.md` | 已冻结的 MVP 需求 |
 | 实现契约 | `~/Desktop/AI-TodoList/CONTRACT.md` | Host/Client 唯一接口约定；与需求冲突以它为准 |
-| 执行调度设计 v8 | `docs/plans/dsh-execution-scheduling-v8.md` | 已冻结、**未实现** |
+| 执行调度设计 v8 | `docs/plans/dsh-execution-scheduling-v8.md` | 已冻结；本版实现了标准模式的执行门禁切片（任务 #3） |
 | 变更记录 | `CHANGELOG.md` | 每版做了什么 |
 
 > 需求与契约两份文档仍在 `Desktop/AI-TodoList`，不在本仓库——agent 读仓库时看不到它们。是否迁入仓库尚未决定。

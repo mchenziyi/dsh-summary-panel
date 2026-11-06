@@ -18,6 +18,7 @@ import {
   statusSnapshot,
 } from '../host/model.js';
 import { createTaskStore } from '../host/store.js';
+import { classifyTool, createExecutionGuard } from '../host/guard.js';
 import { mountTaskTree } from '../host/mount.js';
 import { taskTreeReminderFor, TASK_TREE_REMINDER, TASK_TREE_START_REMINDER, TASK_TREE_PROMPT } from '../host/prompt.js';
 import { MAX_BASIS, MIN_QUOTE, verifyUserQuote } from '../host/evidence.js';
@@ -320,6 +321,116 @@ function titles(snapshot) {
 }
 
 // ---------------------------------------------------------------------------
+// store: the synchronous snapshot the execution gate decides on
+// ---------------------------------------------------------------------------
+
+{
+  const root = tempRoot();
+  const store = createTaskStore({ root, logger: { warn() {} } });
+  // An absent file is the unmanaged workline: no tree, no restriction.
+  assert.deepEqual(store.snapshot('session-cold'), { present: false, tasks: [] });
+
+  await store.update('session-root', (current) => ({
+    envelope: envelopeAfter(current, [
+      { op: 'init', originalGoal: '门禁' },
+      { op: 'create', title: '落盘', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+      { op: 'claim', id: 't1' },
+    ]).envelope,
+  }));
+
+  // A write refreshes the cache before it returns, so the next decision sees it.
+  const warm = store.snapshot('session-root');
+  assert.equal(warm.present, true);
+  assert.equal(warm.tasks[0].owner.sessionId, 'session-root');
+
+  // A restarted host has an empty cache: the snapshot reads one small file
+  // synchronously instead of awaiting, so a claim written before this process
+  // started is still visible.
+  const reopened = createTaskStore({ root, logger: { warn() {} } });
+  const cold = reopened.snapshot('session-root');
+  assert.equal(cold.present, true);
+  assert.equal(cold.tasks[0].title, '落盘');
+  assert.equal(cold.tasks[0].owner.sessionId, 'session-root');
+
+  // Fail closed: a present-but-unreadable tree reports no tasks (which denies
+  // class A) rather than reporting an unmanaged workline (which would allow).
+  writeFileSync(join(root, 'session-corrupt.json'), '{ not json');
+  const corrupt = reopened.snapshot('session-corrupt');
+  assert.equal(corrupt.present, true);
+  assert.deepEqual(corrupt.tasks, []);
+
+  // An invalid workline id can never map to a file, so it stays unmanaged.
+  assert.deepEqual(reopened.snapshot('../escape'), { present: false, tasks: [] });
+}
+
+// ---------------------------------------------------------------------------
+// execution gate: tool classification is default-deny
+// ---------------------------------------------------------------------------
+
+{
+  // Class A: workspace modification and code execution, by default.
+  for (const name of ['write', 'edit', 'str_replace_editor', 'apply_patch', 'bash', 'terminal_open', 'pwsh_run', 'create_worktree', 'working_directory', 'run_code', 'workflow', 'ralph', 'subagent_spawn', 'plugin_manager']) {
+    assert.equal(classifyTool(name), 'A', `${name} modifies the workspace and must be class A`);
+  }
+  // A tool a later plugin registers is class A too: no short blacklist can hide it.
+  assert.equal(classifyTool('some_future_plugin_tool'), 'A');
+  assert.equal(classifyTool(undefined), 'A');
+  // Class B: task management and execution control, which never needs an execution.
+  for (const name of ['task_tree_read', 'task_tree_write', 'team_task_create', 'team_task_update', 'spawn_teammate', 'send_message', 'interrupt_agent', 'list_agents', 'ask_user_question', 'todo_write', 'schedule_create', 'session_search', 'present', 'create_goal']) {
+    assert.equal(classifyTool(name), 'B', `${name} is task management or execution control and must be class B`);
+  }
+  // Class C: read-only, always allowed.
+  for (const name of ['read', 'grep', 'glob', 'read_image', 'web_fetch', 'web_search', 'job_output', 'skill', 'cordis_inspect_list', 'plugin_market', 'load_workspace_dependencies']) {
+    assert.equal(classifyTool(name), 'C', `${name} is read-only and must be class C`);
+  }
+
+  // The guard itself is a pure synchronous decision: an unmanaged workline is
+  // free, and a managed one needs the calling session's claim stamp.
+  const root = tempRoot();
+  const store = createTaskStore({ root, logger: { warn() {} } });
+  const sessions = new Map([
+    ['session-root', { header: { id: 'session-root' } }],
+    ['session-branch', { header: { id: 'session-branch', parentSession: 'session-root' } }],
+    ['session-other', { header: { id: 'session-other' } }],
+  ]);
+  const ctx = { get: (name) => (name === 'sessions' ? { get: (id) => sessions.get(id) } : undefined) };
+  const guard = createExecutionGuard({ ctx, store });
+  const exec = (sessionId, parentSession, tool = 'write') => ({
+    name: tool,
+    agent: {
+      id: sessionId,
+      session: { header: parentSession === undefined ? { id: sessionId } : { id: sessionId, parentSession } },
+    },
+  });
+
+  assert.equal(guard(exec('session-root')), undefined, 'no tree yet: the workline is unmanaged');
+  await store.update('session-root', (current) => ({
+    envelope: envelopeAfter(current, [
+      { op: 'init', originalGoal: '门禁' },
+      { op: 'create', title: '任务', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+    ]).envelope,
+  }));
+  assert.match(guard(exec('session-root')), /holds no active execution/);
+  assert.equal(guard(exec('session-root', undefined, 'task_tree_write')), undefined, 'class B never needs an execution');
+  assert.equal(guard(exec('session-root', undefined, 'read')), undefined, 'class C is always allowed');
+  // A branch/subagent session resolves to its workline root, not to itself.
+  assert.match(guard(exec('session-branch', 'session-root')), /holds no active execution/);
+  // A session in another workline is unaffected.
+  assert.equal(guard(exec('session-other')), undefined);
+
+  await store.update('session-root', (current) => ({
+    envelope: envelopeAfter(current, [{ op: 'claim', id: 't1' }]).envelope,
+  }));
+  assert.equal(guard(exec('session-root')), undefined, 'the claim holder is allowed');
+  assert.match(guard(exec('session-branch', 'session-root')), /holds no active execution/, 'a different session in the same workline is denied');
+
+  await store.update('session-root', (current) => ({
+    envelope: envelopeAfter(current, [{ op: 'release', id: 't1' }]).envelope,
+  }));
+  assert.match(guard(exec('session-root')), /holds no active execution/, 'release denies the same session immediately');
+}
+
+// ---------------------------------------------------------------------------
 // mount: tools and HTTP handlers against a fake context
 // ---------------------------------------------------------------------------
 
@@ -438,6 +549,60 @@ function titles(snapshot) {
     ),
     /reserved for the lead session/,
   );
+}
+
+// ---------------------------------------------------------------------------
+// mount: the execution gate is registered through the tool registry's guard
+// ---------------------------------------------------------------------------
+
+{
+  const root = tempRoot();
+  const registeredTools = new Map();
+  let registeredGuard;
+  const ctx = {
+    effect: (factory) => factory(),
+    get(name) {
+      if (name === 'sessions') return { get: () => undefined };
+      if (name === 'tools') {
+        return {
+          register: (definition) => { registeredTools.set(definition.name, definition); return () => {}; },
+          guard: (fn) => { registeredGuard = fn; return () => {}; },
+        };
+      }
+      return undefined;
+    },
+  };
+  const mounted = mountTaskTree(ctx, { root, logger: { warn() {} }, route: () => {} });
+  assert.equal(mounted.guard, true, 'the execution gate is registered');
+  assert.equal(typeof registeredGuard, 'function');
+  const session = {
+    id: 'session-gate',
+    header: { id: 'session-gate' },
+    seq: 2,
+    snapshotEvents: () => [{ type: 'user/message', seq: 1, time: Date.now(), data: { source: { kind: 'user' }, content: [{ type: 'text', text: '开始吧' }] } }],
+  };
+  const exec = (tool) => ({ name: tool, agent: { id: 'session-gate', session } });
+
+  // No tree: unconstrained.
+  assert.equal(registeredGuard(exec('write')), undefined);
+
+  const write = registeredTools.get('task_tree_write');
+  const writeExec = { agent: { id: 'session-gate', session } };
+  await write.execute({
+    ops: [
+      { op: 'init', originalGoal: '门禁' },
+      { op: 'create', title: '任务', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+    ],
+  }, writeExec);
+  assert.match(registeredGuard(exec('write')), /holds no active execution/);
+  assert.match(registeredGuard(exec('bash')), /holds no active execution/);
+  assert.equal(registeredGuard(exec('task_tree_write')), undefined, 'the gate never blocks the tool that creates the execution');
+
+  await write.execute({ ops: [{ op: 'claim', id: 't1' }] }, writeExec);
+  assert.equal(registeredGuard(exec('write')), undefined);
+
+  await write.execute({ ops: [{ op: 'release', id: 't1' }] }, writeExec);
+  assert.match(registeredGuard(exec('write')), /holds no active execution/);
 }
 
 // ---------------------------------------------------------------------------
