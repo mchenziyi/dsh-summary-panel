@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # The suite has no dependencies; `npm test` runs every node harness directly.
+      - run: npm test
+      # The real-process harness needs a DSH launcher, which a bare runner does not
+      # have. DSH_E2E_OPTIONAL turns that into a visible skip instead of a pass.
+      # Point DSH_BIN at a launcher and drop the variable to run it for real.
+      - run: npm run test:e2e
+        env:
+          DSH_E2E_OPTIONAL: "1"

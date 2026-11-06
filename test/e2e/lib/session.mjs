@@ -23,7 +23,7 @@ let resolvedBin;
  * notice, so a real PATH launcher is preferred over a dependency shim.
  * @returns candidate paths, deduplicated and existing.
  */
-function launcherCandidates() {
+export function launcherCandidates() {
   if (resolvedBin !== undefined) return [resolvedBin];
   if (process.env.DSH_BIN !== undefined && process.env.DSH_BIN !== '') return [process.env.DSH_BIN];
   const candidates = [];

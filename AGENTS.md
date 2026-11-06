@@ -8,11 +8,12 @@ A DSH summary panel: named markdown summaries of a session, plus the agent-maint
 - `docs/CONTRACT.md` — the Host/Client interface contract; it wins when it disagrees with the requirements doc (which stays in `~/Desktop/AI-TodoList/REQUIREMENTS.md`).
 - `GLOSSARY.md` — the project's domain vocabulary. Use its words in names, comments and issues.
 - `docs/plans/` — frozen designs that are not implemented yet.
+- `CODING_STANDARDS.md` — what a reviewer enforces here, and how work is sliced. Read it before reviewing or planning tickets.
 - `docs/agents/` — how the engineering skills consume this repo (issue tracker, triage labels, domain docs).
 
 ## Checks
 
-`npm test` runs the whole suite (host, tasks, client). The same command runs from `.githooks/pre-commit`; enable it once per clone with `git config core.hooksPath .githooks`.
+`npm test` runs the harness suites and the test-isolation check; `npm run test:e2e` runs the real-process scenarios (needs a `dsh` launcher, see `test/e2e/README.md`). CI runs both. The pre-commit hook runs `npm test`; enable it once per clone with `git config core.hooksPath .githooks`.
 
 ## Agent skills
 

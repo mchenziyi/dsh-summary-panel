@@ -29,7 +29,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { buildProfile, writeScript } from './lib/profile.mjs';
-import { runSession } from './lib/session.mjs';
+import { launcherCandidates, runSession } from './lib/session.mjs';
 import { collectArtefacts } from './lib/collect.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -263,6 +263,13 @@ async function main() {
     return 2;
   }
   const scenarios = await loadScenarios(options.scenarios);
+  // A machine without the DSH launcher cannot run this suite at all. Local runs
+  // still fail loudly; a CI job that has no DSH opts in to a visible skip rather
+  // than a silent pass.
+  if (process.env.DSH_E2E_OPTIONAL === '1' && launcherCandidates().length === 0) {
+    console.log('SKIPPED: no dsh launcher on PATH and DSH_E2E_OPTIONAL=1');
+    return 0;
+  }
   const results = [];
   for (const scenario of scenarios) results.push(await runScenario(scenario, options));
   for (let index = 0; index < results.length; index += 1) {

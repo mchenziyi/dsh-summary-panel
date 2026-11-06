@@ -196,3 +196,18 @@ for the wrong file.
   a real PATH launcher over an npm-injected `node_modules/.bin` shim, because an
   ancestor project's older `dsh` may accept `--json` yet not resolve this
   profile's bundles.
+
+## Running without a launcher (CI)
+
+The suite cannot run where no `dsh` launcher exists. Fail loudly by default; a
+runner that has no launcher opts into a visible skip instead of a silent pass:
+
+```bash
+DSH_E2E_OPTIONAL=1 npm run test:e2e    # prints "SKIPPED: no dsh launcher…" and exits 0
+DSH_BIN=~/.local/bin/dsh npm run test:e2e   # or point at the launcher you use
+```
+
+`DSH_BIN` also settles the "wrong `dsh` on PATH" trap: `npm run` puts an
+ancestor `node_modules/.bin` first, and an older launcher there may reject
+`--json`. The harness skips a candidate that answers `unknown option '--json'`
+and retries the next one, but an explicit `DSH_BIN` costs nothing.
