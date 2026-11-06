@@ -1,0 +1,14 @@
+#!/bin/sh
+# The repo's only quality gate: `npm test` must pass before anything lands.
+# Installed through `git config core.hooksPath .githooks`, so the hook travels
+# with the repo instead of living in an untracked .git/hooks file.
+set -e
+cd "$(git rev-parse --show-toplevel)"
+log="$(mktemp -t reins-pre-commit)"
+if ! npm test >"$log" 2>&1; then
+  echo "pre-commit: npm test failed." >&2
+  tail -25 "$log" >&2
+  echo "full log: $log" >&2
+  exit 1
+fi
+rm -f "$log"
