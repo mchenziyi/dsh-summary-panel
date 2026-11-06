@@ -20,8 +20,11 @@
  *   coordinator. Every class A tool is refused for the Lead — including shell,
  *   because one `sed -i` would bypass the file tools — and it is refused before
  *   the workline is even consulted, so it does not depend on who holds a seat.
- *   Teammates keep the standard execution rule; dispatch and claim-first
- *   binding are a later slice, and this gate must never grant them early.
+ *   A teammate gets class A only after the Lead dispatched a tree task to its
+ *   roster name and the Worker's own Team-board claim bound an execution. The
+ *   guard therefore also pre-checks two class B calls: `team_task_update
+ *   {action:"claim"}` must match the dispatch for the roster-resolved caller,
+ *   and `reassign` is refused outright because assignment is not a binding.
  *
  * The classification is **default-deny**: only tools that provably read (C) or
  * provably manage tasks/executions (B) are allow-listed; anything else —
@@ -148,13 +151,17 @@ function teamServiceOf(ctx) {
 }
 
 /**
- * The caller's Team role, resolved from the live Agent by the Team roster
+ * The caller's Team membership, resolved from the live Agent by the Team roster
  * itself — never from model input. `tryMembership` is the non-throwing probe;
  * `membership` is the fallback for a service that only exposes the strict one.
- * @returns `'lead'`, `'teammate'`, or `undefined` when the caller is not a Team
- *   member (for example a provider-owned subagent inside a team profile).
+ * The roster's `id` is the Team identity (the Lead's id); `sessionId` here is
+ * the live Agent's own id, which is the teammate's real session id and what the
+ * execution ledger records. `name` is the model-facing Team name.
+ * @returns `{ root, id, role, name, sessionId }`, or undefined when the caller
+ *   is not a Team member (for example a provider-owned subagent in a team
+ *   profile).
  */
-function teamRoleOf(agentTeams, agent) {
+function teamMembershipOf(agentTeams, agent) {
   if (agent === null || typeof agent !== 'object') return undefined;
   let membership;
   let resolved = false;
@@ -170,13 +177,17 @@ function teamRoleOf(agentTeams, agent) {
     try {
       membership = agentTeams.membership(agent);
     } catch {
-      /* an unresolved identity is not a proven Lead */
+      /* an unresolved identity is not a proven member */
     }
   }
-  if (membership !== null && typeof membership === 'object' && typeof membership.role === 'string') {
-    return membership.role;
-  }
-  return undefined;
+  if (membership === null || typeof membership !== 'object') return undefined;
+  if (typeof membership.role !== 'string') return undefined;
+  if (typeof membership.id !== 'string' || membership.id === '') return undefined;
+  // The roster's `id` is the Team identity (the Lead's id); the teammate's real
+  // session id is the live Agent's id. Only the latter may appear in the
+  // execution ledger.
+  if (typeof agent.id !== 'string' || agent.id === '') return undefined;
+  return { ...membership, sessionId: agent.id };
 }
 
 /**
@@ -192,6 +203,103 @@ export function leadDenialReason({ tool, sessionId }) {
     'Spawn a teammate with spawn_teammate and send it the task; the Lead keeps task_tree_* and team_task_*'
     + ' for coordination.',
   ].join(' ');
+}
+
+/**
+ * The model-readable refusal of `team_task_update reassign` (design v8 §6.2,
+ * I18). Assignment via the board would write `in_progress + ownerId` directly,
+ * and a later `claim` can only start from `pending`; there is no coherent
+ * "assign then claim" path, so team mode refuses assignment outright.
+ */
+export function reassignDenialReason({ sessionId }) {
+  return [
+    `team_task_update reassign is refused for session ${sessionId}: assignment is not a binding in an Agent Team.`,
+    'A Worker claim can only start from pending, while reassign writes in_progress and owner directly, so the two can never be combined.',
+    'The Lead dispatches the task in the tree (task_tree_write {"op":"dispatch","id":"<task>","member":"<worker-name>","teamTaskId":"<task-N>"}),'
+    + ' and the Worker claims it on the Team board with team_task_update {action:"claim"}; that claim is what creates the execution.',
+  ].join(' ');
+}
+
+/**
+ * The model-readable refusal of a Team-board claim that has no matching
+ * dispatch (design v8 §6.1 ⑥). Identity comes from the roster, so a
+ * model-supplied owner field cannot widen this.
+ */
+export function teamClaimDenialReason({ taskId, sessionId, detail }) {
+  return [
+    `team_task_update claim for ${taskId === undefined ? 'this task' : `team task ${taskId}`} is refused for session ${sessionId}: ${detail}.`,
+    'Only a Worker the Lead dispatched may claim: the Lead first writes the routing record with'
+    + ' task_tree_write {"op":"dispatch","id":"<tree-task>","member":"<worker-name>","teamTaskId":"<task-N>"},'
+    + ' and the named Worker then claims the board task; its roster-resolved identity is what the Host binds.',
+  ].join(' ');
+}
+
+/** The Lead never holds an execution in team mode (design v8 I4). */
+export function leadClaimDenialReason({ sessionId }) {
+  return `team_task_update claim is refused for session ${sessionId}: the Team Lead coordinates and never claims a task.`
+    + ' Dispatch the board task to a teammate and let that Worker claim it; only the Worker\'s own claim creates an execution.';
+}
+
+/**
+ * Pre-dispatch checks for a Team-board claim: the caller's roster identity must
+ * match the tree dispatch for that board task, and neither the task nor the
+ * Worker may already hold an execution. All of it reads Host facts (roster +
+ * synced tree snapshot), never the tool arguments' identity fields.
+ */
+function teamClaimReason({ membership, store, exec }) {
+  const taskId = exec?.arguments?.task_id;
+  const caller = membership.sessionId;
+  if (membership.role !== 'teammate') return leadClaimDenialReason({ sessionId: caller });
+  if (typeof taskId !== 'string' || taskId === '') {
+    return teamClaimDenialReason({ sessionId: caller, detail: 'the claim names no board task' });
+  }
+  const rootId = membership.root !== null && typeof membership.root === 'object' && typeof membership.root.id === 'string'
+    ? membership.root.id
+    : undefined;
+  if (rootId === undefined) {
+    return teamClaimDenialReason({ taskId, sessionId: caller, detail: 'the roster exposes no Lead workline' });
+  }
+  let tree;
+  try {
+    tree = store.snapshot(rootId);
+  } catch {
+    tree = { present: true, tasks: [] };
+  }
+  if (tree.present !== true) {
+    return teamClaimDenialReason({ taskId, sessionId: caller, detail: 'the workline has no task tree, so no dispatch can exist' });
+  }
+  const task = (Array.isArray(tree.tasks) ? tree.tasks : []).find((candidate) => candidate !== null
+    && typeof candidate === 'object'
+    && candidate.teamTaskId === taskId
+    && candidate.archived !== true);
+  if (task === undefined) {
+    return teamClaimDenialReason({ taskId, sessionId: caller, detail: 'no tree task is dispatched for that board task' });
+  }
+  const dispatchedTo = task.dispatch !== null && typeof task.dispatch === 'object' && typeof task.dispatch.member === 'string'
+    ? task.dispatch.member
+    : undefined;
+  if (dispatchedTo === undefined) {
+    return teamClaimDenialReason({ taskId, sessionId: caller, detail: `tree task ${task.id} carries no dispatch` });
+  }
+  if (dispatchedTo !== membership.name) {
+    return teamClaimDenialReason({ taskId, sessionId: caller, detail: `tree task ${task.id} is dispatched to ${dispatchedTo}, not ${membership.name}` });
+  }
+  if (task.deferred === true || task.status === 'done') {
+    return teamClaimDenialReason({ taskId, sessionId: caller, detail: `tree task ${task.id} is not open for work` });
+  }
+  if (task.owner !== null && task.owner !== undefined) {
+    return teamClaimDenialReason({ taskId, sessionId: caller, detail: `tree task ${task.id} already holds an execution` });
+  }
+  const holder = (Array.isArray(tree.tasks) ? tree.tasks : []).find((candidate) => candidate !== null
+    && typeof candidate === 'object'
+    && candidate.archived !== true
+    && candidate.owner !== null
+    && typeof candidate.owner === 'object'
+    && candidate.owner.sessionId === caller);
+  if (holder !== undefined) {
+    return teamClaimDenialReason({ taskId, sessionId: caller, detail: `this Worker already holds an execution on task ${holder.id}` });
+  }
+  return undefined;
 }
 
 /** The model-readable denial. It names the missing execution and the way out. */
@@ -212,9 +320,38 @@ export function denialReason({ tool, sessionId, worklineId }) {
 export function createExecutionGuard({ ctx, store }) {
   return function executionGuard(exec) {
     const name = exec !== null && typeof exec === 'object' ? exec.name : undefined;
-    if (classifyTool(name) !== 'A') return undefined;
     const label = typeof name === 'string' && name !== '' ? name : '(unnamed tool)';
     const caller = callerOf(exec);
+    let agentTeams;
+    let membership;
+    try {
+      agentTeams = teamServiceOf(ctx);
+      if (agentTeams !== undefined) membership = teamMembershipOf(agentTeams, exec?.agent);
+    } catch {
+      agentTeams = undefined;
+      membership = undefined;
+    }
+
+    // Team-only refusal and pre-dispatch checks. They run for class B too,
+    // because reassign and claim are exactly the operations that must never
+    // reach the Team board without a Host decision (design v8 I18, §6).
+    if (agentTeams !== undefined && label === 'team_task_update') {
+      const action = exec?.arguments?.action;
+      const sessionId = caller.sessionId ?? membership?.sessionId ?? '(unknown)';
+      if (action === 'reassign') return reassignDenialReason({ sessionId });
+      if (action === 'claim') {
+        if (membership === undefined) {
+          return teamClaimDenialReason({ sessionId, detail: 'the host cannot resolve the caller as a Team member' });
+        }
+        try {
+          return teamClaimReason({ membership, store, exec });
+        } catch {
+          return teamClaimDenialReason({ sessionId, detail: 'the Host could not verify the dispatch for this claim' });
+        }
+      }
+    }
+
+    if (classifyTool(name) !== 'A') return undefined;
     if (caller.sessionId === undefined) {
       return `${label} is a class A tool, and the host cannot resolve the calling session;`
         + ' class A tools require a session holding an active execution for its workline.';
@@ -222,11 +359,16 @@ export function createExecutionGuard({ ctx, store }) {
     try {
       // Team mode first: a Lead is refused before the workline is consulted, so
       // no claim and no tree can ever widen its permission.
-      const agentTeams = teamServiceOf(ctx);
-      if (agentTeams !== undefined && teamRoleOf(agentTeams, exec?.agent) === 'lead') {
+      if (agentTeams !== undefined && membership?.role === 'lead') {
         return leadDenialReason({ tool: label, sessionId: caller.sessionId });
       }
-      const worklineId = worklineOf(ctx, caller.sessionId, caller.header);
+      // A teammate's workline is the roster's Lead, so identity-scoped facts do
+      // not depend on walking a header a model could influence.
+      const worklineId = membership?.role === 'teammate'
+        && membership.root !== null && typeof membership.root === 'object'
+        && typeof membership.root.id === 'string'
+        ? membership.root.id
+        : worklineOf(ctx, caller.sessionId, caller.header);
       const tree = store.snapshot(worklineId);
       if (tree.present !== true) return undefined;
       if (holdsExecution(tree.tasks, caller.sessionId)) return undefined;

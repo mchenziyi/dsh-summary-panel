@@ -129,6 +129,7 @@ async function runScenario(scenario, options) {
       fixtureDir: FIXTURE_DIR,
       program: scenario.program,
       subagentProgram: scenario.subagentProgram,
+      teamResponses: scenario.teamResponses,
       team: scenario.team === true,
     });
     console.log(`== ${scenario.name} — ${scenario.summary ?? ''}`);

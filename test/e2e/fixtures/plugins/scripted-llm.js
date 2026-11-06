@@ -22,6 +22,15 @@
  * - `waitForSubagentTurns: n` holds the parent's next request until the child's
  *   session log contains n completed turns, which is the scripted form of
  *   polling `list_agents` until the child is inactive.
+ *
+ * A Team scenario needs named teammates, whose ids the model never sees. Two
+ * more extensions cover that:
+ *
+ * - `teamResponses` maps a roster name to its own program, resolved through the
+ *   live Agent Team membership of the calling session.
+ * - `waitForTeammate: "<name>"` holds the Lead's next request until that
+ *   teammate has completed one turn, resolved through `listMembers` (the roster
+ *   is the same authority the product uses).
  */
 
 import { readFileSync } from 'node:fs';
@@ -85,6 +94,9 @@ export function apply(ctx, config = {}) {
   const program = JSON.parse(readFileSync(config.script, 'utf8'));
   const leadQueue = Array.isArray(program.responses) ? [...program.responses] : [];
   const subagentQueue = Array.isArray(program.subagentResponses) ? [...program.subagentResponses] : undefined;
+  const teamQueues = program.teamResponses !== null && typeof program.teamResponses === 'object'
+    ? Object.fromEntries(Object.entries(program.teamResponses).map(([key, value]) => [key, Array.isArray(value) ? [...value] : []]))
+    : undefined;
   let serial = 0;
   // Child sessions may already be disposed (or not yet live) when the parent
   // watches for their turn boundary, so their progress is counted from the
@@ -109,6 +121,51 @@ export function apply(ctx, config = {}) {
   function isSubagentRequest(options) {
     const header = sessionOf(options?.sessionId)?.header;
     return header !== undefined && header !== null && header.origin === 'subagent';
+  }
+
+  /** The roster membership of one calling session, when it is a Team member. */
+  function teamMembershipOf(options) {
+    try {
+      const agent = agentsOf().get?.(options?.sessionId);
+      const teams = ctx.get('agentTeams');
+      return agent === undefined ? undefined : teams?.tryMembership?.(agent);
+    } catch {
+      return undefined;
+    }
+  }
+
+  function agentsOf() {
+    try {
+      return ctx.get('agents') ?? {};
+    } catch {
+      return {};
+    }
+  }
+
+  /** Completed turns of one named teammate, resolved through the Team roster. */
+  async function waitForTeammateTurn(name, options) {
+    const deadline = Date.now() + 40_000;
+    let memberId;
+    while (memberId === undefined) {
+      try {
+        const lead = agentsOf().get?.(options?.sessionId);
+        const teams = ctx.get('agentTeams');
+        const row = teams?.listMembers?.(lead)?.find?.((member) => member.name === name);
+        memberId = row?.id;
+      } catch {
+        memberId = undefined;
+      }
+      if (memberId === undefined) {
+        if (Date.now() > deadline) throw new Error(`scripted wait: teammate ${JSON.stringify(name)} never joined the roster`);
+        await delay(20);
+      }
+    }
+    while (turnEndsOf(memberId) < 1) {
+      if (Date.now() > deadline) {
+        throw new Error(`scripted wait: teammate ${JSON.stringify(name)} did not finish a turn in 40s`);
+      }
+      await delay(20);
+    }
   }
 
   /** Completed turns seen for one child session. */
@@ -142,8 +199,11 @@ export function apply(ctx, config = {}) {
     },
     stream(options) {
       serial += 1;
-      const subagent = isSubagentRequest(options) && subagentQueue !== undefined;
-      const queue = subagent ? subagentQueue : leadQueue;
+      const subagent = isSubagentRequest(options);
+      const membership = subagent ? teamMembershipOf(options) : undefined;
+      const teammateName = membership?.role === 'teammate' ? membership.name : undefined;
+      const teamQueue = teammateName === undefined ? undefined : teamQueues?.[teammateName];
+      const queue = teamQueue ?? (subagent && subagentQueue !== undefined ? subagentQueue : leadQueue);
       const response = options?.purpose === 'session-title'
         ? { text: 'e2e session' }
         : (queue.length > 0 ? queue.shift() : { text: '[e2e script exhausted]' });
@@ -154,6 +214,9 @@ export function apply(ctx, config = {}) {
       return (async function* stream() {
         if (Number.isInteger(response.waitForSubagentTurns)) {
           await waitForSubagentTurns(response.waitForSubagentTurns, options);
+        }
+        if (typeof response.waitForTeammate === 'string') {
+          await waitForTeammateTurn(response.waitForTeammate, options);
         }
         for (const chunk of chunksFor(enriched, serial, finishKind)) yield chunk;
       })();

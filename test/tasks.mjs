@@ -12,6 +12,7 @@ import { join } from 'node:path';
 
 import {
   applyOps,
+  bindTeamClaim,
   createEmptyEnvelope,
   httpSnapshot,
   readSnapshot,
@@ -235,10 +236,12 @@ function titles(snapshot) {
     () => envelopeAfter(twoTasks, [{ op: 'claim', id: 't2' }]),
     /already holds execution ex-1 on task t1/,
   );
-  // The single-seat rule is standard mode only: with an Agent Team composed the
-  // seat is per task (the team slice owns its own worker rules).
-  const teamMode = envelopeAfter(twoTasks, [{ op: 'claim', id: 't2' }], { standardMode: false }).envelope;
-  assert.equal(teamMode.tasks[1].owner.sessionId, 'session-root');
+  // Team mode never creates an execution from the tree: only the Worker's own
+  // Team-board claim does (dispatch + claim-first binding, ticket #6).
+  assert.throws(
+    () => envelopeAfter(twoTasks, [{ op: 'claim', id: 't2' }], { standardMode: false }),
+    /Team-board claim/,
+  );
   // A claim is not idempotent: re-claiming the held task is a mistake, not a
   // silent second execution.
   assert.throws(
@@ -599,8 +602,11 @@ function titles(snapshot) {
   ]);
   // The real roster resolves membership from the live Agent; this stand-in does
   // the same by id. A provider-owned subagent is not a Team member.
-  const roles = new Map([['team-lead', 'lead'], ['team-worker', 'teammate']]);
-  const agentTeams = { tryMembership: (agent) => (roles.has(agent.id) ? { role: roles.get(agent.id) } : undefined) };
+  const members = new Map([
+    ['team-lead', { id: 'team-lead', role: 'lead', name: 'lead', root: { id: 'team-lead' } }],
+    ['team-worker', { id: 'team-worker', role: 'teammate', name: 'worker-a', root: { id: 'team-lead' } }],
+  ]);
+  const agentTeams = { tryMembership: (agent) => members.get(agent.id) };
   const ctx = {
     get: (name) => {
       if (name === 'sessions') return { get: (id) => sessions.get(id) };
@@ -638,15 +644,22 @@ function titles(snapshot) {
     envelope: envelopeAfter(current, [
       { op: 'init', originalGoal: '团队模式' },
       { op: 'create', title: '协调', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
-      { op: 'claim', id: 't1' },
     ], { worklineId: 'team-lead', actorSessionId: 'team-lead', standardMode: false }).envelope,
   }));
-  // Holding an execution changes nothing for the Lead: the refusal is not seat
-  // dependent.
-  assert.match(guard(exec('team-lead')), /only coordinates/, 'a Lead with its own claim is still refused');
+  // A tree does not widen the Lead's permission either.
+  assert.match(guard(exec('team-lead')), /only coordinates/, 'a Lead with a tree is still refused');
+  // The Lead cannot create an execution from the tree in team mode; the
+  // Worker's board claim is the only way (ticket #6).
+  assert.throws(
+    () => envelopeAfter(store.snapshot('team-lead').present === true
+      ? { version: 1, workline: { id: 'team-lead' }, tasks: store.snapshot('team-lead').tasks }
+      : undefined, [{ op: 'claim', id: 't1' }],
+    { worklineId: 'team-lead', actorSessionId: 'team-lead', standardMode: false }),
+    /Team-board claim/,
+  );
 
-  // A teammate keeps the execution rule (claim-first binding is a later slice),
-  // and the provider-owned subagent is not mistaken for the Lead.
+  // An unbound teammate holds no execution yet, and the provider-owned
+  // subagent is not mistaken for the Lead.
   assert.match(guard(exec('team-worker', 'team-lead')), /holds no active execution/);
   assert.match(guard(exec('plain-child', 'team-lead')), /holds no active execution/);
 
@@ -654,7 +667,7 @@ function titles(snapshot) {
   const strictCtx = {
     get: (name) => {
       if (name === 'sessions') return { get: (id) => sessions.get(id) };
-      if (name === 'agentTeams') return { membership: (agent) => { if (agent.id !== 'team-lead') throw new Error('not a member'); return { role: 'lead' }; } };
+      if (name === 'agentTeams') return { membership: (agent) => { if (agent.id !== 'team-lead') throw new Error('not a member'); return { id: 'team-lead', role: 'lead', name: 'lead', root: { id: 'team-lead' } }; } };
       return undefined;
     },
   };
@@ -662,7 +675,218 @@ function titles(snapshot) {
 
   // No Agent Team service: standard mode keeps its seat rule untouched.
   const standardCtx = { get: (name) => (name === 'sessions' ? { get: (id) => sessions.get(id) } : undefined) };
-  assert.equal(createExecutionGuard({ ctx: standardCtx, store })(exec('team-lead')), undefined, 'the claimed session is allowed in standard mode');
+  assert.match(createExecutionGuard({ ctx: standardCtx, store })(exec('team-lead')), /holds no active execution/);
+  await store.update('team-lead', (current) => ({
+    envelope: envelopeAfter(current, [{ op: 'claim', id: 't1' }], {
+      worklineId: 'team-lead', actorSessionId: 'team-lead', standardMode: true,
+    }).envelope,
+  }));
+  assert.equal(createExecutionGuard({ ctx: standardCtx, store })(exec('team-lead')), undefined, 'a standard-mode claim still grants class A');
+}
+
+// ---------------------------------------------------------------------------
+// team mode: dispatch is routing, the Worker's board claim is the binding
+// ---------------------------------------------------------------------------
+
+{
+  const TEAM = { standardMode: false };
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '团队模式派工' },
+    { op: 'create', title: '任务', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'dispatch', id: 't1', member: 'worker-a', teamTaskId: 'task-1' },
+  ], TEAM).envelope;
+  assert.equal(base.tasks[0].status, 'pending', 'dispatch is routing: it does not start the task');
+  assert.deepEqual(base.tasks[0].dispatch, { member: 'worker-a', at: NOW });
+  assert.equal(base.tasks[0].teamTaskId, 'task-1');
+  assert.equal(base.workline.executions.length, 0, 'dispatch creates no execution');
+  assert.equal(base.tasks[0].owner, null);
+
+  // Dispatch exists only in team mode, only for the Lead, and only for an
+  // approved, open task.
+  assert.throws(
+    () => envelopeAfter(undefined, [
+      { op: 'init', originalGoal: '标准模式' },
+      { op: 'create', title: '任务', executionApproval: 'approved', approvalBasis: '开始吧' },
+      { op: 'dispatch', id: 't1', member: 'worker-a', teamTaskId: 'task-1' },
+    ], { standardMode: true }),
+    /team-mode operation/,
+  );
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'dispatch', id: 't1', member: 'worker-b', teamTaskId: 'task-1' }],
+      { ...TEAM, actorSessionId: 'session-other' }),
+    /reserved for the Lead/,
+  );
+  const pending = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '团队模式派工' },
+    { op: 'create', title: '未批准' },
+  ], TEAM).envelope;
+  assert.throws(
+    () => envelopeAfter(pending, [{ op: 'dispatch', id: 't1', member: 'worker-a', teamTaskId: 'task-1' }], TEAM),
+    /not approved for execution/,
+  );
+  const clashBase = envelopeAfter(base, [
+    { op: 'create', title: '第二', executionApproval: 'approved', approvalBasis: '开始吧' },
+  ], TEAM).envelope;
+  assert.throws(
+    () => envelopeAfter(clashBase, [{ op: 'dispatch', id: 't2', member: 'worker-b', teamTaskId: 'task-1' }], TEAM),
+    /already associated/,
+  );
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'claim', id: 't1' }], TEAM),
+    /Team-board claim/,
+    'the tree never creates a team execution',
+  );
+
+  // The Worker's claim binds the roster-resolved identity.
+  const bound = bindTeamClaim(base, {
+    taskId: 't1', teamTaskId: 'task-1', sessionId: 'worker-session', member: 'worker-a', revision: 2, now: NOW + 1,
+  });
+  assert.equal(bound.executionId, 'ex-1');
+  assert.equal(bound.envelope.tasks[0].status, 'in_progress');
+  assert.equal(bound.envelope.tasks[0].dispatch, null, 'the dispatch is consumed by the binding');
+  assert.equal(bound.envelope.tasks[0].teamTaskId, 'task-1');
+  assert.deepEqual(bound.envelope.tasks[0].owner, {
+    sessionId: 'worker-session', executionId: 'ex-1', member: 'worker-a', since: NOW + 1,
+  });
+  const execution = bound.envelope.workline.executions[0];
+  assert.equal(execution.mode, 'team');
+  assert.equal(execution.teamTaskId, 'task-1');
+  assert.equal(execution.member, 'worker-a');
+  assert.equal(execution.sessionId, 'worker-session');
+  assert.equal(execution.claimRevision, 2);
+  assert.equal(execution.state, 'active');
+  assert.deepEqual(readSnapshot(bound.envelope, 'session-root').tasks[0].executor, {
+    kind: 'teammate', name: 'worker-a', sessionId: 'worker-session',
+  });
+  assert.equal(httpSnapshot(bound.envelope, 'session-root', { isLive: () => true }).tasks[0].ownerName, 'worker-a');
+
+  // Evidence that does not match dispatches nothing.
+  assert.throws(
+    () => bindTeamClaim(base, {
+      taskId: 't1', teamTaskId: 'task-1', sessionId: 'worker-b-session', member: 'worker-b', revision: 2, now: NOW + 1,
+    }),
+    /dispatched to worker-a/,
+    'a model-supplied identity cannot claim another Worker\'s dispatch',
+  );
+  assert.throws(
+    () => bindTeamClaim(base, {
+      taskId: 't1', teamTaskId: 'task-2', sessionId: 'worker-session', member: 'worker-a', revision: 2, now: NOW + 1,
+    }),
+    /not associated with team task/,
+  );
+  assert.throws(
+    () => bindTeamClaim(bound.envelope, {
+      taskId: 't1', teamTaskId: 'task-1', sessionId: 'worker-session', member: 'worker-a', revision: 2, now: NOW + 1,
+    }),
+    /dispatched to nobody/,
+    'a consumed dispatch cannot be replayed',
+  );
+
+  // I1/I2: one task and one Worker hold at most one non-terminal execution.
+  const twoTasks = envelopeAfter(base, [
+    { op: 'create', title: '第二个', executionApproval: 'approved', approvalBasis: '开始吧' },
+    { op: 'dispatch', id: 't2', member: 'worker-a', teamTaskId: 'task-2' },
+  ], TEAM).envelope;
+  const first = bindTeamClaim(twoTasks, {
+    taskId: 't1', teamTaskId: 'task-1', sessionId: 'worker-session', member: 'worker-a', revision: 2, now: NOW + 1,
+  }).envelope;
+  assert.throws(
+    () => bindTeamClaim(first, {
+      taskId: 't2', teamTaskId: 'task-2', sessionId: 'worker-session', member: 'worker-a', revision: 2, now: NOW + 2,
+    }),
+    /already holds execution ex-1/,
+    'one session may hold only one execution',
+  );
+  const held = bindTeamClaim(twoTasks, {
+    taskId: 't1', teamTaskId: 'task-1', sessionId: 'worker-session', member: 'worker-a', revision: 2, now: NOW + 1,
+  }).envelope;
+  assert.throws(
+    () => bindTeamClaim(held, {
+      taskId: 't1', teamTaskId: 'task-1', sessionId: 'other-session', member: 'worker-a', revision: 3, now: NOW + 2,
+    }),
+    /dispatched to nobody/,
+  );
+
+  // Release ends the team execution and clears the stamp; it never revives it.
+  const released = envelopeAfter(bound.envelope, [{ op: 'release', id: 't1' }],
+    { ...TEAM, actorSessionId: 'worker-session' }).envelope;
+  assert.equal(released.tasks[0].owner, null);
+  assert.equal(released.workline.executions[0].state, 'ended');
+  assert.equal(released.workline.executions[0].endReason, 'released');
+  assert.equal(released.tasks[0].status, 'in_progress', 'release does not complete the task');
+}
+
+{
+  // The guard refuses reassign and a claim that does not match the tree
+  // dispatch, using the roster identity rather than any argument field.
+  const root = tempRoot();
+  const store = createTaskStore({ root, logger: { warn() {} } });
+  const members = new Map([
+    ['team-lead', { id: 'team-lead', role: 'lead', name: 'lead', root: { id: 'team-lead' } }],
+    ['session-a', { id: 'session-a', role: 'teammate', name: 'worker-a', root: { id: 'team-lead' } }],
+    ['session-b', { id: 'session-b', role: 'teammate', name: 'worker-b', root: { id: 'team-lead' } }],
+  ]);
+  const agentTeams = { tryMembership: (agent) => members.get(agent.id) };
+  const ctx = {
+    get: (name) => {
+      if (name === 'sessions') return { get: () => undefined };
+      if (name === 'agentTeams') return agentTeams;
+      return undefined;
+    },
+  };
+  const guard = createExecutionGuard({ ctx, store });
+  const exec = (sessionId, tool, args) => ({
+    name: tool,
+    arguments: args,
+    agent: { id: sessionId, session: { header: { id: sessionId, parentSession: 'team-lead' } } },
+  });
+  const claim = (sessionId, taskId, extra = {}) => exec(sessionId, 'team_task_update', {
+    task_id: taskId, expected_revision: 1, action: 'claim', ...extra,
+  });
+
+  // No tree yet: no dispatch, so no claim.
+  assert.match(guard(claim('session-a', 'task-1')), /no dispatch can exist/);
+
+  await store.update('team-lead', (current) => ({
+    envelope: envelopeAfter(current, [
+      { op: 'init', originalGoal: '团队模式派工' },
+      { op: 'create', title: '任务', executionApproval: 'approved', approvalBasis: '开始吧' },
+      { op: 'dispatch', id: 't1', member: 'worker-a', teamTaskId: 'task-1' },
+    ], { worklineId: 'team-lead', standardMode: false, actorSessionId: 'team-lead' }).envelope,
+  }));
+  assert.equal(guard(claim('session-a', 'task-1')), undefined, 'the dispatched Worker may claim');
+  assert.match(guard(claim('session-b', 'task-1', { owner: 'worker-a' })),
+    /dispatched to worker-a, not worker-b/,
+    'a model-supplied owner field never decides identity');
+  assert.match(guard(claim('team-lead', 'task-1')), /Team Lead coordinates/);
+
+  // reassign is refused for both roles (I18).
+  const reassign = (sessionId) => exec(sessionId, 'team_task_update', {
+    task_id: 'task-1', expected_revision: 1, action: 'reassign', owner: 'worker-b',
+  });
+  assert.match(guard(reassign('team-lead')), /reassign is refused/);
+  assert.match(guard(reassign('session-a')), /reassign is refused/);
+  assert.match(guard(reassign('team-lead')), /claim only start from pending|can never be combined/);
+  // A non-claim Team action is still class B.
+  assert.equal(guard(exec('team-lead', 'team_task_update', { task_id: 'task-1', expected_revision: 1, action: 'complete' })), undefined);
+
+  // Once bound, the Worker holds class A; another member does not.
+  const snapshot = store.snapshot('team-lead');
+  const bound = bindTeamClaim(snapshot.present === true ? { version: 1, workline: { id: 'team-lead' }, tasks: snapshot.tasks } : undefined, {
+    taskId: 't1', teamTaskId: 'task-1', sessionId: 'session-a', member: 'worker-a', revision: 2, now: NOW,
+  });
+  await store.update('team-lead', () => ({ envelope: bound.envelope }));
+  assert.equal(guard(exec('session-a', 'write')), undefined, 'the bound Worker may write');
+  assert.match(guard(exec('session-b', 'write')), /holds no active execution/);
+  // It can no longer claim another task: the session already holds one.
+  await store.update('team-lead', (current) => ({
+    envelope: envelopeAfter(current, [
+      { op: 'create', title: '第二', executionApproval: 'approved', approvalBasis: '开始吧' },
+      { op: 'dispatch', id: 't2', member: 'worker-a', teamTaskId: 'task-2' },
+    ], { worklineId: 'team-lead', standardMode: false, actorSessionId: 'team-lead' }).envelope,
+  }));
+  assert.match(guard(claim('session-a', 'task-2')), /already holds an execution/);
+  assert.match(guard(claim('session-b', 'task-2')), /dispatched to worker-a, not worker-b/);
 }
 
 // ---------------------------------------------------------------------------

@@ -41,12 +41,20 @@ A passing run removes it unless `--keep` or `--out` was passed.
   execution id; three sequential Lead tasks get three distinct ids.
 - `team-board` — the profile composes the real Agent Team; a board task is
   created through the shipped `team_task_create` tool and exported.
-- `team-lead` — team mode makes the Lead a pure coordinator: with no tree yet,
-  while holding a task execution, and after releasing it, every class A family
-  (`write`, `edit`, `bash`, `workflow`, `terminal_open`, `create_worktree`,
-  `ralph`, `subagent`) is refused with the team-mode reason and leaves nothing
-  on disk; `task_tree_*`, the Team task tools, `spawn_teammate` (a real
-  teammate), messaging and reads keep working.
+- `team-lead` — team mode makes the Lead a pure coordinator: with no tree yet
+  and with a tree present, every class A family (`write`, `edit`, `bash`,
+  `workflow`, `terminal_open`, `create_worktree`, `ralph`, `subagent`) is
+  refused with the team-mode reason and leaves nothing on disk; the Lead cannot
+  create a team execution with `task_tree_write claim`; `task_tree_*`, the Team
+  task tools, `spawn_teammate` (a real teammate), messaging and reads keep
+  working.
+- `team-bind` — claim-first binding: the Lead dispatches two tree tasks to two
+  named Workers, both unbound Workers' writes are refused, each Worker claims
+  its own board task and only then writes, a second member's claim of the first
+  task (even with `owner: "worker-a"` in the arguments) and its write are
+  refused, the tree turns both tasks `in_progress` with the roster-resolved
+  executor (`worker-a`/`worker-b` plus their real session ids), and
+  `team_task_update reassign` is refused without changing the board.
 
 ## How the profile is built
 
@@ -78,9 +86,10 @@ approval answerer. Nothing in the product is changed or switched on for tests.
 - The model is scripted, not a real provider: runs are deterministic and need
   no credentials, but a scenario can only see the tool calls its script makes.
 - Subagents are scripted through `subagentResponses`, the `{{subagentId}}`
-  placeholder and `waitForSubagentTurns`; a team scenario's teammates consume
-  the same `subagentResponses` queue, but there is no `{{teammateId}}`
-  placeholder or wait-for-teammate-turns helper.
+  placeholder and `waitForSubagentTurns`. Named teammates use their own queues in
+  `teamResponses` (resolved through the live roster) and the Lead can wait for a
+  teammate's turn with `waitForTeammate: "<name>"`; a teammate's session id is
+  never exposed to the model, so scenarios identify it from the tool transcript.
 - Killing a session mid-turn (crash injection) and concurrent multi-session
   scenarios are not built yet; the profile/run/export loop they need is in
   place.
