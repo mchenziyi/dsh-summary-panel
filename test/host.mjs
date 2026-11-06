@@ -5,8 +5,17 @@ import { spawn, execFileSync } from 'node:child_process';
 import { apply } from '../index.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'sp-git-'));
-const git = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
-execFileSync('git', ['init', '-q', dir]);
+// This temporary repository must be the only one these commands can see. Git
+// exports GIT_DIR (and friends, resolved from the OUTER repository) to every
+// process it starts — including a pre-commit hook — so without this scrub the
+// commit below would land on the real checkout running `npm test` instead of
+// on the throwaway repository.
+const childEnv = { ...process.env };
+for (const key of Object.keys(childEnv)) {
+  if (key.startsWith('GIT_')) delete childEnv[key];
+}
+const git = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', env: childEnv });
+execFileSync('git', ['init', '-q', dir], { env: childEnv });
 git('config', 'user.email', 'a@b.c');
 git('config', 'user.name', 'Tester');
 writeFileSync(join(dir, 'a.txt'), 'one\n');
@@ -47,7 +56,7 @@ const ctx = {
   subprocess: {
     terminalEnvironment: async () => ({ platform: 'posix' }),
     spawn(spec) {
-      const child = spawn(spec.argv[0], spec.argv.slice(1), { cwd: spec.cwd, env: { ...process.env, ...spec.env }, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(spec.argv[0], spec.argv.slice(1), { cwd: spec.cwd, env: { ...childEnv, ...spec.env }, stdio: ['ignore', 'pipe', 'pipe'] });
       let out = ''; let err = '';
       child.stdout.on('data', (d) => { out += d; });
       child.stderr.on('data', (d) => { err += d; });

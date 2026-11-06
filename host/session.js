@@ -82,5 +82,27 @@ export function createSessionSupport(ctx) {
     return false;
   }
 
-  return { headerOf, rootSessionId, isLive };
+  /**
+   * The resolution of one executor session (design v8 I0/I16):
+   *
+   * - `active`   — the Host can still name the session: it is live, or its
+   *                persisted record resolves and the same session can resume.
+   *                A session that cannot resume can never call a tool, so a
+   *                restart of a provable worker must NOT strip its execution;
+   * - `orphaned` — nothing resolves it any more ("executor lost"). It grants
+   *                no class A permission, is never silently released, and only
+   *                a Lead force-release ends it.
+   *
+   * A session that cannot even be looked up (an empty id) is orphaned: the
+   * fail-closed direction is always "no permission", never "assume alive".
+   * @param sessionId - the executor session recorded in the execution ledger.
+   */
+  async function resolveSession(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId === '') return 'orphaned';
+    if (isLive(sessionId)) return 'active';
+    const header = await headerOf(sessionId);
+    return header === undefined ? 'orphaned' : 'active';
+  }
+
+  return { headerOf, rootSessionId, isLive, resolveSession };
 }
