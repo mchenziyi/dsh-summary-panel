@@ -212,9 +212,9 @@ export function createTaskStore(options = {}) {
       ? rawConflicts.filter((conflict) => conflict !== null && typeof conflict === 'object' && conflict.resolvedAt === null)
       : undefined;
     // The execution ledger travels with the tasks because the guard must decide
-    // SYNCHRONOUSLY whether the stamp's execution is still `active`: a cold or
-    // orphaned execution grants no class A permission even though the stamp (an
-    // index, not the truth) still names it (design v8 I0).
+    // SYNCHRONOUSLY whether the stamp's execution is still `active`: an
+    // orphaned or ended execution grants no class A permission even though the
+    // stamp (an index, not the truth) still names it (design v8 I0).
     const executions = Array.isArray(workline.executions)
       ? workline.executions.filter((execution) => execution !== null
         && typeof execution === 'object'

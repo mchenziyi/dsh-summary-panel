@@ -20,7 +20,7 @@
 |---|---|
 | `index.js` | 插件入口：6 个只读路由（git / outputs / diff / subagents / sources / context），再挂载任务树 |
 | `host/mount.js` | 任务树的装配点；任一部分失败只降级该功能，不拖垮插件 |
-| `host/model.js` | 纯域逻辑：`applyOps`、状态机、`assertDeliveryComplete`、`isSettled`、验收引用校验、`dispatch` 与团队认领绑定 `bindTeamClaim`；执行账本/Worker 台账/执行戳三处镜像的写入与结束（含 `executionId` 守卫）、执行生命周期 `active/cold/orphaned/ended`、强制释放的纯判定 `forceReleaseReadiness`、中断证据 `markInterrupted`，以及 `workline.conflicts[]` 冲突记录 |
+| `host/model.js` | 纯域逻辑：`applyOps`、状态机、`assertDeliveryComplete`、`isSettled`、验收引用校验、`dispatch` 与团队认领绑定 `bindTeamClaim`；执行账本/Worker 台账/执行戳三处镜像的写入与结束（含 `executionId` 守卫）、执行生命周期 `active/orphaned/ended`、强制释放的纯判定 `forceReleaseReadiness`、中断证据 `markInterrupted`，以及 `workline.conflicts[]` 冲突记录 |
 | `host/tools.js` | `task_tree_read` / `task_tree_write` 两个模型工具（普通 ToolDefinition，不依赖 `@deepseek-ai/*`） |
 | `host/guard.js` | 执行门禁：A/B/C 三类工具分类（默认拒绝）与 `ctx.tools.guard` 单调守卫；身份取活 Agent，任务树走同步快照；只有账本里 `active` 的执行放行，`orphaned`（失联）明确拒绝并给出 Lead 强制释放路径；团队认领预检（含冲突停摆，先于 dispatch 检查）与 `reassign` 拒绝；放行改变执行归属的调用前同步占位（团队树操作也占用 Board 任务键） |
 | `host/reservation.js` | 并发占位：`wl:`/`wk:`/`tk:` 三把同步座位键、只在 `tools/result` 或 Agent 转 `idle` 时释放、TTL 只标 `suspect` 不释放、进程内索引 |
@@ -53,7 +53,7 @@
 | 团队模式 | 组合了 Agent Team | Lead 只协调、不持有执行位；每个 Worker 一生只绑定一个任务；多个 Worker 各持一个任务才能并行 |
 
 - **执行账本是索引，不是真相**：`workline.executions[]`（执行号 `ex-N`，单调递增、终态不可复活）、`task.owner` 执行戳、`workline.workers{}` 终身台账三处镜像同一次原子落盘；索引缺失等于没有权限，权威状态永远优先。
-- **四个执行状态**：`active`（活动，唯一授予 A 类权限的状态）、`cold`（冷，只有同一会话重新可解析时才恢复）、`orphaned`（失联，面板显示“执行者已失联”，保留执行戳与 Board 归属，绝不自动释放或改派）、`ended`（结束，永不复活）。
+- **三个执行状态**：`active`（活动，唯一授予 A 类权限的状态）、`orphaned`（失联，面板显示“执行者已失联”，保留执行戳与 Board 归属，绝不自动释放或改派）、`ended`（结束，永不复活）；无法识别的持久状态一律按 fail-closed 方向归一化（执行→`orphaned`，Worker 台账→`ended`）。
 - **两个执行调度操作**：`task_tree_write {"op":"dispatch","id","member","teamTaskId"}` 只写团队路由（不写 owner、不建执行，Worker 自己的 Board claim 才绑定）；`task_tree_write {"op":"release","id","force":true,"reason"}` 是 Lead 的强制释放，要求 Host 先记过 `interrupt_agent`、且运行时证明该 Worker 已不在运行，成功后结束执行（`force-terminated`）、结束其终身台账、清空执行戳并释放 Board。
 - **执行的门禁**：A 类工具（改工作区、跑代码）只有 `active` 执行的持有者能调用；任务管理与只读工具是 B/C 类，不受限制；未建任务树的工作线不受约束。`claim` 建立执行，`release` / `complete` / 暂缓 / 归档都会结束执行。
 
@@ -70,7 +70,7 @@
 - 并发占位：改变执行归属的调用（树 `claim`/`release`/`complete`，Board `claim`/`release`/`complete`/`reopen`）在 guard 放行前同步占位，第二个在途认领立刻被拒；座位按标准模式工作线、执行者、任务三个维度取键（团队模式不取工作线，Worker 可并行）；只有真实调用已结束证据（匹配的 `tools/result`，或持位 Agent 转 `idle`）才释放，计时器只标记 `suspect` 并继续拒绝、绝不释放
 - 团队模式认领绑定（claim-first）：Lead 用 `dispatch` 写路由；被指名的 Worker 自己认领 Team Board 任务；Host 在 Board 提交后用 roster 解析真实会话 id 并原子建立执行（`in_progress` + 执行戳 + `mode:"team"` 账本），此后该 Worker 才能改工作区；未绑定的 Worker 被拒，同一任务/同一会话最多一条非终态执行；Host 直接拒绝 `reassign`；执行者通过 `executor` 字段与面板显示
 - 执行证据与崩溃对账：只有认领证据才建立执行（`dispatch` 与 Board 的 owner 单独都不算）；团队模式 Board 先行、账本后写，认领前 `fsync` 认领意图；重启后三处镜像（执行账本、Worker 台账、任务执行戳）收敛为一致状态且不会误清更新一轮；证据矛盾只记 `workline.conflicts[]` 并拒绝该任务的新认领，不猜执行者、不复活已结束执行
-- 失联与强制终止：执行有 `active/cold/orphaned/ended` 四态，只有 `active` 授予 A 类权限；执行者会话无法解析时执行标为 `orphaned`（面板显示"执行者已失联"），执行戳与 Board 归属保留、绝不悄悄释放或改派；Lead 只有在 Host 记过中断、且运行时证明该 Worker 不在运行后才能 `release {force:true}`，随后结束执行（`force-terminated`）、结束其终身台账、清空执行戳并释放 Board；被终止的 Worker 再写文件被拒，新 Worker 重新认领得到新执行号。两轮之间的正常空闲仍视为 `active`
+- 失联与强制终止：执行有 `active/orphaned/ended` 三态，只有 `active` 授予 A 类权限；执行者会话无法解析时执行标为 `orphaned`（面板显示"执行者已失联"），执行戳与 Board 归属保留、绝不悄悄释放或改派；Lead 只有在 Host 记过中断、且运行时证明该 Worker 不在运行后才能 `release {force:true}`，随后结束执行（`force-terminated`）、结束其终身台账、清空执行戳并释放 Board；被终止的 Worker 再写文件被拒，新 Worker 重新认领得到新执行号。两轮之间的正常空闲仍视为 `active`
 - 界面：悬浮面板、入口呼吸灯、右栏任务详情 tab、行旁浮层、跟随主视图会话
 
 ## 测试

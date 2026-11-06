@@ -37,16 +37,12 @@ export const EXECUTION_APPROVALS = Object.freeze(['approved', 'pending']);
  *
  * - `active`: the Host resolved the worker session and it is live; this is the
  *   ONLY state that grants class A permission.
- * - `cold`: a persisted state for a session that is not live but whose record
- *   still resolves. It grants no class A permission until the same session
- *   returns to `active`; a restart keeps a provable worker `active` rather than
- *   silently stripping it, because a session that is not live cannot act.
  * - `orphaned` (shown as "executor lost"): the session can no longer be
  *   resolved at all. It grants nothing, is never silently released and is never
  *   handed to another session; only a Lead force-release ends it.
  * - `ended`: terminal, never revived.
  */
-export const EXECUTION_STATES = Object.freeze(['active', 'cold', 'orphaned', 'ended']);
+export const EXECUTION_STATES = Object.freeze(['active', 'orphaned', 'ended']);
 
 /** Every operation accepted by `task_tree_write`. */
 export const TASK_OPS = Object.freeze([
@@ -65,6 +61,9 @@ export const TASK_OPS = Object.freeze([
   'claim',
   'release',
   'complete',
+  // The only exit from a recorded conflict (design v8 I12): a Lead decision
+  // that lets the workline be worked again.
+  'resolveConflict',
 ]);
 
 /** Contract limits (CONTRACT.md §1 and §3). */
@@ -100,6 +99,7 @@ const OP_FIELDS = Object.freeze({
   claim: ['op', 'id'],
   release: ['op', 'id', 'force', 'reason'],
   complete: ['op', 'id', 'confirmedByUser', 'confirmationBasis', 'result'],
+  resolveConflict: ['op', 'conflictId', 'reason'],
 });
 
 /** One rejected task-tree operation, with a model-readable reason. */
@@ -562,14 +562,37 @@ export function executionOf(workline, executionId) {
 }
 
 /**
+ * The ledger row behind a task's claim stamp, resolved in ONE place.
+ *
+ * The read model, the HTTP snapshot, the execution gate and the recovery pass
+ * all ask the same question, so they must all get the same answer. The stamp is
+ * only an index: when the ledger cannot describe the record it names — including
+ * a workline that has no `executions` array at all — the state is `'missing'`
+ * and it grants nothing (fail closed). `normalizeExecution` above is the single
+ * place a persisted state becomes a lifecycle state.
+ *
+ * @param workline - the persisted workline, a normalized envelope's workline, or
+ *   a store snapshot's `{ executions }` view.
+ * @param task - the task carrying the stamp.
+ * @returns `{ state, execution }`; `state` is `null` for a task with no stamp,
+ *   `'missing'` when the stamp names no usable record, otherwise one of
+ *   {@link EXECUTION_STATES}.
+ */
+export function executionBehindStamp(workline, task) {
+  const owner = task !== null && typeof task === 'object' ? task.owner : null;
+  if (owner === null || owner === undefined) return { state: null, execution: undefined };
+  const execution = executionOf(workline, owner.executionId);
+  if (execution === undefined) return { state: 'missing', execution: undefined };
+  return { state: execution.state, execution };
+}
+
+/**
  * The lifecycle state behind a task's claim stamp. `null` means the task holds
  * no execution; `undefined` means it holds one the ledger cannot describe.
  */
 export function executionStateOfTask(workline, task) {
-  const owner = task !== null && typeof task === 'object' ? task.owner : null;
-  if (owner === null || owner === undefined) return null;
-  const execution = executionOf(workline, owner.executionId);
-  return execution === undefined ? undefined : execution.state;
+  const found = executionBehindStamp(workline, task);
+  return found.state === 'missing' ? undefined : found.state;
 }
 
 /** The next monotonically increasing execution number. */
@@ -645,6 +668,9 @@ export function normalizeConflicts(raw) {
       evidence: value.evidence !== null && typeof value.evidence === 'object' ? value.evidence : {},
       createdAt: numberOr(value.createdAt, 0),
       resolvedAt: typeof value.resolvedAt === 'number' ? value.resolvedAt : null,
+      // Who made the decision. A conflict stops a workline until a human
+      // decides, so the decision, not only its time, is part of the record.
+      resolvedBy: typeof value.resolvedBy === 'string' && value.resolvedBy !== '' ? value.resolvedBy : null,
       resolution: typeof value.resolution === 'string' && value.resolution !== '' ? value.resolution : null,
     });
   }
@@ -698,6 +724,7 @@ export function recordConflict(workline, input) {
     evidence,
     createdAt: numberOr(input.now, 0),
     resolvedAt: null,
+    resolvedBy: null,
     resolution: null,
   };
   workline.conflicts = [...conflicts, conflict].slice(-50);
@@ -935,11 +962,20 @@ function settledLookup(tasks) {
   return settled;
 }
 
-/** Only the session holding an execution may end it (a lead included). */
-function assertEndsOwnExecution(task, actor) {
-  if (task.owner === null || task.owner === undefined) return;
-  if (task.owner.sessionId === actor) return;
-  fail(`task ${task.id} is held by session ${task.owner.sessionId}; only its holder can complete it`);
+/**
+ * Only the session that holds a task's execution may end it.
+ *
+ * Completing ends the execution; so do deferring and archiving, and with it the
+ * Worker's one lifetime binding (design v8 I2b). They therefore get the same
+ * refusal: a Lead that wants a running Worker gone must interrupt it and then
+ * force-release it, never close the task behind its back (I16/I17).
+ */
+function assertEndsOwnExecution(task, actor, action = 'complete it') {
+  const owner = task.owner;
+  if (owner === null || owner === undefined) return;
+  if (owner.sessionId === actor) return;
+  fail(`task ${task.id} is held by session ${owner.sessionId}; only its holder can ${action}`
+    + ' (interrupt the worker, confirm it stopped, then force-release it)');
 }
 
 function finishTask(state, task, now, basis) {
@@ -1215,6 +1251,7 @@ function applyUserDecision(task, op, context, action) {
 function applyDefer(state, op, context) {
   const id = requireTaskId(op);
   const task = findTask(state, id, { active: true });
+  assertEndsOwnExecution(task, context.actorSessionId, 'defer it');
   applyUserDecision(task, op, context, 'defer it');
   const reason = optionalSingleLine(op.deferredReason, 'deferredReason', LIMITS.shortText);
   const condition = optionalSingleLine(op.resumeCondition, 'resumeCondition', LIMITS.shortText);
@@ -1260,6 +1297,9 @@ function applyArchive(state, op, context) {
   const id = requireTaskId(op);
   const task = findTask(state, id, { active: true });
   const subtree = archiveSubtree(state, task);
+  // Every task that leaves ends its execution below. Only the holder may end
+  // one, so one held descendant is enough to refuse the whole archive.
+  for (const current of subtree) assertEndsOwnExecution(current, context.actorSessionId, 'archive it');
   // The whole subtree leaves the delivery, so one in-flight descendant is enough
   // to make the user's decision necessary — a pending container must not launder
   // authorised work out of it.
@@ -1685,11 +1725,11 @@ export function bindTeamClaim(envelope, claim) {
     const where = active.taskId === taskId ? `task ${taskId}` : `session ${sessionId}`;
     fail(`${where} already holds execution ${active.executionId}; one task and one session may hold at most one`);
   }
-  // I2b: a Worker instance holds ONE task for life. A Worker whose binding has
-  // ended (completed, failed, released) can never bind again, even on the same
-  // task — the retry needs a new Worker instance and therefore a new id.
+  // I2b: a Worker instance holds ONE task for life. Any existing record is
+  // either bound (to this or another task) or ended; neither may bind again,
+  // so the record itself is the refusal and the retry needs a new instance.
   const lifetime = workerLifetimeOf(state.workline, sessionId);
-  if (lifetime !== undefined && lifetime.state !== 'created') {
+  if (lifetime !== undefined) {
     fail(workerLifetimeDenial({ sessionId, worker: lifetime }));
   }
   const executionId = allocateExecution(state, taskId, sessionId, now, {
@@ -1848,7 +1888,7 @@ function applyClaim(state, op, context) {
   // retry needs a NEW subagent instance. The Lead is exempt and works serially.
   if (actor !== state.workline.id) {
     const lifetime = workerLifetimeOf(state.workline, actor);
-    if (lifetime !== undefined && lifetime.state !== 'created') {
+    if (lifetime !== undefined) {
       fail(workerLifetimeDenial({ sessionId: actor, worker: lifetime }));
     }
   }
@@ -1930,6 +1970,36 @@ function applyComplete(state, op, context) {
   return { op: 'complete', id };
 }
 
+/**
+ * Resolve one recorded conflict (design v8 I12): the only exit from a stopped task.
+ *
+ * A conflict says the Host cannot prove who holds a task, so it stops claims
+ * instead of guessing. Nothing may decide that on the Host's own authority —
+ * a Lead records the human decision here, and the record keeps who decided,
+ * when, and why. Resolving never picks an executor and never revives an
+ * execution: it only lets the task be worked again, from whatever state it is
+ * actually in.
+ */
+function applyResolveConflict(state, op, context) {
+  const actor = typeof context.actorSessionId === 'string' && context.actorSessionId !== ''
+    ? context.actorSessionId
+    : undefined;
+  if (actor === undefined) fail('resolveConflict requires a calling session');
+  if (actor !== state.workline.id) fail('resolveConflict is reserved for the Lead session');
+  const conflictId = singleLine(op.conflictId, 'conflictId', LIMITS.shortText, { required: true });
+  const conflict = state.workline.conflicts.find((candidate) => candidate.id === conflictId);
+  if (conflict === undefined) fail(`unknown conflict ${JSON.stringify(conflictId)}`);
+  if (conflict.resolvedAt !== null) {
+    fail(`conflict ${conflictId} is already resolved (at ${conflict.resolvedAt}); a resolution is recorded once`);
+  }
+  const reason = singleLine(op.reason, 'reason', LIMITS.reason, { required: true });
+  conflict.resolvedAt = context.now;
+  conflict.resolvedBy = actor;
+  conflict.resolution = reason;
+  state.workline.updatedAt = context.now;
+  return { op: 'resolveConflict', conflictId };
+}
+
 function applyOne(state, op, context) {
   if (op === null || typeof op !== 'object' || Array.isArray(op)) fail('each op must be an object');
   const kind = op.op;
@@ -1955,6 +2025,7 @@ function applyOne(state, op, context) {
     case 'claim': return applyClaim(state, op, context);
     case 'release': return applyRelease(state, op, context);
     case 'complete': return applyComplete(state, op, context);
+    case 'resolveConflict': return applyResolveConflict(state, op, context);
     /* v8 ignore next -- TASK_OPS and this switch are kept in lockstep. */
     default: return fail(`unknown op ${JSON.stringify(kind)}`);
   }
@@ -2020,6 +2091,26 @@ function executorOf(task, worklineId) {
 }
 
 /**
+ * The conflict rows both snapshots expose. A conflict is the reason a task is
+ * stopped, so the reader must see it instead of inferring a silent refusal; the
+ * panel needs the same list to mark the stopped task.
+ * @param workline - persisted or normalized workline.
+ */
+function conflictRows(workline) {
+  return normalizeConflicts(workline?.conflicts).map((conflict) => ({
+    id: conflict.id,
+    scope: conflict.scope,
+    taskId: conflict.taskId,
+    kind: conflict.kind,
+    evidence: conflict.evidence,
+    createdAt: conflict.createdAt,
+    resolvedAt: conflict.resolvedAt,
+    resolvedBy: conflict.resolvedBy,
+    resolution: conflict.resolution,
+  }));
+}
+
+/**
  * The `task_tree_read` payload (CONTRACT.md §3).
  * @param envelope - persisted envelope or undefined.
  * @param worklineId - the resolved workline id.
@@ -2030,7 +2121,9 @@ export function readSnapshot(envelope, worklineId, details = false, options = {}
   const limitRaw = options !== null && typeof options === 'object' ? options.archivedLimit : undefined;
   const archivedLimit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 50;
   if (envelope === undefined) {
-    const empty = { worklineId, goal: null, focus: [], tasks: [] };
+    const empty = {
+      worklineId, goal: null, focus: [], conflicts: [], tasks: [],
+    };
     if (includeArchived) {
       empty.archived = [];
       empty.archivedTotal = 0;
@@ -2077,6 +2170,10 @@ export function readSnapshot(envelope, worklineId, details = false, options = {}
     worklineId,
     goal,
     focus: Array.isArray(workline.focus) ? [...workline.focus] : [],
+    // The conflicts that stop this workline (design v8 I12), with who resolved
+    // one and why. `task_tree_read` declares this field, so it is never an
+    // undeclared extra.
+    conflicts: conflictRows(workline),
     tasks,
   };
   if (includeArchived) {
@@ -2133,6 +2230,7 @@ export function httpSnapshot(envelope, worklineId, options = {}) {
       goal: null,
       outline: '',
       focus: [],
+      conflicts: [],
       updatedAt: 0,
       tasks: [],
       archived: [],
@@ -2212,6 +2310,9 @@ export function httpSnapshot(envelope, worklineId, options = {}) {
     goal,
     outline: typeof workline.outline === 'string' ? workline.outline : '',
     focus: Array.isArray(workline.focus) ? [...workline.focus] : [],
+    // A stopped task must be visible as stopped in the panel, with the reason
+    // and the Lead's resolution once there is one (design v8 I12).
+    conflicts: conflictRows(workline),
     updatedAt: numberOr(workline.updatedAt, 0),
     tasks: active,
     archived,

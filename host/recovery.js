@@ -7,7 +7,7 @@
  * request as `interruptedAt` on that worker's non-terminal execution and stops
  * there. It is a precondition for a Lead force release, not end evidence:
  * the release itself must still prove the session is not running, and it is
- * the only operation that turns a `cold`/`orphaned` execution into `ended`.
+ * the only operation that turns an `orphaned` execution into `ended`.
  *
  * This observer is deliberately narrow:
  *
@@ -21,17 +21,9 @@
  *   because observation must never break the tool result.
  */
 
+import { callerOf } from './caller.js';
 import { markInterrupted } from './model.js';
 import { teamMembershipOf, teamServiceOf } from './roster.js';
-
-/** The calling session, resolved from the live agent — never from model input. */
-function callerOf(exec) {
-  const agent = exec !== null && typeof exec === 'object' ? exec.agent : undefined;
-  const header = agent !== null && typeof agent === 'object' ? agent.session?.header : undefined;
-  if (typeof header?.id === 'string' && header.id !== '') return { sessionId: header.id, header };
-  if (typeof agent?.id === 'string' && agent.id !== '') return { sessionId: agent.id, header };
-  return { sessionId: undefined, header };
-}
 
 /**
  * The worker session one successful `interrupt_agent` call targeted, plus the

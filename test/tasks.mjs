@@ -15,11 +15,14 @@ import {
   bindTeamClaim,
   createEmptyEnvelope,
   httpSnapshot,
+  normalizeConflicts,
   readSnapshot,
   statusSnapshot,
 } from '../host/model.js';
 import { createTaskStore } from '../host/store.js';
+import { callerOf } from '../host/caller.js';
 import { classifyTool, createExecutionGuard } from '../host/guard.js';
+import { normalizeWorker } from '../host/lifetime.js';
 import { mountTaskTree } from '../host/mount.js';
 import { createSeatTable, registerSeatObservers, seatRequestFor } from '../host/reservation.js';
 import { taskTreeReminderFor, TASK_TREE_REMINDER, TASK_TREE_START_REMINDER, TASK_TREE_PROMPT } from '../host/prompt.js';
@@ -383,6 +386,124 @@ function titles(snapshot) {
 }
 
 // ---------------------------------------------------------------------------
+// defer / archive cannot strip another session's execution
+// ---------------------------------------------------------------------------
+
+{
+  // Deferring or archiving ends the task's execution AND its Worker's one
+  // lifetime binding, which is exactly what the interrupt-then-force-release
+  // path exists for (design v8 I2b/I16). A caller may not do it behind the
+  // holder's back, not even with the user's decision in hand.
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: 'Worker 任务', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+    { op: 'assign', id: 't1', member: 'session-child' },
+  ]).envelope;
+  const held = envelopeAfter(base, [{ op: 'claim', id: 't1' }], { actorSessionId: 'session-child' }).envelope;
+  assert.equal(held.tasks[0].owner.sessionId, 'session-child');
+  assert.throws(
+    () => envelopeAfter(held, [{ op: 'defer', id: 't1', deferredReason: '放一放', userBasis: '这个先不做' }]),
+    /held by session session-child; only its holder can defer it/,
+  );
+  assert.throws(
+    () => envelopeAfter(held, [{ op: 'archive', id: 't1', reason: '不做了', userBasis: '这个先不做' }]),
+    /held by session session-child; only its holder can archive it/,
+  );
+  // The refusals wrote nothing: the execution is still active and stamped.
+  assert.equal(held.tasks[0].owner.executionId, 'ex-1');
+  assert.equal(held.workline.executions.at(-1).state, 'active');
+
+  // Archiving a parent cannot launder a held descendant out of the delivery.
+  const tree = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: '父' },
+    { op: 'create', parentId: 't1', title: '子', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+    { op: 'assign', id: 't2', member: 'session-child' },
+  ]).envelope;
+  const subtreeHeld = envelopeAfter(tree, [{ op: 'claim', id: 't2' }], { actorSessionId: 'session-child' }).envelope;
+  assert.throws(
+    () => envelopeAfter(subtreeHeld, [{ op: 'archive', id: 't1', reason: '整组不做', userBasis: '这个先不做' }]),
+    /held by session session-child; only its holder can archive it/,
+  );
+  // The holder itself may end its own execution through either path.
+  const ownDefer = envelopeAfter(tree, [
+    { op: 'claim', id: 't2' },
+    { op: 'defer', id: 't2', deferredReason: '先放一放', userBasis: '这个先不做' },
+  ], { actorSessionId: 'session-child' }).envelope;
+  assert.equal(ownDefer.tasks[1].owner, null);
+  assert.equal(ownDefer.workline.executions.at(-1).endReason, 'deferred');
+}
+
+// ---------------------------------------------------------------------------
+// conflicts: exposed to the reader, and resolvable only by the Lead
+// ---------------------------------------------------------------------------
+
+{
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: '冲突' },
+    { op: 'create', title: '被停住的任务', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+  ]).envelope;
+  base.workline.conflicts = normalizeConflicts([{
+    id: 'cf-1',
+    scope: 'task',
+    taskId: 't1',
+    kind: 'unproven-claim',
+    evidence: { boardRevision: 2, ownerName: 'worker-a' },
+    createdAt: NOW,
+    resolvedAt: null,
+    resolution: null,
+  }]);
+
+  // The stop is visible to the reader and to the panel, with its evidence.
+  const read = readSnapshot(base, CTX.worklineId);
+  assert.deepEqual(read.conflicts, [{
+    id: 'cf-1',
+    scope: 'task',
+    taskId: 't1',
+    kind: 'unproven-claim',
+    evidence: { boardRevision: 2, ownerName: 'worker-a' },
+    createdAt: NOW,
+    resolvedAt: null,
+    resolvedBy: null,
+    resolution: null,
+  }]);
+  assert.deepEqual(httpSnapshot(base, CTX.worklineId).conflicts, read.conflicts);
+  // An unresolved conflict stops the claim, in either mode.
+  assert.throws(() => envelopeAfter(base, [{ op: 'claim', id: 't1' }]), /stopped by conflict cf-1/);
+
+  // Only the Lead resolves one, and the record keeps who, when and why.
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'resolveConflict', conflictId: 'cf-1', reason: 'board re-read' }], { actorSessionId: 'session-child' }),
+    /reserved for the Lead session/,
+  );
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'resolveConflict', conflictId: 'cf-9', reason: 'board re-read' }]),
+    /unknown conflict "cf-9"/,
+  );
+  assert.throws(() => envelopeAfter(base, [{ op: 'resolveConflict', conflictId: 'cf-1' }]), /reason/);
+  const resolved = envelopeAfter(base, [
+    { op: 'resolveConflict', conflictId: 'cf-1', reason: 'board re-read; the claim was a crash artefact' },
+  ]).envelope;
+  const record = resolved.workline.conflicts.find((conflict) => conflict.id === 'cf-1');
+  assert.equal(record.resolvedAt, NOW);
+  assert.equal(record.resolvedBy, 'session-root');
+  assert.equal(record.resolution, 'board re-read; the claim was a crash artefact');
+  // After the resolution the task can be worked again.
+  const claimed = envelopeAfter(resolved, [{ op: 'claim', id: 't1' }]).envelope;
+  assert.equal(claimed.tasks[0].owner.sessionId, 'session-root');
+  // The resolution travels through the read model too.
+  const after = readSnapshot(resolved, CTX.worklineId);
+  assert.equal(after.conflicts[0].resolvedAt, NOW);
+  assert.equal(after.conflicts[0].resolvedBy, 'session-root');
+  assert.equal(after.conflicts[0].resolution, 'board re-read; the claim was a crash artefact');
+  // One conflict is resolved once.
+  assert.throws(
+    () => envelopeAfter(resolved, [{ op: 'resolveConflict', conflictId: 'cf-1', reason: 'again' }]),
+    /already resolved/,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // model: archive is recursive, goal revisions are recorded
 // ---------------------------------------------------------------------------
 
@@ -523,6 +644,38 @@ function titles(snapshot) {
 }
 
 // ---------------------------------------------------------------------------
+// caller resolution: one module shared by the gate, the tools and recovery
+// ---------------------------------------------------------------------------
+
+{
+  const header = { id: 'session-header', parentSession: 'session-parent' };
+  assert.deepEqual(
+    callerOf({ agent: { id: 'agent-1', session: { id: 'session-id', header } } }),
+    { sessionId: 'session-header', header },
+    'the session header is the caller identity',
+  );
+  assert.deepEqual(
+    callerOf({ agent: { session: { id: 'session-id' } } }),
+    { sessionId: 'session-id', header: undefined },
+    'a session without a header still names itself',
+  );
+  assert.deepEqual(callerOf({ agent: { id: 'agent-1' } }), { sessionId: 'agent-1', header: undefined });
+  assert.deepEqual(callerOf(undefined), { sessionId: undefined, header: undefined });
+  assert.equal(
+    callerOf({ agent: { id: 'agent-1', session: { id: 'session-id', header: { id: '' } } } }).sessionId,
+    'session-id',
+    'an empty header id never wins over a real session id',
+  );
+
+  // A Worker lifetime record has exactly the two states the model acts on; a
+  // state this build cannot name fails closed as `ended`, never as claimable.
+  assert.equal(normalizeWorker({ state: 'bound' }).state, 'bound');
+  assert.equal(normalizeWorker({ state: 'ended' }).state, 'ended');
+  assert.equal(normalizeWorker({ state: 'created' }).state, 'ended');
+  assert.equal(normalizeWorker({ state: 'whatever' }).state, 'ended');
+}
+
+// ---------------------------------------------------------------------------
 // execution gate: tool classification is default-deny
 // ---------------------------------------------------------------------------
 
@@ -587,6 +740,62 @@ function titles(snapshot) {
     envelope: envelopeAfter(current, [{ op: 'release', id: 't1' }]).envelope,
   }));
   assert.match(guard(exec('session-root')), /holds no active execution/, 'release denies the same session immediately');
+}
+
+// ---------------------------------------------------------------------------
+// execution gate: a missing ledger grants nothing (fail closed)
+// ---------------------------------------------------------------------------
+
+{
+  // A record written before the execution ledger existed: the task still
+  // carries a claim stamp and the workline has no `executions` array at all.
+  // The stamp is an index, never the truth, so this grants no permission.
+  const legacy = {
+    version: 1,
+    workline: {
+      id: 'session-root', createdAt: 1, updatedAt: 2, goal: { original: 'g', current: 'g', changes: [] }, outline: '', focus: [], nextSeq: 2,
+    },
+    tasks: [{
+      id: 't1',
+      worklineId: 'session-root',
+      parentId: null,
+      order: 0,
+      title: '旧任务',
+      status: 'in_progress',
+      executionApproval: 'approved',
+      owner: { sessionId: 'session-root', since: 3 },
+      createdAt: 1,
+      updatedAt: 3,
+    }],
+  };
+  const root = tempRoot();
+  writeFileSync(join(root, 'session-root.json'), JSON.stringify(legacy));
+  const store = createTaskStore({ root, logger: { warn() {} } });
+  const sessions = new Map([['session-root', { header: { id: 'session-root' } }]]);
+  const ctx = { get: (name) => (name === 'sessions' ? { get: (id) => sessions.get(id) } : undefined) };
+  const guard = createExecutionGuard({ ctx, store });
+  const denied = guard({
+    name: 'write',
+    agent: { id: 'session-root', session: { header: { id: 'session-root' } } },
+  });
+  // The read model already calls that execution `missing`; the gate must agree
+  // instead of treating the absent ledger as an unmanaged workline that allows.
+  assert.equal(readSnapshot(legacy, 'session-root').tasks[0].executionState, 'missing');
+  assert.match(denied, /execution ledger has no record/);
+  assert.match(denied, /fail closed/);
+
+  // An explicitly empty ledger is the same absent index.
+  writeFileSync(join(root, 'session-empty-ledger.json'), JSON.stringify({
+    version: 1,
+    workline: { ...legacy.workline, id: 'session-empty-ledger', executions: [] },
+    tasks: [{ ...legacy.tasks[0], worklineId: 'session-empty-ledger', owner: { sessionId: 'session-empty-ledger', since: 3 } }],
+  }));
+  const emptyCtx = { get: (name) => (name === 'sessions' ? { get: () => undefined } : undefined) };
+  const emptyDenied = createExecutionGuard({ ctx: emptyCtx, store })({
+    name: 'write',
+    agent: { id: 'session-empty-ledger', session: { header: { id: 'session-empty-ledger' } } },
+  });
+  assert.match(emptyDenied, /execution ledger has no record/);
 }
 
 // ---------------------------------------------------------------------------
@@ -949,7 +1158,7 @@ function titles(snapshot) {
   };
 
   const empty = await registeredTools.get('task_tree_read').execute({}, exec);
-  assert.deepEqual(empty, { worklineId: 'session-root', goal: null, focus: [], tasks: [] });
+  assert.deepEqual(empty, { worklineId: 'session-root', goal: null, focus: [], conflicts: [], tasks: [] });
 
   const written = await registeredTools.get('task_tree_write').execute({
     ops: [
@@ -2978,6 +3187,37 @@ function assertSchema(schema, value, path = 'value') {
   const legacyView = readSnapshot(legacy, 'session-legacy', true);
   assertSchema(read.output.schema, legacyView, 'read-legacy');
   assert.equal(legacyView.tasks[0].settled, true, 'a legacy done leaf is settled');
+
+  // A recorded conflict is part of the read model, so the host's output schema
+  // must declare it: an undeclared field is rejected.
+  assert.ok(read.output.schema.properties.conflicts, 'the read schema declares conflicts');
+  assert.equal(write.parameters.properties.ops.items.properties.op.enum.includes('resolveConflict'), true);
+  assert.ok(write.parameters.properties.ops.items.properties.conflictId, 'the write schema declares the conflict target');
+  writeFileSync(join(root, 'session-conflict.json'), JSON.stringify({
+    version: 1,
+    workline: {
+      id: 'session-conflict',
+      createdAt: 1,
+      updatedAt: 2,
+      goal: { original: 'g', current: 'g', changes: [] },
+      outline: '',
+      focus: [],
+      nextSeq: 2,
+      conflicts: [{
+        id: 'cf-1', scope: 'task', taskId: 't1', kind: 'unproven-claim', evidence: { boardRevision: 2 }, createdAt: 1, resolvedAt: null, resolution: null,
+      }],
+    },
+    tasks: [{
+      id: 't1', worklineId: 'session-conflict', parentId: null, order: 0, title: '冲突任务', status: 'in_progress', executionApproval: 'approved', createdAt: 1, updatedAt: 2,
+    }],
+  }));
+  const conflictView = await read.execute({}, {
+    agent: { id: 'session-conflict', session: { header: { id: 'session-conflict' } } },
+  });
+  assertSchema(read.output.schema, conflictView, 'read-conflict');
+  assert.equal(conflictView.conflicts.length, 1);
+  assert.equal(conflictView.conflicts[0].id, 'cf-1');
+  assert.equal(conflictView.conflicts[0].resolvedAt, null);
 }
 
 // ---------------------------------------------------------------------------
