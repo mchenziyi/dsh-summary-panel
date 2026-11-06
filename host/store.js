@@ -15,7 +15,7 @@
  * running host.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -71,7 +71,7 @@ function validEnvelope(parsed, worklineId) {
  *
  * @param options - `{ root, env, logger }`; `root` overrides directory
  * derivation so tests can point at a temporary directory.
- * @returns the store API: `{ root, directory, ensure, available, read, update }`.
+ * @returns the store API: `{ root, directory, has, ensure, available, read, update, snapshot }`.
  */
 export function createTaskStore(options = {}) {
   const root = typeof options.root === 'string' && options.root !== ''
@@ -195,6 +195,56 @@ export function createTaskStore(options = {}) {
     }
   }
 
+  /**
+   * Synchronous snapshot of one workline, for a decision that must not await
+   * (the tool guard decides mid-call, before dispatch).
+   *
+   * It prefers the in-process cache, which every `update` refreshes before it
+   * returns, so a `claim` or `release` is visible to the next guard call
+   * immediately. A cold workline is read from disk with a synchronous read —
+   * bounded to one small file, never a pending promise — and then cached.
+   *
+   * Fail-closed on a present-but-unreadable tree: a corrupt or unreadable
+   * record reports `present: true` with no tasks, which denies class A tools
+   * rather than silently freeing them. Only a genuinely absent file means the
+   * workline is unmanaged.
+   *
+   * @param worklineId - the root session id of the workline.
+   * @returns `{ present, tasks, unreadable? }`; `tasks` is read-only.
+   */
+  function snapshot(worklineId) {
+    let file;
+    try {
+      file = fileFor(worklineId);
+    } catch {
+      return { present: false, tasks: [] };
+    }
+    if (cache.has(worklineId)) {
+      const envelope = cache.get(worklineId);
+      return envelope === undefined ? { present: false, tasks: [] } : { present: true, tasks: envelope.tasks };
+    }
+    let text;
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        cache.set(worklineId, undefined);
+        return { present: false, tasks: [] };
+      }
+      return { present: true, tasks: [], unreadable: true };
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return { present: true, tasks: [] };
+    }
+    if (!validEnvelope(parsed, worklineId)) return { present: true, tasks: [] };
+    const envelope = { version: 1, workline: parsed.workline, tasks: parsed.tasks };
+    cache.set(worklineId, envelope);
+    return { present: true, tasks: envelope.tasks };
+  }
+
   /** Run `task` after every earlier write for the same workline settled. */
   function enqueue(worklineId, task) {
     const previous = chains.get(worklineId) ?? Promise.resolve();
@@ -228,5 +278,5 @@ export function createTaskStore(options = {}) {
     });
   }
 
-  return { root, directory: root, has, ensure, available, read, update };
+  return { root, directory: root, has, ensure, available, read, update, snapshot };
 }

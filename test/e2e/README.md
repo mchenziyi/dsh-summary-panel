@@ -31,6 +31,9 @@ A passing run removes it unless `--keep` or `--out` was passed.
   and no tree is persisted. This is the harness's own proof that it can observe
   the unconstrained baseline.
 - `tree-init` — `task_tree_write` persists a tree the harness finds on disk.
+- `execution-gate` — class A tools (`write`, `bash`) are refused before `claim`
+  and again after `release`, with no side effect on disk; task-management tools
+  keep working and an unmanaged workline stays free.
 - `team-board` — the profile composes the real Agent Team; a board task is
   created through the shipped `team_task_create` tool and exported.
 

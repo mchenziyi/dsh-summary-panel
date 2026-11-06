@@ -2,10 +2,11 @@
  * Mount the task-tree feature onto the summary-panel plugin.
  *
  * index.js keeps its existing read-only routes and calls this once; the task
- * tree adds two GET routes, two agent tools, and one prompt section. Every part
- * degrades independently: a storage failure only surfaces as
- * `available: false`, a missing tool registry or prompt service skips that
- * part, and nothing here may fail the plugin load (CONTRACT.md §6).
+ * tree adds two GET routes, two agent tools, one prompt section, and the
+ * execution gate (a monotonic tool guard). Every part degrades independently: a
+ * storage failure only surfaces as `available: false`, a missing tool registry
+ * or prompt service skips that part, and nothing here may fail the plugin load
+ * (CONTRACT.md §6).
  */
 
 import { createTaskStore } from './store.js';
@@ -13,6 +14,7 @@ import { createSessionSupport } from './session.js';
 import { createTaskHandlers } from './routes.js';
 import { registerTaskTreeTools } from './tools.js';
 import { registerTaskTreePrompt } from './prompt.js';
+import { registerExecutionGuard } from './guard.js';
 
 /**
  * @param ctx - the plugin context.
@@ -39,6 +41,16 @@ export function mountTaskTree(ctx, options = {}) {
     logger.warn(`[summary-panel] task tree tools disabled: ${String(error?.message ?? error)}`);
   }
 
+  // The execution gate is registered after the tools it protects. It is a
+  // monotonic guard, so it runs before dispatch and cannot be out-voted by a
+  // pre-execute listener.
+  let guard = false;
+  try {
+    guard = registerExecutionGuard(ctx, { store });
+  } catch (error) {
+    logger.warn(`[summary-panel] execution gate disabled: ${String(error?.message ?? error)}`);
+  }
+
   let prompt = false;
   try {
     prompt = registerTaskTreePrompt(ctx, { store });
@@ -46,5 +58,5 @@ export function mountTaskTree(ctx, options = {}) {
     logger.warn(`[summary-panel] task tree prompt disabled: ${String(error?.message ?? error)}`);
   }
 
-  return { store, tools, prompt };
+  return { store, tools, prompt, guard };
 }
