@@ -321,6 +321,28 @@ const failures = [];
   const remounted = await renderTree(Holder, { show: true });
   if (remounted !== 'probe-0') failures.push(`harness: remount kept stale state (${remounted})`);
   if (cleanups.length !== 1) failures.push('harness: remount ran an extra cleanup');
+
+  // Cleanup order: React destroys a component's effects in declaration order.
+  // A reverse loop would still run both cleanups, so the "ran once" check above
+  // cannot see an ordering bug; this probe pins the exact order.
+  {
+    const order = [];
+    function OrderedProbe() {
+      React.useEffect(() => () => { order.push('first'); }, []);
+      React.useEffect(() => () => { order.push('second'); }, []);
+      return 'ordered';
+    }
+    function OrderedHolder({ show }) {
+      return show ? React.createElement(OrderedProbe) : 'gone';
+    }
+    const orderedMounted = await renderTree(OrderedHolder, { show: true });
+    if (orderedMounted !== 'ordered') failures.push(`harness: ordered probe did not mount (${orderedMounted})`);
+    const orderedUnmounted = await renderTree(OrderedHolder, { show: false });
+    if (orderedUnmounted !== 'gone') failures.push(`harness: ordered probe survived unmount (${orderedUnmounted})`);
+    if (order.length !== 2 || order[0] !== 'first' || order[1] !== 'second') {
+      failures.push(`harness: unmount cleanups ran [${order.join(', ')}], expected ['first', 'second'] in declaration order`);
+    }
+  }
 }
 
 // Clicking a task opens the lightweight popover outside the list, and closing
