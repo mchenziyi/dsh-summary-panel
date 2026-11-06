@@ -14,7 +14,7 @@
  * behaviour or requires a test-only product switch.
  *
  * Usage:
- *   node test/e2e/run.mjs                     # the baseline scenario
+ *   node test/e2e/run.mjs                     # every scenario
  *   node test/e2e/run.mjs --list              # list scenarios
  *   node test/e2e/run.mjs baseline-write tree-init team-board
  *   node test/e2e/run.mjs --keep [scenario]   # keep the temporary directory
@@ -22,7 +22,7 @@
  */
 
 import { copyFile, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -36,7 +36,12 @@ const REPO_ROOT = join(HERE, '..', '..');
 const PLUGIN_ROOT = join(REPO_ROOT, 'index.js');
 const FIXTURE_DIR = join(HERE, 'fixtures', 'plugins');
 const SCENARIO_DIR = join(HERE, 'scenarios');
-const DEFAULT_SCENARIOS = ['baseline-write'];
+// No scenario names means every scenario on disk: a new one must not be able to
+// join the suite without running by default.
+const DEFAULT_SCENARIOS = readdirSync(SCENARIO_DIR)
+  .filter((name) => name.endsWith('.mjs'))
+  .map((name) => name.slice(0, -'.mjs'.length))
+  .sort();
 const MAX_ARTEFACT_PRINT_BYTES = 6000;
 
 function usage() {
