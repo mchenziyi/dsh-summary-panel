@@ -586,6 +586,86 @@ function titles(snapshot) {
 }
 
 // ---------------------------------------------------------------------------
+// execution gate: team mode makes the Lead a pure coordinator
+// ---------------------------------------------------------------------------
+
+{
+  const root = tempRoot();
+  const store = createTaskStore({ root, logger: { warn() {} } });
+  const sessions = new Map([
+    ['team-lead', { header: { id: 'team-lead' } }],
+    ['team-worker', { header: { id: 'team-worker', parentSession: 'team-lead' } }],
+    ['plain-child', { header: { id: 'plain-child', parentSession: 'team-lead', origin: 'subagent' } }],
+  ]);
+  // The real roster resolves membership from the live Agent; this stand-in does
+  // the same by id. A provider-owned subagent is not a Team member.
+  const roles = new Map([['team-lead', 'lead'], ['team-worker', 'teammate']]);
+  const agentTeams = { tryMembership: (agent) => (roles.has(agent.id) ? { role: roles.get(agent.id) } : undefined) };
+  const ctx = {
+    get: (name) => {
+      if (name === 'sessions') return { get: (id) => sessions.get(id) };
+      if (name === 'agentTeams') return agentTeams;
+      return undefined;
+    },
+  };
+  const guard = createExecutionGuard({ ctx, store });
+  const exec = (sessionId, parentSession, tool = 'write') => ({
+    name: tool,
+    agent: {
+      id: sessionId,
+      session: { header: parentSession === undefined ? { id: sessionId } : { id: sessionId, parentSession } },
+    },
+  });
+
+  // Team mode is decided by composition: even before any tree exists, the Lead
+  // may not touch the workspace.
+  const noTree = guard(exec('team-lead'));
+  assert.match(noTree, /only coordinates/, 'a Team Lead is refused before any tree exists');
+  assert.match(noTree, /class A/, 'the reason names the tool class');
+  assert.match(noTree, /team-lead/, 'the reason names the calling session');
+
+  // Class B and C stay open: the Lead still maintains the tree and coordinates.
+  assert.equal(guard(exec('team-lead', undefined, 'task_tree_write')), undefined);
+  assert.equal(guard(exec('team-lead', undefined, 'team_task_update')), undefined);
+  assert.equal(guard(exec('team-lead', undefined, 'spawn_teammate')), undefined);
+  assert.equal(guard(exec('team-lead', undefined, 'send_message')), undefined);
+  assert.equal(guard(exec('team-lead', undefined, 'read')), undefined);
+  const future = guard(exec('team-lead', undefined, 'some_future_plugin_tool'));
+  assert.match(future, /some_future_plugin_tool is a class A tool/, 'an unclassified tool is class A for the Lead');
+  assert.match(future, /only coordinates/);
+
+  await store.update('team-lead', (current) => ({
+    envelope: envelopeAfter(current, [
+      { op: 'init', originalGoal: '团队模式' },
+      { op: 'create', title: '协调', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+      { op: 'claim', id: 't1' },
+    ], { worklineId: 'team-lead', actorSessionId: 'team-lead', standardMode: false }).envelope,
+  }));
+  // Holding an execution changes nothing for the Lead: the refusal is not seat
+  // dependent.
+  assert.match(guard(exec('team-lead')), /only coordinates/, 'a Lead with its own claim is still refused');
+
+  // A teammate keeps the execution rule (claim-first binding is a later slice),
+  // and the provider-owned subagent is not mistaken for the Lead.
+  assert.match(guard(exec('team-worker', 'team-lead')), /holds no active execution/);
+  assert.match(guard(exec('plain-child', 'team-lead')), /holds no active execution/);
+
+  // A service exposing only the strict resolver is detected the same way.
+  const strictCtx = {
+    get: (name) => {
+      if (name === 'sessions') return { get: (id) => sessions.get(id) };
+      if (name === 'agentTeams') return { membership: (agent) => { if (agent.id !== 'team-lead') throw new Error('not a member'); return { role: 'lead' }; } };
+      return undefined;
+    },
+  };
+  assert.match(createExecutionGuard({ ctx: strictCtx, store })(exec('team-lead')), /only coordinates/);
+
+  // No Agent Team service: standard mode keeps its seat rule untouched.
+  const standardCtx = { get: (name) => (name === 'sessions' ? { get: (id) => sessions.get(id) } : undefined) };
+  assert.equal(createExecutionGuard({ ctx: standardCtx, store })(exec('team-lead')), undefined, 'the claimed session is allowed in standard mode');
+}
+
+// ---------------------------------------------------------------------------
 // mount: tools and HTTP handlers against a fake context
 // ---------------------------------------------------------------------------
 
@@ -1605,6 +1685,8 @@ function titles(snapshot) {
     assert.equal(TASK_TREE_PROMPT.includes(needle), true, `prompt should mention ${needle}`);
   }
   assert.equal(TASK_TREE_PROMPT.includes('Record work that is worth tracking as soon as it appears'), true);
+  // Team mode is model-facing too: the prompt says the Lead only coordinates.
+  assert.equal(TASK_TREE_PROMPT.includes('the lead only coordinates'), true);
   assert.notEqual(TASK_TREE_REMINDER, TASK_TREE_START_REMINDER);
   assert.equal(TASK_TREE_START_REMINDER.includes('no task tree yet'), true);
   assert.equal(TASK_TREE_REMINDER.includes('task_tree_write'), true);

@@ -41,13 +41,19 @@ A passing run removes it unless `--keep` or `--out` was passed.
   execution id; three sequential Lead tasks get three distinct ids.
 - `team-board` — the profile composes the real Agent Team; a board task is
   created through the shipped `team_task_create` tool and exported.
+- `team-lead` — team mode makes the Lead a pure coordinator: with no tree yet,
+  while holding a task execution, and after releasing it, every class A family
+  (`write`, `edit`, `bash`, `workflow`, `terminal_open`, `create_worktree`,
+  `ralph`, `subagent`) is refused with the team-mode reason and leaves nothing
+  on disk; `task_tree_*`, the Team task tools, `spawn_teammate` (a real
+  teammate), messaging and reads keep working.
 
 ## How the profile is built
 
 `lib/profile.mjs` writes a normal custom profile under `$DSH_HOME/profiles/e2e`:
 the shipped `dsh-base` + `dsh-headless` bundles (plus the real
 `dsh-experimental-agent-team-profile` in team scenarios), the plugin under test
-by **absolute path** to this working tree, and four fixture plugins copied
+by **absolute path** to this working tree, and five fixture plugins copied
 beside it:
 
 - `scripted-llm.js` — a `scripted` LLM provider. The real agent loop, real tool
@@ -56,6 +62,10 @@ beside it:
 - `web-server-stub.js` / `connection-stub.js` — the two services the panel
   injects that a headless run does not otherwise provide. No socket is opened.
 - `team-board-probe.js` — exports the live Team board at each turn end.
+- `class-a-probe.js` — team profiles only: registers `terminal_open`,
+  `create_worktree`, `ralph` and `subagent` with a body that writes a sentinel
+  file, so a Lead refusal can be proven down to the tool body for class A tools
+  the headless profile does not ship.
 
 Isolation: `DSH_HOME` points at the temporary root (sessions, storages,
 credentials), `DSH_PROFILE_DIR` points at the temporary profile (the plugin
@@ -67,10 +77,14 @@ approval answerer. Nothing in the product is changed or switched on for tests.
 
 - The model is scripted, not a real provider: runs are deterministic and need
   no credentials, but a scenario can only see the tool calls its script makes.
-- Standard-mode subagents are scripted through `subagentResponses`, the
-  `{{subagentId}}` placeholder and `waitForSubagentTurns`; a team scenario's
-  `spawn_teammate` is not scripted yet.
+- Subagents are scripted through `subagentResponses`, the `{{subagentId}}`
+  placeholder and `waitForSubagentTurns`; a team scenario's teammates consume
+  the same `subagentResponses` queue, but there is no `{{teammateId}}`
+  placeholder or wait-for-teammate-turns helper.
 - Killing a session mid-turn (crash injection) and concurrent multi-session
   scenarios are not built yet; the profile/run/export loop they need is in
   place.
-- The harness assumes `dsh` is on `PATH` (override with `DSH_BIN`).
+- The harness assumes `dsh` is on `PATH` (override with `DSH_BIN`). It prefers
+  a real PATH launcher over an npm-injected `node_modules/.bin` shim, because an
+  ancestor project's older `dsh` may accept `--json` yet not resolve this
+  profile's bundles.

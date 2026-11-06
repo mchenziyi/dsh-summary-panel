@@ -246,7 +246,7 @@ const WRITE_DESCRIPTION = [
   'A parent is complete only when nothing unfinished remains below it: pending, in_progress, blocked and deferred children all block it, while done and archived work does not. A completed parent that gains an unfinished child is shown as unfinished again and keeps its acceptance record; when that child finishes or is archived the parent is complete again. A new deliverable beneath it still needs its own acceptance, and one acceptance quote closes one task — never replay the same quote for another task.',
   'One confirmation closes one task: each acceptance quote binds to the task it names. If the user accepted several tasks in one sentence, quote the clause naming each one; if you cannot tell which task they accepted, ask instead of widening the scope.',
   'Completion, acceptance, and approval are separate. A top-level task is a delivered requirement and defaults to requiresUserAcceptance: true; its steps default to false and may be completed on your own verification with complete and no confirmedByUser. A task that requires acceptance cannot be completed by the agent: record the delivered work in progress or result, keep it in progress, and complete it only after the user accepts, with confirmedByUser: true and confirmationBasis quoting their acceptance — the quote must come after you reported the delivery, and the instruction that authorised the work does not count. Setting requiresUserAcceptance: false needs a real user instruction plus an acceptanceBasis quote; a quote that appears in no real user message is rejected, so never speak for the user. A self-verified completion can later be accepted by passing confirmedByUser: true plus confirmationBasis.',
-  'Only the lead maintains the tree. In standard mode the whole workline shares ONE execution seat: while anyone holds it, every other claim is refused. To hand a task to a subagent, release it, assign the subagent session id you read from the spawn result, let the subagent claim and release it, then assign "lead" and claim again; the new claim gets a NEW execution id, and an ended execution is never revived. Assignment is routing, not a claim: it grants nothing by itself. A subagent may call claim and release only, and only for the task assigned to it; in an Agent Team, teammates report to the lead and never write the tree themselves.',
+  'Only the lead maintains the tree. In standard mode the whole workline shares ONE execution seat: while anyone holds it, every other claim is refused. To hand a task to a subagent, release it, assign the subagent session id you read from the spawn result, let the subagent claim and release it, then assign "lead" and claim again; the new claim gets a NEW execution id, and an ended execution is never revived. Assignment is routing, not a claim: it grants nothing by itself. A subagent may call claim and release only, and only for the task assigned to it; in an Agent Team, teammates report to the lead and never write the tree themselves. In an Agent Team the lead only coordinates: the host refuses it every class A tool (writing files, edit, shell, terminal, worktree, workflow, ralph, subagent spawn) even while a task execution is held, so spawn a teammate with spawn_teammate, send it the work, and keep the tree and the Team board to yourself.',
   'init runs once per workline and writes the immutable original goal plus the outline. When the user decides to change the project direction, call reviseGoal immediately with a reason quoting their decision — it does not need implementation to start. When you merely propose a direction, discuss it first.',
   'defer keeps the status and progress of a task that may come back later and removes it from the focus; it cannot be focused or claimed until resumed. archive means the task will not be done: it and its whole subtree leave the active tree with a reason and stay visible in the archive. A pending "not now" from the user is respected even for approved tasks.',
   'Every batch is validated first and applied atomically; on failure nothing is written.',
@@ -270,8 +270,8 @@ function callerOf(exec) {
  *
  * The lead maintains the whole tree. In standard mode a subagent may only
  * claim (and release) a task the lead assigned to it: that is the handover, and
- * it is not tree maintenance. In an Agent Team (a later slice) teammates are
- * still refused outright.
+ * it is not tree maintenance. In an Agent Team the lead still owns the tree and
+ * teammates are refused outright: they report progress to the lead.
  *
  * @returns `{ restricted }`; `restricted` means "only claim/release".
  */
@@ -290,8 +290,8 @@ function writableBy(ctx, agent, header, sessionId, standardMode) {
     }
   }
   if (header !== undefined && header !== null && header.origin === 'subagent') {
-    // A standard-mode subagent owns only its assigned seat; team mode refuses
-    // the write until its own slice defines claim-first dispatch.
+    // A standard-mode subagent owns only its assigned seat; in team mode the
+    // tree stays with the lead until claim-first dispatch lands.
     if (!standardMode) throw new Error(WRITE_DENIED_SUBAGENT);
     return { restricted: true };
   }
@@ -371,8 +371,9 @@ export function registerTaskTreeTools(ctx, { store, sessions }) {
       if (!Array.isArray(ops) || ops.length === 0) {
         throw new Error('ops must be a non-empty array of task tree operations');
       }
-      // Standard mode is "no Agent Team composed" (design v8 §3); the team
-      // slice is not part of this one.
+      // Team mode is "the Agent Team service is composed" (design v8 §3, §7).
+      // The team slice owns dispatch and claim-first binding, so a teammate
+      // still never writes the tree; the Lead keeps it.
       const standardMode = ctx.get('agentTeams') === undefined;
       const permission = writableBy(ctx, exec?.agent, caller.header, caller.sessionId, standardMode);
       if (permission.restricted) {
