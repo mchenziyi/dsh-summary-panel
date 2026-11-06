@@ -3,14 +3,20 @@
  *
  * This module owns every rule of the workline task tree (validation, the
  * parent/child invariants, focus and occupancy semantics, goal revisions, and
- * the wire snapshots consumed by the tools and HTTP routes). It deliberately
- * imports nothing: no dsh package, no zod, and no node built-in. Storage lives
- * in `host/store.js`, so this file is directly unit-testable.
+ * the wire snapshots consumed by the tools and HTTP routes). It imports only
+ * the pure Worker-lifetime helpers: no dsh package, no zod, and no node
+ * built-in. Storage lives in `host/store.js`, so this file is directly
+ * unit-testable.
  *
- * A workline record is the persisted envelope `{ version, workline, tasks }`.
- * All operations are applied to a private clone first; a failure anywhere in
- * the batch leaves the caller's record untouched (the batch is atomic).
+ * A workline record is the persisted envelope `{ version, workline, tasks }`
+ * (`workline.workers` holds the per-session lifetime records). All operations
+ * are applied to a private clone first; a failure anywhere in the batch leaves
+ * the caller's record untouched (the batch is atomic).
  */
+
+import {
+  bindWorkerLifetime, endWorkerLifetime, normalizeWorkers, workerLifetimeDenial, workerLifetimeOf,
+} from './lifetime.js';
 
 /** The four active task statuses. */
 export const TASK_STATUSES = Object.freeze(['pending', 'in_progress', 'blocked', 'done']);
@@ -391,6 +397,7 @@ export function createEmptyEnvelope(worklineId, now) {
       nextSeq: 1,
       nextExecution: 1,
       executions: [],
+      workers: {},
     },
     tasks: [],
   };
@@ -541,6 +548,10 @@ export function cloneEnvelope(envelope) {
       nextSeq: Number.isInteger(workline.nextSeq) && workline.nextSeq > 0 ? workline.nextSeq : 1,
       executions,
       nextExecution: nextExecutionOf(workline, executions),
+      // The per-session lifetime records survive every ledger rewrite: they are
+      // normalized here, never derived from whichever executions are still
+      // active (design v8 I2b).
+      workers: normalizeWorkers(workline),
     },
     tasks: tasks.map((task) => normalizeTask(task, workline.id)),
   };
@@ -1181,6 +1192,16 @@ function activeSeat(state) {
 function endExecution(state, task, reason, now) {
   const owner = task.owner;
   if (owner === null || owner === undefined) return undefined;
+  // Ending an execution ends that Worker instance's lifetime: the record is
+  // kept as `ended`, so no release can make the same instance claimable again
+  // (design v8 I2b). The Lead is never registered.
+  endWorkerLifetime(state.workline, {
+    sessionId: owner.sessionId,
+    leadSessionId: state.workline.id,
+    reason,
+    executionId: owner.executionId,
+    now,
+  });
   const executions = state.workline.executions;
   let record = typeof owner.executionId === 'string'
     ? executions.find((execution) => execution.executionId === owner.executionId)
@@ -1269,15 +1290,72 @@ export function bindTeamClaim(envelope, claim) {
     const where = active.taskId === taskId ? `task ${taskId}` : `session ${sessionId}`;
     fail(`${where} already holds execution ${active.executionId}; one task and one session may hold at most one`);
   }
+  // I2b: a Worker instance holds ONE task for life. A Worker whose binding has
+  // ended (completed, failed, released) can never bind again, even on the same
+  // task — the retry needs a new Worker instance and therefore a new id.
+  const lifetime = workerLifetimeOf(state.workline, sessionId);
+  if (lifetime !== undefined && lifetime.state !== 'created') {
+    fail(workerLifetimeDenial({ sessionId, worker: lifetime }));
+  }
   const executionId = allocateExecution(state, taskId, sessionId, now, {
     mode: 'team',
     teamTaskId,
     member,
     claimRevision: Number.isInteger(claim.revision) ? claim.revision : undefined,
   });
+  bindWorkerLifetime(state.workline, {
+    sessionId,
+    leadSessionId: state.workline.id,
+    kind: 'teammate',
+    name: member,
+    taskId,
+    executionId,
+    now,
+  });
   task.owner = { sessionId, executionId, member, since: now };
   task.status = 'in_progress';
   task.dispatch = null;
+  touch(state, task, now);
+  state.workline.updatedAt = now;
+  return { envelope: state, executionId };
+}
+
+/**
+ * End the execution a Worker's own Team-board transition ended (design v8 §6.3,
+ * ticket #7): a committed `complete` or `release` is the evidence, and the
+ * caller's roster-resolved session must be the very executor that claim bound.
+ *
+ * The tree task stays `in_progress` (the Lead still accepts the delivery), the
+ * claim stamp is cleared, and the Worker's lifetime record moves to `ended`:
+ * the same instance can never claim a second task, while a NEW Worker instance
+ * may claim the retried task and receive a NEW execution id.
+ *
+ * @param envelope - the current persisted envelope.
+ * @param transition - `{ teamTaskId, sessionId, reason:"completed"|"released", now }`.
+ * @returns `{ envelope, executionId }`; throws {@link TaskTreeError} when no
+ *   active execution of that session is bound to the board task.
+ */
+export function endTeamExecution(envelope, transition) {
+  const state = cloneEnvelope(envelope);
+  const now = numberOr(transition?.now, Date.now());
+  const teamTaskId = typeof transition?.teamTaskId === 'string' ? transition.teamTaskId : '';
+  const sessionId = typeof transition?.sessionId === 'string' ? transition.sessionId : '';
+  const reason = transition?.reason === 'completed' ? 'completed' : 'released';
+  if (teamTaskId === '' || sessionId === '') {
+    fail('a Team execution end must name its board task and the resolved session id');
+  }
+  const task = state.tasks.find((candidate) => candidate !== null
+    && typeof candidate === 'object'
+    && candidate.teamTaskId === teamTaskId
+    && candidate.archived !== true);
+  if (task === undefined) fail(`no tree task is associated with team task ${JSON.stringify(teamTaskId)}`);
+  const owner = task.owner;
+  if (owner === null || owner === undefined) fail(`task ${task.id} holds no execution to end`);
+  if (owner.sessionId !== sessionId) {
+    fail(`task ${task.id} is held by session ${owner.sessionId}, not ${sessionId}`);
+  }
+  const executionId = endExecution(state, task, reason, now);
+  task.owner = null;
   touch(state, task, now);
   state.workline.updatedAt = now;
   return { envelope: state, executionId };
@@ -1373,6 +1451,16 @@ function applyClaim(state, op, context) {
     }
   }
 
+  // I2b: a subagent holds ONE task for life. Once its binding has ended
+  // (released, completed, failed), the same session may never claim again; a
+  // retry needs a NEW subagent instance. The Lead is exempt and works serially.
+  if (actor !== state.workline.id) {
+    const lifetime = workerLifetimeOf(state.workline, actor);
+    if (lifetime !== undefined && lifetime.state !== 'created') {
+      fail(workerLifetimeDenial({ sessionId: actor, worker: lifetime }));
+    }
+  }
+
   // Assignment is routing, not a claim: a subagent may only claim the task the
   // lead assigned to its own live session, and the lead may claim a task that
   // was handed back to it.
@@ -1389,6 +1477,17 @@ function applyClaim(state, op, context) {
   }
 
   const executionId = allocateExecution(state, id, actor, context.now);
+  if (actor !== state.workline.id) {
+    bindWorkerLifetime(state.workline, {
+      sessionId: actor,
+      leadSessionId: state.workline.id,
+      kind: 'subagent',
+      name: null,
+      taskId: id,
+      executionId,
+      now: context.now,
+    });
+  }
   task.owner = { sessionId: actor, executionId, since: context.now };
   touch(state, task, context.now);
   return { op: 'claim', id, executionId };

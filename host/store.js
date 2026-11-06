@@ -196,6 +196,20 @@ export function createTaskStore(options = {}) {
   }
 
   /**
+   * The snapshot shape. The Worker lifetime records travel with the tasks they
+   * constrain, and the field is omitted when there are none so the common shape
+   * stays exactly `{ present, tasks }`.
+   */
+  function snapshotOf(envelope) {
+    const tasks = Array.isArray(envelope.tasks) ? envelope.tasks : [];
+    const raw = envelope.workline !== null && typeof envelope.workline === 'object' ? envelope.workline.workers : undefined;
+    const workers = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : undefined;
+    return workers !== undefined && Object.keys(workers).length > 0
+      ? { present: true, tasks, workers }
+      : { present: true, tasks };
+  }
+
+  /**
    * Synchronous snapshot of one workline, for a decision that must not await
    * (the tool guard decides mid-call, before dispatch).
    *
@@ -210,7 +224,8 @@ export function createTaskStore(options = {}) {
    * workline is unmanaged.
    *
    * @param worklineId - the root session id of the workline.
-   * @returns `{ present, tasks, unreadable? }`; `tasks` is read-only.
+   * @returns `{ present, tasks, workers?, unreadable? }`; `workers` is present
+   *   only once a Worker lifetime record exists, and `tasks` is read-only.
    */
   function snapshot(worklineId) {
     let file;
@@ -221,7 +236,7 @@ export function createTaskStore(options = {}) {
     }
     if (cache.has(worklineId)) {
       const envelope = cache.get(worklineId);
-      return envelope === undefined ? { present: false, tasks: [] } : { present: true, tasks: envelope.tasks };
+      return envelope === undefined ? { present: false, tasks: [] } : snapshotOf(envelope);
     }
     let text;
     try {
@@ -242,7 +257,7 @@ export function createTaskStore(options = {}) {
     if (!validEnvelope(parsed, worklineId)) return { present: true, tasks: [] };
     const envelope = { version: 1, workline: parsed.workline, tasks: parsed.tasks };
     cache.set(worklineId, envelope);
-    return { present: true, tasks: envelope.tasks };
+    return snapshotOf(envelope);
   }
 
   /** Run `task` after every earlier write for the same workline settled. */
