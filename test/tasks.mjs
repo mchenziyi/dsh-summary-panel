@@ -21,6 +21,7 @@ import {
 import { createTaskStore } from '../host/store.js';
 import { classifyTool, createExecutionGuard } from '../host/guard.js';
 import { mountTaskTree } from '../host/mount.js';
+import { createSeatTable, registerSeatObservers, seatRequestFor } from '../host/reservation.js';
 import { taskTreeReminderFor, TASK_TREE_REMINDER, TASK_TREE_START_REMINDER, TASK_TREE_PROMPT } from '../host/prompt.js';
 import { MAX_BASIS, MIN_QUOTE, verifyUserQuote } from '../host/evidence.js';
 
@@ -2977,6 +2978,149 @@ function assertSchema(schema, value, path = 'value') {
   const legacyView = readSnapshot(legacy, 'session-legacy', true);
   assertSchema(read.output.schema, legacyView, 'read-legacy');
   assert.equal(legacyView.tasks[0].settled, true, 'a legacy done leaf is settled');
+}
+
+// ---------------------------------------------------------------------------
+// execution seats: the three synchronous keys, suspicion, and real evidence
+// ---------------------------------------------------------------------------
+
+{
+  // Which keys one call takes: standard mode books the workline, the executor
+  // and the task; team mode books executor and task only, because Workers run
+  // in parallel on different tasks.
+  const standard = seatRequestFor({ tool: 'task_tree_write', args: { ops: [{ op: 'claim', id: 't1' }] }, mode: 'standard', worklineId: 'wl-root', sessionId: 's1' });
+  assert.deepEqual(standard, { keys: ['wl:wl-root', 'wk:s1', 'tk:t1'], action: 'claim', taskId: 't1', sessionId: 's1', worklineId: 'wl-root' });
+  assert.deepEqual(seatRequestFor({ tool: 'team_task_update', args: { action: 'claim', task_id: 'task-1' }, mode: 'team', worklineId: 'wl-root', sessionId: 'w1' }),
+    { keys: ['wk:w1', 'tk:task-1'], action: 'claim', taskId: 'task-1', sessionId: 'w1', worklineId: 'wl-root' });
+  // Ownership-changing ops take a seat even when they end an execution.
+  assert.deepEqual(seatRequestFor({ tool: 'task_tree_write', args: { ops: [{ op: 'release', id: 't1' }, { op: 'complete', id: 't2' }] }, mode: 'standard', worklineId: 'wl-root', sessionId: 's1' })?.keys,
+    ['wl:wl-root', 'wk:s1', 'tk:t1', 'tk:t2']);
+  assert.deepEqual(seatRequestFor({ tool: 'team_task_update', args: { action: 'reopen', task_id: 'task-2' }, mode: 'team', worklineId: 'wl-root', sessionId: 'w1' })?.keys,
+    ['wk:w1', 'tk:task-2']);
+  // Structural changes and other tools hold no seat.
+  assert.equal(seatRequestFor({ tool: 'task_tree_write', args: { ops: [{ op: 'create', title: 'x' }, { op: 'focus', ids: [] }] }, mode: 'standard', worklineId: 'wl-root', sessionId: 's1' }), undefined);
+  assert.equal(seatRequestFor({ tool: 'team_task_update', args: { action: 'edit', task_id: 'task-1' }, mode: 'team', worklineId: 'wl-root', sessionId: 'w1' }), undefined);
+  assert.equal(seatRequestFor({ tool: 'read', args: {}, mode: 'standard', worklineId: 'wl-root', sessionId: 's1' }), undefined);
+  assert.equal(seatRequestFor({ tool: 'task_tree_write', args: { ops: [{ op: 'claim', id: 't1' }] }, mode: 'standard', worklineId: 'wl-root', sessionId: undefined }), undefined);
+
+  // The standard workline seat: one claim at a time for the whole workline.
+  const seats = createSeatTable({ ttlMs: 1000, now: () => 0 });
+  const claim = (requestId, sessionId, taskId, mode = 'standard', worklineId = 'wl-root') => seats.reserve({
+    requestId,
+    mode,
+    sessionId,
+    worklineId,
+    ...seatRequestFor({ tool: 'task_tree_write', args: { ops: [{ op: 'claim', id: taskId }] }, mode, worklineId, sessionId }),
+  });
+  assert.equal(claim('c1', 's1', 't1').ok, true);
+  const worklineBlocked = claim('c2', 's2', 't2');
+  assert.equal(worklineBlocked.ok, false, 'a second in-flight claim sees the first');
+  assert.equal(worklineBlocked.holder.dimension, 'workline');
+  assert.equal(worklineBlocked.holder.requestId, 'c1');
+  // Repeating the very same request id is idempotent, not a self-conflict.
+  assert.equal(claim('c1', 's1', 't1').ok, true);
+  // No timer releases a seat: only real end-of-call evidence does.
+  assert.equal(seats.sweep(999).length, 0, 'before the TTL nothing is suspect');
+  const suspect = seats.sweep(1000);
+  assert.equal(suspect.length, 1, 'the TTL only marks the reservation suspect');
+  assert.equal(seats.size(), 1, 'a suspect seat is still held');
+  const suspectBlocked = claim('c3', 's3', 't3');
+  assert.equal(suspectBlocked.ok, false, 'a suspect seat still refuses new claims');
+  assert.equal(suspectBlocked.holder.state, 'suspect');
+  assert.equal(seats.release('c1'), true, 'a matching tool result releases it');
+  assert.equal(claim('c3', 's3', 't3').ok, true, 'the freed seat can be taken again');
+  assert.equal(seats.release('c3'), true);
+  assert.equal(seats.size(), 0);
+
+  // The team seats: one executor, one task.
+  const team = createSeatTable();
+  const board = (requestId, sessionId, taskId) => team.reserve({
+    requestId,
+    ...seatRequestFor({ tool: 'team_task_update', args: { action: 'claim', task_id: taskId }, mode: 'team', worklineId: 'wl-root', sessionId }),
+  });
+  assert.equal(board('d1', 'w1', 'task-1').ok, true);
+  const executorBlocked = board('d2', 'w1', 'task-2');
+  assert.equal(executorBlocked.ok, false, 'one executor cannot claim two tasks');
+  assert.equal(executorBlocked.holder.dimension, 'executor');
+  const taskBlocked = board('d3', 'w2', 'task-1');
+  assert.equal(taskBlocked.ok, false, 'one task cannot be claimed twice');
+  assert.equal(taskBlocked.holder.dimension, 'task');
+  assert.equal(board('d4', 'w2', 'task-2').ok, true, 'different executors on different tasks stay parallel');
+  // E2: an idle Agent proves none of its calls can still be in flight.
+  assert.equal(team.releaseSession('w1'), 1);
+  assert.equal(team.size(), 1, 'only the idle agent\'s own reservation was cleared');
+  assert.equal(board('d5', 'w1', 'task-3').ok, true, 'the executor seat is free after its agent went idle');
+  assert.equal(team.size(), 2);
+}
+
+{
+  // The guard takes the seat synchronously, before dispatch, and E1 releases it.
+  const root = tempRoot();
+  const store = createTaskStore({ root, logger: { warn() {} } });
+  const sessions = new Map([
+    ['session-root', { header: { id: 'session-root' } }],
+    ['session-branch', { header: { id: 'session-branch', parentSession: 'session-root' } }],
+  ]);
+  const ctx = { get: (name) => (name === 'sessions' ? { get: (id) => sessions.get(id) } : undefined) };
+  await store.update('session-root', (current) => ({
+    envelope: envelopeAfter(current, [
+      { op: 'init', originalGoal: '并发占位' },
+      { op: 'create', title: '任务一', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+      { op: 'create', title: '任务二', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
+    ]).envelope,
+  }));
+  const seats = createSeatTable();
+  const guard = createExecutionGuard({ ctx, store, seats });
+  const claimExec = (callId, sessionId, parentSession, id) => ({
+    callId,
+    name: 'task_tree_write',
+    arguments: { ops: [{ op: 'claim', id }] },
+    agent: {
+      id: sessionId,
+      session: { header: parentSession === undefined ? { id: sessionId } : { id: sessionId, parentSession } },
+    },
+  });
+  assert.equal(guard(claimExec('call-1', 'session-root', undefined, 't1')), undefined);
+  assert.equal(seats.size(), 1, 'an admitted claim holds its seat before dispatch');
+  const blocked = guard(claimExec('call-2', 'session-branch', 'session-root', 't2'));
+  assert.match(blocked, /reserved by an in-flight call/);
+  assert.match(blocked, /in-flight call \(task_tree_write claim for wl:session-root/);
+  // E1: the matching tool result frees the seat, and the retry is admitted.
+  seats.release('call-1');
+  assert.equal(guard(claimExec('call-2', 'session-branch', 'session-root', 't2')), undefined);
+  // E2: the owning agent going idle frees whatever it still holds.
+  seats.releaseSession('session-branch');
+  assert.equal(seats.size(), 0);
+  // Without a seat table the guard behaves exactly as before (regression).
+  const plain = createExecutionGuard({ ctx, store });
+  assert.equal(plain(claimExec('call-9', 'session-branch', 'session-root', 't2')), undefined);
+}
+
+{
+  // The evidence wiring: a seat is released by the matching tool result (E1) or
+  // by the owning Agent going idle (E2), and by nothing else.
+  const seats = createSeatTable();
+  const listeners = new Map();
+  const disposers = [];
+  const ctx = {
+    on: (event, handler) => { listeners.set(event, handler); return () => listeners.delete(event); },
+    effect: (factory, _label) => { const dispose = factory(); if (typeof dispose === 'function') disposers.push(dispose); return () => {}; },
+  };
+  assert.equal(registerSeatObservers(ctx, { seats, logger: { warn() {} }, intervalMs: 60_000 }), true);
+  const take = (requestId, sessionId) => seats.reserve({
+    requestId,
+    ...seatRequestFor({ tool: 'task_tree_write', args: { ops: [{ op: 'claim', id: 't1' }] }, mode: 'standard', worklineId: 'wl-root', sessionId }),
+  });
+  assert.equal(take('r1', 's1').ok, true);
+  listeners.get('tools/result')({ callId: 'r1' });
+  assert.equal(seats.size(), 0, 'E1: the matching tool result releases the seat');
+  assert.equal(take('r2', 's2').ok, true);
+  assert.equal(take('r3', 's2').ok, false);
+  listeners.get('agent/status')({ agent: { id: 's2' }, status: 'running' });
+  assert.equal(seats.size(), 1, 'a running Agent proves nothing');
+  listeners.get('agent/status')({ agent: { id: 's2' }, status: 'idle' });
+  assert.equal(seats.size(), 0, 'E2: an idle Agent releases what it still held');
+  for (const dispose of disposers) dispose();
 }
 
 console.log('tasks ok');

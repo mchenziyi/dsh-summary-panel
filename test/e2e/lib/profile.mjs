@@ -20,7 +20,7 @@ import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** Fixture files copied beside the generated patch file. */
-const FIXTURE_PLUGINS = ['scripted-llm.js', 'web-server-stub.js', 'connection-stub.js', 'team-board-probe.js', 'tool-transcript.js', 'class-a-probe.js'];
+const FIXTURE_PLUGINS = ['scripted-llm.js', 'web-server-stub.js', 'connection-stub.js', 'team-board-probe.js', 'tool-transcript.js', 'class-a-probe.js', 'seat-race-probe.js'];
 
 export const PROFILE_NAME = 'e2e';
 
@@ -51,6 +51,10 @@ function patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, transcr
       name: ./plugins/tool-transcript.js
       config:
         out: ${JSON.stringify(transcriptPath)}`);
+  // The concurrency probe dispatches two real tool calls at the same instant,
+  // which a scripted, one-call-per-step model cannot do (ticket #9).
+  rows.push(`    - id: e2e-seat-race-probe
+      name: ./plugins/seat-race-probe.js`);
   if (team) {
     rows.push(`    - id: e2e-team-probe
       name: ./plugins/team-board-probe.js

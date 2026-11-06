@@ -2,6 +2,14 @@
 
 ## 未发布
 
+**并发占位（执行调度 v8 的并发切片）**
+
+- 认领不再只靠"落盘后再查"：guard 在放行之前就同步占位，第二个在途认领立刻被拒，不会出现"两个都成功"的窗口。座位按三个维度取键：标准模式 `wl:<worklineId>`（整条工作线一个执行位）、执行者 `wk:<sessionId>`、任务 `tk:<taskId>`；团队模式只取后两个，多个 Worker 仍可并行。
+- 占位只由真实的"调用已结束"证据释放：E1 是对应调用的 `tools/result`（注册表对每次调用都会发布，被拒、报错、中止都算），E2 是持位 Agent 转为 `idle`（运行中的 Agent 会 await 自己的工具调用，因此空闲即无在途）。`interrupt`、Board 写失败、被模型规则拒绝的认领都不算证据，必须等自己的工具结果。
+- 计时器只把超时仍未结束的占位标记为 `suspect` 并继续拒绝新认领，**绝不释放**；占位表只在进程内，是索引不是事实来源，进程重启即清空。
+- 占位覆盖所有改变执行归属的操作：`claim`/`release`/`complete`（树）与 `claim`/`release`/`complete`/`reopen`（Team Board）；`create`/`focus`/`edit` 这类结构性操作不占位。
+- 真实进程 e2e 新增 `seat-race`（团队）与 `seat-standard`（标准）：同一 Worker 并发认领两个任务只有一个成功、重复认领同一任务只有一个成功、持位时的第三次认领被拒、调用结束后座位释放（被 Board 拒绝的认领不会卡住重试）、Lead 与真实子代理并发认领只有一个成功。测试装置新增并发探针：脚本模型一次只能发一个工具调用，探针用真实 `tools.execute` 在同一瞬间派发两条真实工具调用，其余全部走产品路径。
+
 **团队模式：认领绑定（claim-first）**
 
 - 团队模式的绑定不再来自"分配"，而来自 Worker 自己的认领：Lead 用 `task_tree_write {"op":"dispatch","id","member","teamTaskId"}` 只写路由（不写 owner、不建执行、不改状态），被指名的 Worker 自己在 Team Board 上 `claim`；Host 在拿到 Board 提交后的真实返回值时写入执行。

@@ -48,6 +48,15 @@ A passing run removes it unless `--keep` or `--out` was passed.
   create a team execution with `task_tree_write claim`; `task_tree_*`, the Team
   task tools, `spawn_teammate` (a real teammate), messaging and reads keep
   working.
+- `seat-race` — team-mode concurrent seats: one Worker racing two board
+  claims wins one and the seat refuses the other before the board, a held seat
+  refuses a third claim, duplicate claims for one board task produce one
+  winner, a board-refused claim frees its seat for the retry, and two Workers
+  contending for one task leave exactly one owner.
+- `seat-standard` — standard-mode single seat: one session racing two claims
+  wins one, a held seat refuses a third, a refused call frees its seat for the
+  retry, and the Lead racing a real subagent for two tasks produces one
+  winner — the whole workline shares one execution seat.
 - `team-bind` — claim-first binding: the Lead dispatches two tree tasks to two
   named Workers, both unbound Workers' writes are refused, each Worker claims
   its own board task and only then writes, a second member's claim of the first
@@ -90,9 +99,13 @@ approval answerer. Nothing in the product is changed or switched on for tests.
   `teamResponses` (resolved through the live roster) and the Lead can wait for a
   teammate's turn with `waitForTeammate: "<name>"`; a teammate's session id is
   never exposed to the model, so scenarios identify it from the tool transcript.
-- Killing a session mid-turn (crash injection) and concurrent multi-session
-  scenarios are not built yet; the profile/run/export loop they need is in
-  place.
+- A scripted model issues one tool call per step, so two calls can never be in
+  flight at the same instant from its own turn. The seat scenarios therefore
+  drive concurrency through `seat-race-probe.js`, a fixture tool that calls the
+  real `tools.execute` pipeline twice without awaiting: pre-execute policy,
+  guards, tool bodies, stores and the Team board are all the product's, only
+  the dispatch instant is scripted. Killing a session mid-turn (crash
+  injection) is still not built.
 - The harness assumes `dsh` is on `PATH` (override with `DSH_BIN`). It prefers
   a real PATH launcher over an npm-injected `node_modules/.bin` shim, because an
   ancestor project's older `dsh` may accept `--json` yet not resolve this
