@@ -1,3 +1,19 @@
+# DSH Reins（缰绳）
+
+A DSH summary panel: named markdown summaries of a session, plus the agent-maintained task tree. Host half runs inside the DSH process (`index.js`, `host/`); client half runs in the browser (`client.js`).
+
+## Where things are
+
+- `docs/implementation-status.md` — what ships in v0.3.7, the module map, test coverage, and the known limits. **Read this before exploring the code**, including the plugin-reload rule after Host changes.
+- `docs/CONTRACT.md` — the Host/Client interface contract; it wins when it disagrees with the requirements doc (which stays in `~/Desktop/AI-TodoList/REQUIREMENTS.md`).
+- `GLOSSARY.md` — the project's domain vocabulary. Use its words in names, comments and issues.
+- `docs/plans/` — frozen designs that are not implemented yet.
+- `docs/agents/` — how the engineering skills consume this repo (issue tracker, triage labels, domain docs).
+
+## Checks
+
+`npm test` runs the whole suite (host, tasks, client). The same command runs from `.githooks/pre-commit`; enable it once per clone with `git config core.hooksPath .githooks`.
+
 ## Agent skills
 
 ### Issue tracker
