@@ -149,6 +149,7 @@ ConflictRecord = {
 11. 执行授权（`executionApproval`）与状态独立：`pending` 的任务可以讨论、规划，但不能变成 `in_progress` 或被领取；`approved` 必须有用户的真实原话（`approvalBasis`，或从已批准的直接父任务继承）。执行中（已有 owner 或曾开始）的任务不能把授权改回 `pending`。
 12. 执行生命周期只有 `active` / `orphaned` / `ended` 三态，只有 `active` 授予 A 类工具权限；声明了却无法识别的状态按 `orphaned` 处理（fail closed，不授予权限、不静默释放）。`orphaned`（executor lost）只能由 Lead 在 `interrupt_agent` 并确认其停止后 `release {force:true}` 结束；结束执行同时结束该 Worker 的终身绑定（同一实例不能再领取第二个任务，重试需要新实例与新 `executionId`）。
 13. 冲突（`conflicts`）是工作线级记录，不是执行状态：未解决（`resolvedAt === null`）的冲突停住其任务（`scope: "workline"` 时停住整条工作线）的新 claim，Host 不猜执行者、不重建执行。只有 Lead 能 `resolveConflict`，记录 `resolvedAt`/`resolvedBy`/`resolution`（谁、何时、为什么）；解决后任务可以重新被领取。
+14. A 类工具在任何工作线都需要调用者持有该工作线的 `active` 执行，**没有任务树的工作线也照拒**：空树里没有可 claim 的任务，所以拒绝理由必须给出完整 bootstrap（`init` 建树 → `create` 建任务 → `claim` → 重试），不能只说"没有执行权"。B 类与 C 类不受影响——否则模型无法从零建立执行（claim 必须始终可达）。依据 `docs/adr/0001-every-write-needs-an-execution.md`。
 
 ## 3. Agent 工具（Host 注册，模型可见）
 

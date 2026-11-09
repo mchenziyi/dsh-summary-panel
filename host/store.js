@@ -240,8 +240,10 @@ export function createTaskStore(options = {}) {
    *
    * Fail-closed on a present-but-unreadable tree: a corrupt or unreadable
    * record reports `present: true` with no tasks, which denies class A tools
-   * rather than silently freeing them. Only a genuinely absent file means the
-   * workline is unmanaged.
+   * rather than silently freeing them. A genuinely absent file reports an
+   * empty workline (`present: false`); the execution gate denies class A there
+   * too, so absence is a fact the gate reads, never a permission it grants
+   * (ADR-0001).
    *
    * @param worklineId - the root session id of the workline.
    * @returns `{ present, tasks, executions?, workers?, conflicts?, unreadable? }`;

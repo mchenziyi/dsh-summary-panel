@@ -29,13 +29,17 @@ A passing run removes it unless `--keep` or `--out` was passed.
 
 ## Scenarios
 
-- `baseline-write` — a session with **no** task tree: the `write` tool succeeds
-  and no tree is persisted. This is the harness's own proof that it can observe
-  the unconstrained baseline.
+- `baseline-write` — a session with **no** task tree: the `write` tool is
+  refused before it can touch the disk, the reason names the bootstrap path
+  (`init` → `create` → `claim`), and no tree is persisted. This is the most
+  basic counter-example of the suite: an absent tree is not permission
+  (ADR-0001).
 - `tree-init` — `task_tree_write` persists a tree the harness finds on disk.
-- `execution-gate` — class A tools (`write`, `bash`) are refused before `claim`
-  and again after `release`, with no side effect on disk; task-management tools
-  keep working and an unmanaged workline stays free.
+- `execution-gate` — class A tools (`write`, `edit`, `bash`) are refused with
+  no tree and again before `claim`, with no side effect on disk; the write
+  refused with no tree succeeds after `init` + `create` + `claim`; after
+  `release` they are refused once more; task-management tools keep working with
+  no execution.
 - `execution-seat` — standard-mode single execution seat: the Lead holds it,
   a real continuable subagent's claim is refused, the Lead releases and assigns
   it, the subagent claims/writes/releases, and the Lead reclaims with a NEW

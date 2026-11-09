@@ -120,12 +120,18 @@ export const TASK_TREE_REMINDER = [
 /**
  * The same nudge for a workline without a tree: a new session that starts real
  * project work should get a tree instead of waiting to be asked.
+ *
+ * It is also the honest description of the gate: with no tree there is nothing
+ * to claim, so every class A tool is refused until the model bootstraps
+ * (ADR-0001). The last line used to say one-off operations could skip the
+ * tree, which is exactly the reasoning that bypassed the gate.
  */
 export const TASK_TREE_START_REMINDER = [
   'This workline has no task tree yet.',
-  'If the user is describing project work — an idea, a requirement, a plan, a direction change — create the tree with `task_tree_write` (`init` for the goal, `create` for the first tasks) instead of waiting to be asked.',
+  'Class A tools — writing files, `edit`, shell, `terminal_*`, worktrees, `workflow`, `ralph`, subagents — are refused here until a task is claimed, and with no tree there is nothing to claim.',
+  'When the user asks for real project work (an idea, a requirement, a plan, a direction change, or a file change), create the tree with `task_tree_write` (`init` for the goal, `create` for the first tasks), `claim` the task, and only then run the tool.',
   'Record ideas and proposals as `executionApproval: "pending"`; approve only what the user has asked for, quoting their words in `approvalBasis`.',
-  'Skip this for pure questions, explanations, or one-off operations.',
+  'Skip this for pure questions, explanations and reads: those need no tree.',
 ].join(' ');
 
 /** Resolve the root session id synchronously, preferring live parents. */

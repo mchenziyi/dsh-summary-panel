@@ -360,5 +360,5 @@ revision 可信度的两个前提：每次成功 update 恰好 `revision = curre
 1. Lead 无法直接指派，只能派发 + 认领（claim-first 的代价）。
 2. 无只读 diff 工具，团队 Lead 无法自查改动，需 Worker 汇报。
 3. Worker 持位期间 `bash` 可写任意文件，`writeScopes` 只是建议。
-4. 未建树的 workline 不受 A 类约束（普通问答不受影响）。
+4. ~~未建树的 workline 不受 A 类约束（普通问答不受影响）。~~ **已由 ADR-0001 取消**：空工作线同样拒绝 A 类工具（没有可 claim 的任务），拒绝理由给出 `init` → `create` → `claim` → 重试。普通问答与只读工具仍不受影响。
 5. 多进程并发写同一 profile 不支持。
