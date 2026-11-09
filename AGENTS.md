@@ -10,6 +10,7 @@ A DSH summary panel: named markdown summaries of a session, plus the agent-maint
 - `GLOSSARY.md` — the project's domain vocabulary. Use its words in names, comments and issues.
 - `docs/plans/archive/` — finished historical designs (v8 is fully implemented, 10/10 slices); not a to-do list. Do not continue them; new direction comes from `docs/requirements/REQUIREMENTS.md`.
 - `docs/specs/` — specs for work in flight: how it will be sliced, in what order, with what verification.
+- `docs/progress/` — handoff and status snapshots: where the work stands, what is next, and the traps worth knowing.
 - `CODING_STANDARDS.md` — what a reviewer enforces here, and how work is sliced. Read it before reviewing or planning tickets.
 - `docs/agents/` — how the engineering skills consume this repo (issue tracker, triage labels, domain docs).
 
