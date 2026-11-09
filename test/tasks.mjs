@@ -19,7 +19,7 @@ import {
   TASK_OPS,
 } from '../host/model.js';
 import { createTaskStore } from '../host/store.js';
-import { callerOf } from '../host/caller.js';
+import { callerOf } from '../host/session.js';
 import { mountTaskTree } from '../host/mount.js';
 import { taskTreeReminderFor, TASK_TREE_REMINDER, TASK_TREE_START_REMINDER, TASK_TREE_PROMPT } from '../host/prompt.js';
 import { MAX_BASIS, MIN_QUOTE, verifyUserQuote } from '../host/evidence.js';
@@ -530,51 +530,7 @@ function titles(snapshot) {
 }
 
 // ---------------------------------------------------------------------------
-// store: the synchronous snapshot a reader can take without awaiting
-// ---------------------------------------------------------------------------
-
-{
-  const root = tempRoot();
-  const store = createTaskStore({ root, logger: { warn() {} } });
-  // An absent file is an empty workline: the snapshot reports the fact and
-  // never invents a tree.
-  assert.deepEqual(store.snapshot('session-cold'), { present: false, tasks: [] });
-
-  await store.update('session-root', (current) => ({
-    envelope: envelopeAfter(current, [
-      { op: 'init', originalGoal: '门禁' },
-      { op: 'create', title: '落盘', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
-      { op: 'claim', id: 't1' },
-    ]).envelope,
-  }));
-
-  // A write refreshes the cache before it returns, so the next decision sees it.
-  const warm = store.snapshot('session-root');
-  assert.equal(warm.present, true);
-  assert.equal(warm.tasks[0].owner.sessionId, 'session-root');
-
-  // A restarted host has an empty cache: the snapshot reads one small file
-  // synchronously instead of awaiting, so a claim written by an earlier process
-  // is still visible.
-  const reopened = createTaskStore({ root, logger: { warn() {} } });
-  const cold = reopened.snapshot('session-root');
-  assert.equal(cold.present, true);
-  assert.equal(cold.tasks[0].title, '落盘');
-  assert.equal(cold.tasks[0].owner.sessionId, 'session-root');
-
-  // A present-but-unreadable tree reports no tasks instead of inventing one.
-  writeFileSync(join(root, 'session-corrupt.json'), '{ not json');
-  const corrupt = reopened.snapshot('session-corrupt');
-  assert.equal(corrupt.present, true);
-  assert.deepEqual(corrupt.tasks, []);
-
-  // An invalid workline id can never map to a file, so it reports the empty
-  // workline.
-  assert.deepEqual(reopened.snapshot('../escape'), { present: false, tasks: [] });
-}
-
-// ---------------------------------------------------------------------------
-// caller resolution: one module shared by the tools and reconciliation
+// caller resolution: the tools read the calling session from the live agent
 // ---------------------------------------------------------------------------
 
 {

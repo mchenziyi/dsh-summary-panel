@@ -13,6 +13,8 @@
 | `index.js` | host-core | Host 半：保留现有 5 个只读路由，新增任务树存储、工具、提示词、路由 |
 | `host/*.js` | host-core | 新增模块（纯逻辑 / 域 / 工具 / 路由），可自建 |
 | `test/tasks.mjs` | host-core | 新增单测（node 直接跑，不依赖 dsh） |
+| `test/modules.mjs` | host-core | 加载检查：逐个 `import()` `host/*.js`，发布的模块缺一不可加载 |
+| `test/host-contract.mjs` | host-core | 机械检查：模型可见文本 / `client.js` 与活着的 op、字段一致 |
 | `client.js` | client-ui | Client 半：面板行为、任务树分区、入口呼吸灯、右栏详情 tab |
 | `package.json`、`locale/*.json`、`README.md`、`CHANGELOG.md` | Lead | 依赖、发布元数据、文档 |
 | profile 配置与重载验证 | Lead | 其他人不得改 profile |
@@ -44,10 +46,12 @@ WorklineRecord = {
   outline: string            // 目标大纲，自由文本，可空
   focus: string[]            // 当前执行焦点的 taskId，可多个，按设置顺序
   nextSeq: number            // 生成 t1/t2/... 用
-  nextExecution: number      // 生成 ex-1/ex-2… 用，单调、不重用
-  executions: ExecutionRecord[]              // 执行账本，保留最近 500 条
-  workers: Record<string, WorkerLifetime>    // Worker 终身绑定；Lead 不登记
-  conflicts: ConflictRecord[]                // 证据冲突，保留最近 50 条
+  // 以下字段自 v0.4.0 起不再写入（ADR-0003）：老记录里可能存在，读取时忽略，
+  // 不迁移、不重写，下一次写入时自然消失。
+  nextExecution?: number              // @deprecated 旧执行计数器
+  executions?: ExecutionRecord[]      // @deprecated 旧执行账本
+  workers?: Record<string, WorkerLifetime>   // @deprecated 旧 Worker 终身绑定
+  conflicts?: ConflictRecord[]        // @deprecated 旧证据冲突
 }
 
 TaskRecord = {
@@ -64,6 +68,7 @@ TaskRecord = {
   status: 'pending' | 'in_progress' | 'blocked' | 'done'
   deferred: boolean
   deferredReason?: string
+  deferredBasis?: string | null   // defer 时记下的用户原话（改变交付时必需）
   resumeCondition?: string
   archived: boolean
   archiveReason?: string
@@ -71,17 +76,18 @@ TaskRecord = {
   progress: string           // 进展记录，可多段，<= 2000 字符
   result?: string            // 完成结果，<= 500 字符
   blocker?: { reason: string, unblock: string } | null
-  assignee?: 'lead' | string | null // 标准模式：本任务被分配给哪个会话（仅路由）
-  owner?: { sessionId: string, executionId?: string, member?: string, since: number } | null   // 当前执行占用（只是索引，账本是事实）
+  assignee?: 'lead' | string | null // @deprecated 自 v0.4.0 起不再写入，读取时忽略
+  owner?: { sessionId: string, executionId?: string, member?: string | null, since: number } | null   // 当前领取记录（只是记录，不授权任何调用）；executionId 为 @deprecated 字段，自 v0.4.0 起不再写入、读取时忽略
   executionApproval: 'approved' | 'pending'   // 执行授权，与状态独立
   approvalBasis?: string | null     // 授权的用户原话
+  approvalAt?: number               // 授权时刻（验收时用于拒绝早于授权的原话）
   requiresUserAcceptance: boolean   // 顶层任务默认 true，子步骤默认 false
   acceptanceBasis?: string | null   // 豁免验收时的用户原话
   completion?: 'user-confirmed' | 'self'
   completionBasis?: string | null
   completedAt?: number
-  teamTaskId?: string | null        // 团队模式下对应的 Team-board 任务
-  dispatch?: { member: string, at: number } | null   // 团队模式派工（只是路由）
+  teamTaskId?: string | null        // @deprecated 自 v0.4.0 起不再写入，读取时忽略
+  dispatch?: { member: string, at: number } | null   // @deprecated 自 v0.4.0 起不再写入，读取时忽略
   archiveBatch?: string | null
   archiveBasis?: string | null
   archiveHistory: { at: number, reason: string, basis?: string }[]
@@ -90,7 +96,10 @@ TaskRecord = {
 }
 ```
 
+以下三种记录属于已拆除的证据层（ADR-0003），自 v0.4.0 起既不再写入也不再被读取；保留结构定义只为说明老 json 里那些字段的形状。
+
 ```ts
+// @deprecated v0.4.0：不再写入，读取时整段忽略
 ExecutionRecord = {
   executionId: string         // 'ex-1'、'ex-2'…，单调、不重用
   taskId: string
@@ -100,21 +109,22 @@ ExecutionRecord = {
   teamTaskId?: string | null
   member?: string | null      // 团队模式的成员名
   claimRevision?: number | null
-  requestId?: string | null   // claim 的 Registry callId（journal 对账）
-  rebuiltFrom?: string | null // 仅重启后由 journal 重建时写入
-  state: 'active' | 'orphaned' | 'ended'   // 只有 active 授予 A 类权限
+  requestId?: string | null   // 旧字段：认领意图日志的 Registry callId
+  rebuiltFrom?: string | null // 旧字段：仅重启后由日志重建时写入
+  state: 'active' | 'orphaned' | 'ended'   // 旧执行状态；v0.4.0 起不再授予任何权限
   interruptedAt?: number | null            // 观测到的 interrupt_agent 时刻
   note?: string | null
   startedAt: number
   updatedAt: number
   endedAt?: number | null
-  endReason?: string | null   // completed / released / deferred / archived / force-terminated / reconciled
+  endReason?: string | null   // 旧终止原因（完成 / 释放 / 暂缓 / 归档 / 强制终止 / 对账）
 }
 
-WorkerLifetime = {            // keyed by sessionId；一个 Worker 实例一辈子只持有一个任务
+// @deprecated v0.4.0：不再写入，读取时整段忽略
+WorkerLifetime = {            // 旧字段：keyed by sessionId
   kind: 'teammate' | 'subagent' | null
   name?: string | null
-  state: 'bound' | 'ended'    // 无法识别的持久状态按 ended 处理（fail closed）
+  state: 'bound' | 'ended'    // 旧 Worker 绑定状态
   boundTaskId?: string | null
   executionId?: string | null
   createdAt: number
@@ -123,45 +133,41 @@ WorkerLifetime = {            // keyed by sessionId；一个 Worker 实例一辈
   endReason?: string | null
 }
 
+// @deprecated v0.4.0：不再写入，读取时整段忽略
 ConflictRecord = {
   id: string                  // 'cf-1'、'cf-2'…
-  scope: 'task' | 'workline'  // workline 级冲突停住整条工作线
+  scope: 'task' | 'workline'  // 旧字段：任务级 / 工作线级
   taskId: string | null       // workline 级为 null
   kind: 'unproven-claim' | 'claim-without-record' | 'ended-but-owned' | 'seat-ambiguous'
   evidence: object            // 观测到的证据，有界
   createdAt: number
-  resolvedAt: number | null   // 未解决时停住该任务的 claim
-  resolvedBy: string | null   // 做出决定的 Lead 会话
+  resolvedAt: number | null   // 旧冲突状态；v0.4.0 起不再停住任何 claim
+  resolvedBy: string | null   // 旧字段：做出决定的 Lead 会话
   resolution: string | null   // 决定的原因
 }
 ```
 
-未知字段在读取时忽略；未知的执行/Worker 状态按 fail-closed 方向归一化（orphaned / ended）。
+未知字段在读取时忽略。老记录里的 `executions` / `workers` / `conflicts` / `owner.executionId` / `assignee` / `dispatch` / `teamTaskId` 都属于这一类：不迁移、不重写，下一次写入时整段消失。工作线 id 与任务 id 的字符集不变（见 §6）。
 
 ## 2. 不变量（Host 端强制，客户端只展示）
 
-1. `title` 去空白后非空、≤40 字、单行；`summary` ≤240 字。
-2. `parentId` 必须存在、同工作线、未归档；不能成环（不能把父改成自己的后代）。
-3. 父任务还有未完成、未归档的子任务时，**不能**标 `done`。
-4. 任务标 `done` 时：清空 `blocker`、释放 `owner`、从 `focus` 移除、写 `completedAt`。
-5. `deferred` 是标记而非状态：不改 `status`、不重置进度；暂缓任务不能有焦点、不能被领取。
-6. `archived` 任务从活跃树移除，其整棵子树一并归档；已归档任务仍有子任务未归档视为数据错误（应用归档时递归）。
-7. `focus` 中的任务必须未归档、未暂缓；设置焦点时若状态为 `pending` 则改为 `in_progress`；移除焦点不改变状态。
-8. 领取（claim）要求任务未归档、未暂缓、状态为 `in_progress`、已执行授权，且不被未解决的冲突停住；标准模式下整条工作线只有一个执行位，任何非终态执行存在时其他认领一律拒绝（含 Lead 换任务、子代理认领、已死会话占位）；只有持位者能 `release`/`complete`/`defer`/`archive` 自己的执行——替别人结束执行必须先 `interrupt_agent` 再 `release {force:true}`，不能借 defer/archive 绕过。分配（assign）和派工（dispatch）不是认领，不产生执行。
-9. 目标：`original` 只能写一次；`reviseGoal` 必须带 `reason`，追写 `changes`，并把 `current` 改为新值（调用方已向用户确认）。
-10. 工具写操作：`task_tree_write` 由 Lead 维护整棵树。标准模式下 `header.origin === 'subagent'` 的子会话只允许 `claim` / `release`（且只能领取分配给自己的任务），其他 op 一律拒绝；团队模式（`agentTeams.membership(agent).role === 'teammate'`，或非标准模式的 subagent）完全不允许写树：Lead 用 `dispatch` 派工，Worker 用自己的 `team_task_update {action:"claim"}` 绑定执行。读操作不限制。
-11. 执行授权（`executionApproval`）与状态独立：`pending` 的任务可以讨论、规划，但不能变成 `in_progress` 或被领取；`approved` 必须有用户的真实原话（`approvalBasis`，或从已批准的直接父任务继承）。执行中（已有 owner 或曾开始）的任务不能把授权改回 `pending`。
-12. 执行生命周期只有 `active` / `orphaned` / `ended` 三态，只有 `active` 授予 A 类工具权限；声明了却无法识别的状态按 `orphaned` 处理（fail closed，不授予权限、不静默释放）。`orphaned`（executor lost）只能由 Lead 在 `interrupt_agent` 并确认其停止后 `release {force:true}` 结束；结束执行同时结束该 Worker 的终身绑定（同一实例不能再领取第二个任务，重试需要新实例与新 `executionId`）。
-13. 冲突（`conflicts`）是工作线级记录，不是执行状态：未解决（`resolvedAt === null`）的冲突停住其任务（`scope: "workline"` 时停住整条工作线）的新 claim，Host 不猜执行者、不重建执行。只有 Lead 能 `resolveConflict`，记录 `resolvedAt`/`resolvedBy`/`resolution`（谁、何时、为什么）；解决后任务可以重新被领取。
-14. A 类工具在任何工作线都需要调用者持有该工作线的 `active` 执行，**没有任务树的工作线也照拒**：空树里没有可 claim 的任务，所以拒绝理由必须给出完整 bootstrap（`init` 建树 → `create` 建任务 → `claim` → 重试），不能只说"没有执行权"。B 类与 C 类不受影响——否则模型无法从零建立执行（claim 必须始终可达）。依据 `docs/adr/0001-every-write-needs-an-execution.md`。
-15. （留给 ADR 任务。）
-16. `expectedOutcome` / `nextStep` 与 `summary` 同规则：去空白、单行、≤240 字；空字符串表示未填写，创建与更新都可写。
-17. `temporary` 是布尔标记，`temporaryFor` 指向被打断的主线任务。`temporaryFor` 必须是同工作线、未归档的现有任务，不能指向自己；写入非空 `temporaryFor` 会同时把任务标为 `temporary: true`，`temporary: false` 或 `temporaryFor: null` 会清空链接；`temporary: true` 而没有任何来源任务时拒绝写入。
-18. 临时任务的打断链（沿 `temporaryFor` 前进）不能成环，即不能回到任务自己；临时任务完成即更新状态，不长期滞留成容器（`docs/requirements/REQUIREMENTS.md` §6.3、§16.18）。
+Host 只在 `task_tree_write` 的写路径上、对本次要写入的数据执行下列 11 条规则。**没有任何工具调用会在执行前被拒绝**（ADR-0003 宪法第 1 条）：不存在的工具前门禁、没有执行位、没有证据对账，`owner` 是记录而不是凭证，`claim` / `release` 不授予也不收回任何权限。提示词与工具描述里的「只有 Lead 维护这棵树」是约定，不是代码规则。
+
+1. **文本字段**：`title` 去空白后非空、≤40 字、单行；`summary`、`expectedOutcome`、`nextStep` 单行且 ≤240 字，`blockerReason`、`blockerUnblock` 单行且 ≤1000 字；`progress` ≤2000 字多行，`result` ≤500 字；`outline` ≤4000 字，`originalGoal` / `current` 单行 ≤4000 字，`reason` 单行 ≤1000 字；`deferredReason` / `resumeCondition` 单行 ≤500 字。`approvalBasis` / `acceptanceBasis` / `confirmationBasis` / `userBasis` 单行、≤200 字（走校验的路径另有 2 字下限）；前三者的用户原话校验见 9、10，`userBasis` 的校验见 4、5。空字符串表示未填写（`title` 除外）。
+2. **树形**：`parentId` 必须指向同工作线、未归档的现有任务；不能把自己或自己的后代设为父（成环）；`order` 为非负整数，省略时追加到同级末尾；`move` 不能移动已开始且未完成的交付任务。`depth` 由 Host 按树序计算。
+3. **完成**：父任务存在未完成、未归档的子任务时不能标 `done`（`pending` / `in_progress` / `blocked` 都算未完成；`deferred` 只是标记，暂缓中的未完成任务照样阻塞）；标 `done` 时清空 `blocker`、释放 `owner`、移出 `focus`，写 `completedAt` 与 `completion`。`settled` = 已完成且子树没有未完成项；已完成父任务后来新增未完成子任务时 `settled` 变回 `false`（面板显示未结算），但 `status` 仍是 `done`，完成/验收记录不重写。
+4. **暂缓**：`deferred` 是标记而非状态，不改 `status`、不重置进度；未完成的任务暂缓后不能进入 `focus`、不能 `claim`、不能 `complete`（需先 `resume`），已完成任务暂缓只留标记；`resume` 只清标记与原因。暂缓一个已开始或已授权、且未完成的交付必须带 `userBasis`（真实用户原话），因为这是缩小当前交付；从未授权的想法与已完成的工作是普通整理，不需要。
+5. **归档**：`archive` 把目标及其活跃子树整体归档（同一 `archiveBatch`），写 `archivedAt` / `archiveReason` / `archiveHistory`，并释放 `owner`、移出 `focus`；`restore` 保留原 id 与历史，回到仍活跃的最近祖先（原父已归档时重挂到更近的祖先或根），同一批归档的子树一起恢复。归档一个已开始或已授权、且未完成的交付（含其子树里任何这样的任务）同样必须带 `userBasis` 真实原话；归档是清空未完成交付的正当办法，不能靠 `move` 或 `defer` 假装完成。
+6. **焦点**：`focus` 整体替换集合，成员必须存在、未归档、未暂缓、未 `done`；设置焦点时若成员为 `pending` 且已授权则改为 `in_progress`，移除焦点不改变状态；完成 / 暂缓 / 归档会自动把任务移出焦点。
+7. **领取记录**：`claim` 要求任务活跃、未暂缓、`in_progress` 且已授权；同一时刻只有一个会话能持有同一任务，第二个会话的 `claim` 被拒（唯一保留的 compare-and-set，理由形如 `task t3 is already claimed by session …`），同会话重复 `claim` 只刷新记录；`release` 任何会话都可调用、不校验持有者；`complete` / `defer` / `archive` 清空记录。记录不授权任何工具调用。
+8. **目标**：`original` 每个工作线只写一次（`init` 只能成功一次）；`reviseGoal` 必须带 `reason`，且 `current` 必须与现值不同，追写一条 `changes`。
+9. **执行授权**：`executionApproval` ∈ { `approved`, `pending` }，与 `status` 独立；`pending` 任务不能变为 `in_progress`、不能 `claim`；显式 `approved` 必须带真实用户原话 `approvalBasis`（Host 在会话日志里核对），只有 `create` 在已批准的直接父任务下可以继承授权；已经开始的任务不能改回 `pending`。
+10. **验收与完成**：`requiresUserAcceptance` 顶层默认 `true`、子任务默认 `false`；需要验收的任务不能由 agent 自行完成，只能在用户验收后以 `confirmedByUser: true` + `confirmationBasis` 完成，该原话必须晚于任务创建/授权，且同一句只能验收一个任务；豁免验收需 `acceptanceBasis` 真实原话。自行完成的实现步骤记 `completion: "self"`。
+11. **临时任务**：`temporary` 为布尔；`temporaryFor` 必须指向同工作线、未归档且不是自己的现有任务，打断链不能成环；写非空 `temporaryFor` 会同时把任务标为 `temporary: true`，`temporary: false` 或 `temporaryFor: null` 清空链接，`temporary: true` 而没有来源则拒绝。
 
 ## 3. Agent 工具（Host 注册，模型可见）
 
-两个工具，均自动定位调用者的工作线。
+两个工具，均自动定位调用者的工作线；调用者身份取自活 Agent 的 session header（`host/session.js` 的 `callerOf`），从不读模型输入。
 
 ### `task_tree_read`
 
@@ -173,13 +179,9 @@ ConflictRecord = {
 
 ```
 { worklineId, goal: { original, current } | null, focus: string[],
-  conflicts: [{ id, scope: 'task'|'workline', taskId, kind, evidence,
-                createdAt, resolvedAt, resolvedBy, resolution }],
   tasks: [{ id, parentId, title, status, settled, approval, requiresUserAcceptance,
             deferred, blocked, owner: boolean,
             executor: { kind: 'lead'|'teammate'|'subagent', name, sessionId } | null,
-            executorLost: boolean,
-            executionState: 'active'|'orphaned'|'ended'|'missing' | null,
             temporary: boolean, temporaryFor: string | null,
             depth, summary?, expectedOutcome?, nextStep?, progress?, result?, completion?, approvalBasis?, acceptanceBasis? }],
   archived?: [{ id, parentId, title, status, approval, deferred, archivedAt,
@@ -187,7 +189,7 @@ ConflictRecord = {
   archivedTotal?: number }
 ```
 
-说明：按树序返回（父在前，同级按 order）；`depth` 由 Host 计算；未建树时返回 `worklineId` + `goal:null` + 空 `focus`/`conflicts`/`tasks`。`executionState` 是任务 claim 戳背后执行账本的状态：只有 `active` 授予 A 类工具权限，`orphaned`（executor lost）与 `ended` 都不授予，`missing` 表示戳指向的执行账本里没有记录（fail closed），`null` 表示任务没有执行。`conflicts` 是工作线的证据冲突，未解决项停住对应任务的 claim；只有 Lead 能解决。
+说明：按树序返回（父在前，同级按 order）；`depth` 由 Host 计算；未建树时返回 `worklineId` + `goal:null` + 空 `focus` / `tasks`。`executor` 是任务上的领取记录（最近一次声称「我在做」的会话：Lead / 具名 teammate / subagent），只是面板显示用的名字，不是权限。`settled`、`approval`、`requiresUserAcceptance` 与 `blocked` 都是派生值（见 §2）。
 
 ### `task_tree_write`
 
@@ -196,23 +198,19 @@ ConflictRecord = {
 ```
 {
   op: 'init'|'reviseGoal'|'create'|'update'|'move'|'defer'|'resume'|
-      'archive'|'restore'|'focus'|'assign'|'dispatch'|'claim'|'release'|
-      'complete'|'resolveConflict'
+      'archive'|'restore'|'focus'|'claim'|'release'|'complete'
   id?: string
   parentId?: string | null
   ids?: string[]
-  member?: string           // assign：子会话 id 或 "lead"（仅标准模式 Lead）；dispatch：团队成员名
-  teamTaskId?: string       // dispatch：对应的 Team-board 任务 id
-  conflictId?: string       // resolveConflict：要解决的冲突 id（如 "cf-1"）
   title?: string
   summary?: string
   expectedOutcome?: string  // 预期结果，单行 ≤240 字
   nextStep?: string         // 下一步，单行 ≤240 字
   temporary?: boolean       // 被紧急问题打断而插入的临时任务
-  temporaryFor?: string | null // 被打断的主线任务 id（校验见不变量 16-18）
+  temporaryFor?: string | null // 被打断的主线任务 id（校验见不变量 11）
   outline?: string
   current?: string          // reviseGoal
-  reason?: string           // reviseGoal / archive / release {force:true} / resolveConflict
+  reason?: string           // reviseGoal / archive
   status?: 'pending'|'in_progress'|'blocked'|'done'
   executionApproval?: 'approved' | 'pending'
   approvalBasis?: string    // 授权的用户原话（校验真实用户消息）
@@ -226,31 +224,27 @@ ConflictRecord = {
   deferredReason?: string
   resumeCondition?: string
   order?: number
-  force?: boolean           // release：Lead 强制结束别的会话的执行（需先 interrupt 并确认停止）
   confirmedByUser?: boolean // complete：用户已验收
   confirmationBasis?: string // complete：验收的用户原话
   originalGoal?: string     // init
 }
 ```
 
-行为：
+每个 op 只接受上表列出的字段；未知 op 或多余字段在写入前报错。行为：
 
 - `init`：工作线不存在时创建，写 `originalGoal`/`outline`；已存在则报错（不要覆盖）。
-- `create`：新建子任务，`parentId` 省略为顶层；返回新 id（`t1`…）。同级 order 默认追加。直接建在已批准父任务下的步骤继承授权。创建时写 `expectedOutcome` 说明"怎样算做完"。
+- `create`：新建子任务，`parentId` 省略为顶层；返回新 id（`t1`…）。同级 order 默认追加。直接建在已批准父任务下的步骤继承授权。创建时写 `expectedOutcome` 说明「怎样算做完」。`done` / `blocked` 不能作为初始状态。
 - `update`：局部更新 title/summary/expectedOutcome/nextStep/status/progress/result/blocker/executionApproval/requiresUserAcceptance；blocker 用两个字段，至少给 reason，两者都空表示清除；`status='done'` 走与 `complete` 相同的完成规则。记录进度时同时写 `nextStep`。
 - 被紧急问题打断：为紧急问题建一条 `temporary: true` + `temporaryFor: <原任务>` 的任务，转移焦点，修完后 resume 原任务（并清空临时任务的焦点）。
 - `move`：改 parentId / order；校验成环；已开始且未完成的交付任务不能移走。
-- `defer` / `resume`：见不变量 5；持有别人执行的任务不能 defer。
-- `archive` / `restore`：递归归档（同一批）子树；restore 保留原 id 与历史，回到仍活跃的最近祖先。
+- `defer` / `resume`：见不变量 4；defer 会清空领取记录与焦点。
+- `archive` / `restore`：见不变量 5；archive 必须带 `reason`，递归归档同一批子树。
 - `focus`：**整体替换**焦点集合（`ids: []` 表示清空）。
-- `assign`：标准模式 Lead 把任务路由给子会话或收回给自己；只能在没有活动执行时分配，分配本身不产生执行。
-- `dispatch`：团队模式 Lead 把树任务关联到 Team-board 任务并派给某个成员；不写 owner、不产生执行，Worker 自己的 board claim 才创建执行。
-- `claim` / `release`：执行占用。校验授权、状态、冲突与终身绑定后，每次 claim 分配新的单调 `executionId`，结束的执行只追加终态，不复活。`release {force:true}` 只能由 Lead 使用，且必须先有 `interrupt_agent` 记录并证明 worker 已停止；它同时结束该 Worker 的终身绑定。
-- `complete`：校验子任务全部结束；`requiresUserAcceptance` 的任务必须等用户验收（`confirmedByUser: true` + `confirmationBasis`），其余可自验完成。
-- `resolveConflict`：仅 Lead。把一条冲突标记为已解决，写 `resolvedAt`/`resolvedBy`/`resolution`；解决后该任务可以重新被领取。不指定执行者、不复活执行。
-- 一次调用内先全量校验再写入；返回 `{ ok: true, worklineId, applied: [{op, id?, executionId?, conflictId?}] }` 或抛出可读错误（含任务 id 与原因）。
+- `claim` / `release`：领取记录，不是权限。`claim` 校验活跃、未暂缓、`in_progress`、已授权，并拒绝第二个会话（compare-and-set）；`release` 直接清空记录，任何会话都可调用。二者都不写执行账本、不发号、不复活任何东西。
+- `complete`：校验子任务全部结束；`requiresUserAcceptance` 的任务必须等用户验收（`confirmedByUser: true` + `confirmationBasis`），其余可自验完成（`completion: "self"`）；已完成但未验收的任务可以补记用户验收。
+- 一次调用内先全量校验再写入；返回 `{ ok: true, worklineId, applied: [{op, id?}] }` 或抛出可读错误（含任务 id 与原因）。
 
-工具描述（description）必须写清：何时读、何时写、短标题、不为琐碎修复建节点、完成前询问用户、目标修订需确认、只 Lead 维护。
+工具描述（description）必须写清：何时读、何时写、短标题、不为琐碎修复建节点、完成前询问用户、目标修订需确认、只 Lead 维护（约定而非强制）、`claim`/`release` 只是记录。
 
 ## 4. HTTP API（Host，Client 只读消费）
 
@@ -265,22 +259,19 @@ ConflictRecord = {
   "goal": { "original": "…", "current": "…", "changes": [{ "at": 0, "reason": "…", "previous": "…", "next": "…" }] },
   "outline": "…",
   "focus": ["t3"],
-  "conflicts": [
-    { "id": "cf-1", "scope": "task", "taskId": "t1", "kind": "unproven-claim",
-      "evidence": { "boardRevision": 2 }, "createdAt": 0,
-      "resolvedAt": null, "resolvedBy": null, "resolution": null }
-  ],
   "updatedAt": 0,
   "tasks": [
     { "id": "t1", "parentId": null, "order": 0, "title": "用户登录",
       "summary": "…", "expectedOutcome": "…", "nextStep": "…",
       "temporary": false, "temporaryFor": null,
       "status": "in_progress", "settled": false,
-      "executionApproval": "approved", "requiresUserAcceptance": true,
+      "executionApproval": "approved", "approvalBasis": "…", "approvalAt": 0,
+      "requiresUserAcceptance": true, "acceptanceBasis": null,
       "deferred": false, "deferredReason": null, "resumeCondition": null,
       "blocker": null, "progress": "…", "result": null,
-      "ownerSessionId": "session-…", "ownerLive": true,
-      "executorLost": false, "completion": null, "updatedAt": 0 }
+      "ownerSessionId": "session-…", "ownerName": null, "ownerLive": true,
+      "completion": null, "completionBasis": null, "completedAt": null,
+      "updatedAt": 0 }
   ],
   "archived": [
     { "id": "t9", "parentId": null, "title": "短信登录", "archiveReason": "…", "archivedAt": 0 }
@@ -290,9 +281,9 @@ ConflictRecord = {
 ```
 
 - 只返回未归档任务的完整数据；`archived` 最多 200 条（按 archivedAt 倒序）。
-- `conflicts` 是工作线的证据冲突（含已解决项，带 `resolvedAt`/`resolvedBy`/`resolution`）：`resolvedAt === null` 且 `taskId` 匹配（或 `scope === "workline"`）的任务正处于被停住状态，面板据此提示「等待解决」。
-- `executorLost: true` 表示执行者会话已无法解析；该执行不授予权限、不会被自动释放，只能由 Lead 在中断并确认停止后 `release {force:true}`。
-- 没有建树时：`available: true`，`goal: null`，`tasks: []`，`focus: []`，`conflicts: []`。
+- `ownerSessionId` / `ownerName` / `ownerLive` 是领取记录：谁在任务上做了标记、那个会话现在是否还活着。它们只用于显示，不表示权限；`ownerLive: false` 表示记录里的会话已不在，面板显示「已离线」，任何会话都可以 `release` 后重新 `claim`。
+- `settled` 是派生值：已完成且子树没有未完成项（见 §2 不变量 3）。
+- 没有建树时：`available: true`，`goal: null`，`tasks: []`，`focus: []`，`archived: []`，`archivedCount: 0`。
 - 存储不可用时：`{ "available": false, "reason": "no-storage" }`；会话未知：现有路由行为（404）。
 
 ### `GET /summary-panel/tasks/status?sessionId=…`
@@ -354,12 +345,12 @@ v1 用轮询，不做 SSE：面板打开时任务树 1.5s、详情 tab 3s、入�
 - 所有路由沿用现有 `route()` 封装与信任围栏；新增路由路径不得与既有冲突。
 - 域名与任务 id 不得含 `/`、`..`（per-record 文件路径要求 `[a-zA-Z0-9_-]+`；会话 id 形如 `session-<uuid>` 可用）。
 - 写操作要 `updatedAt`、工作线 `updatedAt` 同步。
-- 单测：`node test/host.mjs && node test/tasks.mjs`，纯逻辑不引入 dsh 依赖（`host/model.js` 不 import dsh/zod）。
+- 单测：`npm test`（isolation / modules / host-contract / host / tasks / client），纯逻辑不引入 dsh 依赖（`host/model.js` 不 import dsh/zod）。`node test/modules.mjs` 逐个加载 `host/*.js`：删模块时残留的 `import` 会在这里变红；`node test/host-contract.mjs` 保证模型可见文本与 `client.js` 不广告已删除的 op 或字段。
 
 ## 7. 验收（Lead 集成时执行）
 
 1. 两半通过语法检查：`node --check index.js`、`node --check client.js`。
-2. `node test/host.mjs`、`node test/tasks.mjs` 全绿。
+2. `npm test` 全绿（含 `node test/modules.mjs`：每个 `host/*.js` 都可加载）。
 3. 契约字段一致（客户端读取的字段 = Host 返回的字段）。
 4. 现有四个分区行为不变；插件加载无报错。
 5. live 验证：工具出现在 Agent 工具列表、`/summary-panel/tasks` 返回预期 JSON、面板显示任务树、入口呼吸灯出现、点击打开右栏详情。

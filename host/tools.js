@@ -14,7 +14,7 @@
  * a teammate, and `claim`/`release` only record who is working on a task.
  */
 
-import { callerOf } from './caller.js';
+import { callerOf } from './session.js';
 import {
   EXECUTION_APPROVALS, TASK_STATUSES, applyOps, readSnapshot,
 } from './model.js';

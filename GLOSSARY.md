@@ -55,48 +55,28 @@ _代码_：`archiveBatch` 记录批次，`restore` 按批次还原，避免连�
 
 ## 执行与协作
 
-**执行者 / 执行实例**
-当前真正在做这个任务的会话。标准模式下是 Lead 自己或其 Subagent；团队模式下是一个 Worker。
+**执行者 / 领取记录（owner）**
+当前标记了"我在做"这个任务的会话，写在 `task.owner`，是记录不是凭证：不授权、不拒绝任何工具调用。
+`claim` 写下它，`release` / 完成 / 暂缓 / 归档清空它；同一任务同时只允许一个会话持有（唯一的 compare-and-set）。
+_代码_：`host/model.js` 的 `applyClaim` / `applyRelease` / `executorOf`。
 
 **子智能体（subagent）**
 由 `subagent` 工具创建的一次性/可续子会话，`origin: 'subagent'`。
 
 **团队成员（teammate）**
-Agent Team 里的命名成员，身份由 roster 的 `member.id`（= 子会话 id）确定。
+Agent Team 里的命名成员。插件不再解析 roster：老记录里 `owner.member` 存的名字只用于面板显示。
 
-**派发（dispatch）**
-Lead 让某个 Worker 去认领某个任务的路由提示。**派发不是分配**：分配事实是 Team Board 的 `ownerId`，由 claim 产生。
-
-**执行（execution）**
-一次"某会话持有某任务"的登记，写在 `workline.executions[]`，终态不可复活。
-**只有认领证据才能建立执行**：派发、分配、Board 上的 `ownerId` 单独都不算证据。
-
-**执行证据（claim evidence）**
-证明一次认领真的发生过的三件套：认领意图日志、Board revision 恰好 +1 且 owner 匹配、Worker 未终结。
-缺一即「冲突」，Host 绝不猜执行者。
-
-**认领意图日志（claim journal）**
-认领 Board 调用**之前** `fsync` 落盘的意图记录（`<workline>.claims.jsonl`）：roster 会话 id、成员名、期望 revision、Registry callId。
-是索引不是真相：丢了只会减少权限。崩溃后重启靠它把"Board 已提交、账本未写"补成一条执行。
-
-**执行账本 / Worker 台账 / 执行戳**
-三处镜像：`workline.executions[]`、`workline.workers{}`、`task.owner`。同一次原子写落盘；
-对账改它们时都带 `executionId` 守卫，旧一轮的决定不会清掉新一轮。
-
-**冲突（conflict）**
-证据矛盾时挂在工作线上的记录（`workline.conflicts[]`），不是执行状态。
-它阻止该任务的新认领、不建不删不复活执行，等人工处理。种类：`unproven-claim`、`claim-without-record`、`ended-but-owned`、`seat-ambiguous`。
-
-**对账（reconcile）**
-进程内每条工作线在第一次工具调用前（guard 判定之前）把三处镜像收敛为一致状态：可证明则重建一条执行，Board 已完成/释放则结束执行，无法证明则只记冲突。幂等，第二次重启不再产生新执行。
-_代码_：`host/reconcile.js` 的 `convergeWorkline`。
+**已拆除的执行语汇（历史）**
+`执行（execution）`、执行证据、认领意图日志、执行账本 / Worker 台账 / 执行戳、冲突、对账、派发都是 v0.4.0 拆掉的
+执行层概念（ADR-0003），代码已不存在；它们还留在 ADR-0001、ADR-0003、老 json，以及 #19 / #20 待改写的 CHANGELOG、`docs/implementation-status.md`、需求文档与 e2e 里。
+现行语义见 ADR-0003 决策表与 `docs/CONTRACT.md` 不变量 7。
 
 ---
 
 ## 交付与校验
 
 **验收依据（completionBasis / approvalBasis / acceptanceBasis / userBasis）**
-分别是：完成时的用户原话、授权时的用户原话、免除验收时的用户原话、暂缓/归档时的用户原话。都由 `host/evidence.js` 与真实用户消息逐条比对，模型伪造不了。
+分别是：完成时的用户原话、授权时的用户原话、免除验收时的用户原话、暂缓/归档时的用户原话。前三者由 `host/evidence.js` 与真实用户消息逐条比对，模型伪造不了；`userBasis` 只在暂缓/归档缩小一份已授权、未完成的交付时校验（`docs/CONTRACT.md` 不变量 4、5）。
 
 **交付完成（delivery complete）**
 父任务能否关闭的判定：只有 `done` 与归档不阻塞；`pending`、`in_progress`、`blocked`、`deferred` 在任何深度都阻塞。
