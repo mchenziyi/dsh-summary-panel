@@ -6,7 +6,7 @@
 
 ## 0. 范围与文件所有权
 
-仓库：`/Users/czy/.dsh/bot/workspace/summary-panel`（git，v0.2.0，已以 link 方式装在 desktop profile）。
+仓库：本仓库根目录（git）。当前版本与安装方式见 `docs/implementation-status.md`。
 
 | 文件 | 所有者 | 说明 |
 |---|---|---|
