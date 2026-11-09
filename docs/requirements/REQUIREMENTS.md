@@ -590,7 +590,7 @@ Lead 根据实际结果更新进度
 
 ### 15.2 技术核查结论（2026-10-30，已核实）
 
-核查对象：`@mchenziyi/dsh-summary-panel` v0.2.0，源码 `/Users/czy/.dsh/bot/workspace/summary-panel`，以 link 方式装在 desktop profile；DSH 版本 0.2.1-rc.5。
+核查对象：本仓库（当时 `@mchenziyi/dsh-summary-panel` v0.2.0，以 link 方式装在 desktop profile）；DSH 版本 0.2.1-rc.5。
 
 | 能力 | 结论 | 依据 |
 |---|---|---|

@@ -1,0 +1,9 @@
+# Keep the checkout identical on every OS: LF everywhere, explicit binaries.
+# Without this a Windows clone gets CRLF, the working tree looks dirty on the
+# first `git status`, and the pre-commit hook compares files that only differ by
+# line endings.
+* text=auto eol=lf
+*.webp binary
+*.png binary
+*.jpg binary
+*.ico binary
