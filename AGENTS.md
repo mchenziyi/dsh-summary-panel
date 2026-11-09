@@ -15,7 +15,7 @@ A DSH summary panel: named markdown summaries of a session, plus the agent-maint
 
 ## Checks
 
-`npm test` runs the harness suites, the harness-hygiene check (`test/isolation.mjs`) and the docs-contract check (`test/docs-contract.mjs`); `npm run test:e2e` runs the real-process scenarios (needs a `dsh` launcher, see `test/e2e/README.md`). CI runs both. The pre-commit hook runs `npm test`; enable it once per clone with `git config core.hooksPath .githooks`.
+`npm test` runs the harness suites, the harness-hygiene check (`test/isolation.mjs`) and the docs-contract check (`test/docs-contract.mjs`); `npm run test:e2e` runs the real-process scenarios (needs a `dsh` launcher, see `test/e2e/README.md`). CI runs both. Commits go on a ticket branch: the pre-commit hook refuses a commit on `main` and runs `npm test`, and `.githooks/pre-push` refuses a push to `main` (all main updates arrive through a pull request). Enable both once per clone with `git config core.hooksPath .githooks`.
 
 Run `/code-review` on a committed HEAD: commit or amend first, so both axes review the same tree (an uncommitted tree makes the reviewers caveat every finding).
 

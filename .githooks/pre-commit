@@ -1,9 +1,26 @@
 #!/bin/sh
-# The repo's only quality gate: `npm test` must pass before anything lands.
-# Installed through `git config core.hooksPath .githooks`, so the hook travels
+# Two gates before anything lands:
+#   1. a commit goes on a ticket branch, never straight onto main — main only
+#      moves through a pull request (a branch guard is what would have caught
+#      the two #20 commits that landed on local main by mistake);
+#   2. `npm test` must pass.
+# Installed through `git config core.hooksPath .githooks`, so the hooks travel
 # with the repo instead of living in an untracked .git/hooks file.
 set -e
 cd "$(git rev-parse --show-toplevel)"
+
+branch="$(git symbolic-ref --short -q HEAD || true)"
+case "$branch" in
+  main|master)
+    if [ "${REINS_ALLOW_MAIN_COMMIT:-}" != "1" ]; then
+      echo "pre-commit: refusing to commit on '$branch'." >&2
+      echo "  main moves through pull requests: git switch -c <ticket-branch> first." >&2
+      echo "  (one-off override: REINS_ALLOW_MAIN_COMMIT=1 git commit ...)" >&2
+      exit 1
+    fi
+    ;;
+esac
+
 log="$(mktemp -t reins-pre-commit)"
 if ! npm test >"$log" 2>&1; then
   echo "pre-commit: npm test failed." >&2

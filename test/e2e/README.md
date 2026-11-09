@@ -77,6 +77,11 @@ run never looks for the wrong file.
 
 - The model is scripted, not a real provider: runs are deterministic and need
   no credentials, but a scenario can only see the tool calls its script makes.
+- Scripted calls use the **real** tool schemas, so a wrong argument shape comes
+  back as a tool error — read `tool-results.json` → `calls[].status: "error"`
+  and its `result` text. Two shapes are in use today: `write { file_path,
+  content }` and `bash { command, description }` (`description` is required).
+  While iterating, run one scenario: `npm run test:e2e -- <name>`.
 - The harness assumes `dsh` is on `PATH` (override with `DSH_BIN`). It prefers a
   real PATH launcher over an npm-injected `node_modules/.bin` shim, because an
   ancestor project's older `dsh` may accept `--json` yet not resolve this
