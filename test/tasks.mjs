@@ -2704,4 +2704,44 @@ function assertSchema(schema, value, path = 'value') {
   assert.equal(rewritten.tasks[0].owner, null, 'release cleared the record');
 }
 
+{
+  // The panel payload (HTTP projection) is built from the same old record: it
+  // must render a ledger-bearing tree with no ledger and no crash (#20 item ④).
+  const legacy = {
+    version: 1,
+    workline: {
+      id: 'session-panel-old',
+      createdAt: 1,
+      updatedAt: 2,
+      goal: { original: '旧目标', current: '旧目标', changes: [] },
+      outline: '',
+      focus: [],
+      nextSeq: 2,
+      nextExecution: 3,
+      executions: [{
+        executionId: 'ex-1', taskId: 't1', sessionId: 'worker-session', attempt: 1, mode: 'team',
+        state: 'active', startedAt: 1, updatedAt: 2,
+      }],
+      workers: { 'worker-session': { kind: 'teammate', name: 'worker-a', state: 'bound', boundTaskId: 't1', executionId: 'ex-1' } },
+      conflicts: [{
+        id: 'cf-1', scope: 'task', taskId: 't1', kind: 'unproven-claim', evidence: { boardRevision: 2 }, createdAt: 1, resolvedAt: null,
+      }],
+    },
+    tasks: [{
+      id: 't1', worklineId: 'session-panel-old', parentId: null, order: 0, title: '老任务', status: 'in_progress',
+      executionApproval: 'approved', owner: { sessionId: 'worker-session', executionId: 'ex-1', member: 'worker-a', since: 1 },
+      createdAt: 1, updatedAt: 2,
+    }],
+  };
+  const http = httpSnapshot(legacy, 'session-panel-old', { isLive: () => false });
+  assert.equal(http.available, true);
+  assert.equal(http.tasks.length, 1);
+  assert.equal(http.tasks[0].title, '老任务');
+  assert.equal(http.tasks[0].status, 'in_progress');
+  assert.equal(http.tasks[0].ownerSessionId, 'worker-session');
+  assert.equal(http.tasks[0].ownerName, 'worker-a', 'the old member name still shows in the panel');
+  assert.equal(http.tasks[0].ownerLive, false, 'a session that cannot be resolved shows as offline');
+  assert.equal('conflicts' in http, false, 'the panel payload has no conflicts list');
+}
+
 console.log('tasks ok');

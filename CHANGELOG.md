@@ -11,6 +11,7 @@
 - **执行门禁**：A/B/C 三类工具分类、`ctx.tools.guard`、并发占位、执行权校验、空工作线也拒绝的 bootstrap 分支。任何工具调用都不再需要先建树或先 claim。
 - **执行账本与证据层**：`workline.executions[]` / `workers{}` / `conflicts[]`、`executionId`、执行状态 `active|orphaned|ended`、失联标记、强制释放 `release {force:true}`、`interrupt` 证据、认领意图日志、崩溃对账、roster 身份解析、Team claim 绑定；对应模块 `host/{guard,reservation,journal,reconcile,recovery,lifetime,team-lifetime,binding,roster,caller}.js` 全部删除。
 - **三个 op**：`assign`、`dispatch`、`resolveConflict`；`task_tree_write` 收敛为 13 个 op。`claim` / `release` 保留，但从"分配执行号、校验持有者"降为**记录**：写下谁在做，交还；唯一的机械规则是一次 compare-and-set（第二个会话的 claim 被拒）。
+- **e2e 装置里属于执行层的部分**：认领意图日志采集、Team board 探针、崩溃注入 fixture 与团队/子代理脚本扩展，随 18 个场景一起删除。
 - **面板上的执行痕迹**：`executorLost` / `executionState` / 冲突视图的字段与文案；任务详情只显示领取记录（谁在做、是否在线）。
 - **0.3.7 之后从未发布的"取消空工作线豁免"反转**（ADR-0001）：整层都不发布，这条反转也随之撤回。
 - `docs/CONTRACT.md` 不变量 18 → 11；执行相关字段保留结构定义但标 `@deprecated`（老 json 读取时忽略，不迁移、不重写）。
@@ -20,7 +21,7 @@
 - **提示词**（`host/prompt.js`）：不再教 claim / 执行位 / 终身绑定；改为"**动手前先更新任务树，并保持进展 / 下一步 / 结果最新**"，并说明后果——不维护树，用户打开面板就是空的，写旧了就是过时的进度。两档提醒同步改写。
 - **任务域的语义**：`task.owner` 从凭证降为记录；"只有 Lead 维护这棵树"从代码拒绝改为提示词约定；团队模式不再有特殊执行规则。
 - **仍在写入时校验的规则**保持不变：未授权任务不能变 `in_progress`、授权与验收原话必须能在真实用户消息里核对、父任务有未完成子任务时不能完成、已授权未完成的交付要暂缓/归档必须带用户原话。
-- 18 个 e2e 场景删到 2 个：保留 `baseline-write`（无树时 `write` 必须成功——门禁不许回来）与 `tree-init`；#20 再把它们整理成 3 个验收场景。
+- 18 个 e2e 场景删到 3 个验收场景：`tree-basics`（含旧 JSON 夹具：旧树可读、不迁移）、`acceptance`（交付任务不能自证完成）、`no-gate`（无树、无 claim 时 `write` / `bash` 必须成功——门禁不许回来）。
 
 ### Added
 
