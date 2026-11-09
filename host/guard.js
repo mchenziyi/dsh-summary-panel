@@ -45,8 +45,13 @@
  * is released only by that call's own tool result (or its agent going idle),
  * never by a timer.
  *
- * A workline with no persisted tree is unmanaged: nothing is restricted, so
- * ordinary sessions are never affected (design §14.4).
+ * A workline with no persisted tree gets no exemption: the absence of a tree
+ * is the absence of anything to claim, so class A is refused there too, and
+ * the refusal teaches the bootstrap sequence (init -> create -> claim ->
+ * retry) instead of a bare "no execution" (ADR-0001). Refusing a workline that
+ * has not been brought under the task tree is the whole point: a model that
+ * judges its own edit "trivial, no tree needed" used to write straight to the
+ * workspace, so the only way into class A is a tree with a claimed task.
  */
 
 import { callerOf } from './caller.js';
@@ -341,12 +346,28 @@ function teamClaimReason({ membership, store, exec }) {
   return undefined;
 }
 
-/** The model-readable denial. It names the missing execution and the way out. */
-export function denialReason({ tool, sessionId, worklineId }) {
+/**
+ * The model-readable denial. It names the missing execution and the way out.
+ *
+ * There is one refusal for every unclaimed class A call; only the way out
+ * differs. A workline with a tree has tasks to claim, so it says "claim a
+ * task". A workline with no tree has nothing to claim, so it has to say the
+ * whole bootstrap sequence — otherwise the model is told to do something it
+ * cannot do yet (ADR-0001).
+ * @param options - `{ tool, sessionId, worklineId, hasTree }`; `hasTree` is
+ *   whether the workline has a persisted tree to claim in.
+ */
+export function denialReason({
+  tool, sessionId, worklineId, hasTree = true,
+}) {
   return [
     `${tool} is a class A tool (workspace modification or code execution), and session ${sessionId}`
     + ` holds no active execution for workline ${worklineId}.`,
-    'Claim a task first: task_tree_write {"op":"claim","id":"<task>"}.',
+    hasTree
+      ? 'Claim a task first: task_tree_write {"op":"claim","id":"<task>"}.'
+      : 'This workline has no task tree yet, so there is nothing to claim.'
+        + ' Bootstrap it, then retry this exact call: task_tree_write {"op":"init","originalGoal":"<the goal>"}'
+        + ' -> task_tree_write {"op":"create","title":"<task>",...} -> task_tree_write {"op":"claim","id":"<task id>"}.',
     'Task-management tools (claim, release, task_tree_*) are class B and need no execution, which is why claim can never depend on itself.',
   ].join(' ');
 }
@@ -465,7 +486,10 @@ export function createExecutionGuard({ ctx, store, seats }) {
         ? membership.root.id
         : worklineOf(ctx, caller.sessionId, caller.header);
       const tree = store.snapshot(worklineId);
-      if (tree.present !== true) return undefined;
+      // No exemption for an empty workline: `tree.present !== true` is not a
+      // free pass, it is a workline with no claim stamp and no task to claim.
+      // It falls through to the same refusal as any other unclaimed call, with
+      // `hasTree: false` so the way out names the bootstrap sequence.
       const stamped = stampedTask(tree.tasks, caller.sessionId);
       if (stamped !== undefined) {
         // The stamp is the index; the ledger row is the record. Only `active`
@@ -494,7 +518,12 @@ export function createExecutionGuard({ ctx, store, seats }) {
         && lifetime.state === 'ended' && lifetime.endReason === 'force-terminated') {
         return terminatedWorkerReason({ tool: label, sessionId: caller.sessionId, lifetime });
       }
-      return denialReason({ tool: label, sessionId: caller.sessionId, worklineId });
+      return denialReason({
+        tool: label,
+        sessionId: caller.sessionId,
+        worklineId,
+        hasTree: tree.present === true,
+      });
     } catch (error) {
       // Fail closed: an unreadable gate never widens permission.
       return `${label} was denied because the execution gate could not resolve this workline's task tree`;

@@ -1,31 +1,49 @@
 /**
- * The execution gate: class A tools need an active execution (design v8 §3).
+ * The execution gate: every class A tool needs an active execution (design v8
+ * §3, amended by ADR-0001 — the no-tree exemption is gone).
  *
- * One scripted session proves the whole narrow slice in order:
+ * One scripted session proves the whole slice in order:
  *
- *   1. no task tree yet        -> `write` succeeds (an unmanaged workline is free)
+ *   1. no task tree yet        -> `write` and `bash` are refused, nothing lands,
+ *                                 and the refusal names the bootstrap path:
+ *                                 init -> create -> claim
  *   2. tree initialised        -> `task_tree_write` still works (class B)
- *   3. tree exists, no claim   -> `write` and `bash` are refused, and nothing lands on disk
- *   4. after `claim`           -> `write` succeeds
- *   5. after `release`         -> `write` and `bash` are refused again immediately
+ *   3. tree exists, no claim   -> `write` and `bash` are refused, and nothing
+ *                                 lands on disk
+ *   4. after `claim`           -> the SAME write refused in step 1 succeeds
+ *   5. after `release`         -> `write`, `edit` and `bash` are refused again
+ *                                 immediately, and the edit leaves its real
+ *                                 target untouched
  *   6. still no execution      -> task-management calls keep working
  *
+ * Step 4 is the bootstrap proof: the workline starts with nothing but a
+ * refusal, and the model has to build a tree, create a task and claim it
+ * before the identical call is accepted.
+ *
  * The denial is observed through the tool result (`status: "error"`, a reason
- * naming the missing execution) and through the workspace (the refused files
- * are absent), which together show the call was denied before any side effect.
+ * naming the missing execution) and through the workspace, which together show
+ * the call was denied before any side effect. A refused call is proven to have
+ * written nothing by a sentinel path that is never written again in the run —
+ * `boot.txt` cannot carry that proof, because a later call writes it on
+ * purpose.
  */
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export const name = 'execution-gate';
-export const summary = 'Class A tools are refused until claim, and refused again after release';
+export const summary = 'Class A is refused with no tree and before claim, and refused again after release';
 export const team = false;
-export const prompt = 'Prove the execution gate: initialise a task tree, try a workspace change before and after claiming the task, and use "prove the execution gate" as the approval basis.';
+export const prompt = 'Prove the execution gate: try a workspace change with no task tree, then bootstrap a tree and claim a task, then try the same change again. Use "prove the execution gate" as the approval basis.';
 export const program = [
-  // 1. No tree yet: the workline is unmanaged, so a class A tool is free.
-  { tool: 'write', arguments: { file_path: 'unmanaged.txt', content: 'no tree yet\n' } },
-  // 2. Class B works with no execution: init the tree and create an approved,
+  // 1. No tree yet: nothing to claim, so nothing may be written either. The
+  //    sentinel is never touched again, so its absence later is the proof.
+  { tool: 'write', arguments: { file_path: 'must-not-land.txt', content: 'no tree yet\n' } },
+  { tool: 'bash', arguments: { command: 'printf "no tree yet\\n" > shell-no-tree.txt', description: 'write a sentinel file before the tree exists' } },
+  // 2. The same write the scenario retries in step 5, refused once with no
+  //    tree at all: this is the call that has to become allowed after bootstrap.
+  { tool: 'write', arguments: { file_path: 'boot.txt', content: 'bootstrapped\n' } },
+  // 3. Class B works with no execution: init the tree and create an approved,
   //    in-progress task in one call.
   {
     tool: 'task_tree_write',
@@ -43,28 +61,35 @@ export const program = [
       ],
     },
   },
-  // 3. Tree exists, no execution: both workspace-modifying tools are refused.
+  // 4. Tree present, no execution: class A is still refused.
   { tool: 'write', arguments: { file_path: 'before-claim.txt', content: 'must not land\n' } },
-  { tool: 'edit', arguments: { file_path: 'unmanaged.txt', old_string: 'no tree yet', new_string: 'must not land' } },
   { tool: 'bash', arguments: { command: 'printf "must not land\\n" > shell-before-claim.txt', description: 'write a sentinel file before claiming' } },
-  // 4. Claim is class B: it needs no execution of its own.
+  // 5. Claim is class B: it needs no execution of its own.
   { tool: 'task_tree_write', arguments: { ops: [{ op: 'claim', id: 't1' }] } },
-  // 5. Holding the execution: the same class A tool is allowed.
-  { tool: 'write', arguments: { file_path: 'after-claim.txt', content: 'written while claimed\n' } },
-  // 6. Releasing drops the execution immediately.
+  // 6. Holding the execution: the identical call refused in step 2 is allowed.
+  { tool: 'write', arguments: { file_path: 'boot.txt', content: 'bootstrapped\n' } },
+  // 7. A real file for the post-release edit refusal to leave untouched.
+  { tool: 'write', arguments: { file_path: 'target.txt', content: 'original\n' } },
+  // 8. Releasing drops the execution immediately.
   { tool: 'task_tree_write', arguments: { ops: [{ op: 'release', id: 't1' }] } },
   { tool: 'write', arguments: { file_path: 'after-release.txt', content: 'must not land either\n' } },
   { tool: 'bash', arguments: { command: 'printf "must not land\\n" > shell-after-release.txt', description: 'write a sentinel file after releasing' } },
-  // 7. Task management still works with no execution: add a follow-up step and read.
+  { tool: 'edit', arguments: { file_path: 'target.txt', old_string: 'original', new_string: 'must not land' } },
+  // 9. Task management still works with no execution: add a follow-up step and read.
   { tool: 'task_tree_write', arguments: { ops: [{ op: 'create', title: 'Follow-up', parentId: 't1' }] } },
   { tool: 'task_tree_read', arguments: {} },
   { text: 'execution gate exercised' },
 ];
 
-/** Find the write call for one path, and the bash call whose command names one. */
-function writeCall(calls, path) {
-  return calls.find((call) => call.tool === 'write' && call.input?.file_path === path);
+/** Every write call for one path, in call order. */
+function writeCalls(calls, path) {
+  return calls.filter((call) => call.tool === 'write' && call.input?.file_path === path);
 }
+/** The first write call for one path. */
+function writeCall(calls, path) {
+  return writeCalls(calls, path)[0];
+}
+
 function bashCall(calls, path) {
   return calls.find((call) => call.tool === 'bash' && typeof call.input?.command === 'string' && call.input.command.includes(path));
 }
@@ -76,6 +101,11 @@ async function exists(workdir, path) {
   } catch {
     return undefined;
   }
+}
+
+/** The model-readable reason of one call, or an empty string. */
+function reasonOf(call) {
+  return typeof call?.result === 'string' ? call.result : '';
 }
 
 /**
@@ -103,17 +133,28 @@ export async function verify({ artefacts, workdir }) {
   const taskCalls = calls.filter((call) => call.tool === 'task_tree_write');
   const assertions = [];
 
-  // 1. An unmanaged workline: no tree, no constraint.
-  const unmanaged = writeCall(calls, 'unmanaged.txt');
+  // 1. No tree: refused, and the reason has to teach the bootstrap path.
+  const bootstrapWrite = writeCall(calls, 'must-not-land.txt');
+  const bootstrapBash = bashCall(calls, 'shell-no-tree.txt');
+  denied(assertions, bootstrapWrite, 'write with no task tree', 'write');
+  denied(assertions, bootstrapBash, 'bash with no task tree', 'bash');
   assertions.push({
-    label: 'before the tree exists, write is unconstrained',
-    ok: unmanaged !== undefined && unmanaged.status === 'completed',
-    detail: unmanaged === undefined ? 'no write call for unmanaged.txt' : `status=${unmanaged.status}`,
+    label: 'the no-tree refusal names the bootstrap path (init, create, claim)',
+    ok: bootstrapWrite !== undefined && reasonOf(bootstrapWrite).includes('no task tree')
+      && reasonOf(bootstrapWrite).includes('init')
+      && reasonOf(bootstrapWrite).includes('create')
+      && reasonOf(bootstrapWrite).includes('claim'),
+    detail: bootstrapWrite === undefined ? 'no write call for must-not-land.txt' : JSON.stringify(bootstrapWrite.result),
   });
   assertions.push({
-    label: 'the unmanaged write landed on disk',
-    ok: (await exists(workdir, 'unmanaged.txt')) === 'no tree yet\n',
-    detail: 'unmanaged.txt',
+    label: 'the refused no-tree write left no file',
+    ok: (await exists(workdir, 'must-not-land.txt')) === undefined,
+    detail: 'must-not-land.txt (never written again in this run)',
+  });
+  assertions.push({
+    label: 'the refused no-tree bash left no file',
+    ok: (await exists(workdir, 'shell-no-tree.txt')) === undefined,
+    detail: 'shell-no-tree.txt',
   });
 
   // 2. Class B needs no execution: init + create, then claim and release.
@@ -133,22 +174,21 @@ export async function verify({ artefacts, workdir }) {
     detail: taskCalls[2] === undefined ? 'no release call' : `status=${taskCalls[2].status} result=${JSON.stringify(taskCalls[2].result)}`,
   });
 
-  // 3. No execution: class A refused, with nothing written.
+  // 3. Tree present, no execution: class A refused, with nothing written.
   const beforeWrite = writeCall(calls, 'before-claim.txt');
-  const beforeEdit = calls.find((call) => call.tool === 'edit' && call.input?.file_path === 'unmanaged.txt');
   const beforeBash = bashCall(calls, 'shell-before-claim.txt');
   denied(assertions, beforeWrite, 'write before claim', 'write');
-  denied(assertions, beforeEdit, 'edit before claim', 'edit');
   denied(assertions, beforeBash, 'bash before claim', 'bash');
+  // A workline that HAS a tree points the model at claim instead of bootstrap.
+  assertions.push({
+    label: 'the before-claim refusal says to claim a task',
+    ok: beforeWrite !== undefined && reasonOf(beforeWrite).includes('Claim a task first'),
+    detail: beforeWrite === undefined ? 'no write call for before-claim.txt' : JSON.stringify(beforeWrite.result),
+  });
   assertions.push({
     label: 'the refused write left no file (denied before any side effect)',
     ok: (await exists(workdir, 'before-claim.txt')) === undefined,
     detail: 'before-claim.txt',
-  });
-  assertions.push({
-    label: 'the refused edit left its target file unchanged',
-    ok: (await exists(workdir, 'unmanaged.txt')) === 'no tree yet\n',
-    detail: 'unmanaged.txt still holds the unmanaged content',
   });
   assertions.push({
     label: 'the refused bash command left no file',
@@ -156,24 +196,28 @@ export async function verify({ artefacts, workdir }) {
     detail: 'shell-before-claim.txt',
   });
 
-  // 4. After claim: allowed.
-  const afterClaim = writeCall(calls, 'after-claim.txt');
+  // 4. After claim: the identical call refused in step 2 is accepted.
+  const bootWrite = writeCalls(calls, 'boot.txt');
   assertions.push({
-    label: 'write is allowed while the session holds the execution',
-    ok: afterClaim !== undefined && afterClaim.status === 'completed',
-    detail: afterClaim === undefined ? 'no write call for after-claim.txt' : `status=${afterClaim.status}`,
+    label: 'the same write refused with no tree succeeds once the task is claimed',
+    ok: bootWrite.length === 2 && bootWrite[0].status === 'error' && bootWrite[1].status === 'completed',
+    detail: bootWrite.length === 2
+      ? `first=${bootWrite[0].status} second=${bootWrite[1].status}`
+      : `${bootWrite.length} boot.txt write calls in the run`,
   });
   assertions.push({
     label: 'the allowed write landed on disk',
-    ok: (await exists(workdir, 'after-claim.txt')) === 'written while claimed\n',
-    detail: 'after-claim.txt',
+    ok: (await exists(workdir, 'boot.txt')) === 'bootstrapped\n',
+    detail: 'boot.txt',
   });
 
   // 5. After release: refused again immediately, with nothing written.
   const afterRelease = writeCall(calls, 'after-release.txt');
   const afterReleaseBash = bashCall(calls, 'shell-after-release.txt');
+  const afterReleaseEdit = calls.find((call) => call.tool === 'edit' && call.input?.file_path === 'target.txt');
   denied(assertions, afterRelease, 'write after release', 'write');
   denied(assertions, afterReleaseBash, 'bash after release', 'bash');
+  denied(assertions, afterReleaseEdit, 'edit after release', 'edit');
   assertions.push({
     label: 'the write refused after release left no file',
     ok: (await exists(workdir, 'after-release.txt')) === undefined,
@@ -183,6 +227,11 @@ export async function verify({ artefacts, workdir }) {
     label: 'the bash refused after release left no file',
     ok: (await exists(workdir, 'shell-after-release.txt')) === undefined,
     detail: 'shell-after-release.txt',
+  });
+  assertions.push({
+    label: 'the refused edit left its real target unchanged',
+    ok: (await exists(workdir, 'target.txt')) === 'original\n',
+    detail: 'target.txt',
   });
 
   // 6. Task management still works with no execution.

@@ -2,6 +2,18 @@
 
 ## 未发布
 
+**行为反转：取消「空工作线豁免」（方案 F，ADR-0001）**
+
+- 任何 A 类工具（写文件、`edit`、shell、`terminal_*`、worktree、`workflow`、`ralph`、子代理派生）现在都必须持有当前工作线的 `active` 执行，**工作线还没有持久化任务树时同样被拒绝**。以前这条路径直接放行（`host/guard.js` 里那句 "A workline with no persisted tree is unmanaged"）。B 类（`task_tree_*`、`team_task_*`、goal/schedule/session 控制）与 C 类（只读）完全不变，模型因此仍能从零建立执行。
+- 拒绝文案改为可执行引导：有树时提示 claim 一个任务；空树时提示完整 bootstrap「`init` 建树 → `create` 建任务 → `claim` → 重试这次调用」。两者走同一条拒绝分支，只有"出路"不同。
+- **原因（真实来源）**：v8 落地后的手动验收里，模型接到「把 README 第一行改成 hello」，自行判断为 "trivial one-off, no task tree needed"，据此按豁免不建树、不 claim，直接写盘成功。门禁没有被绕过——是门禁自己声明了这块不设防。豁免把"要不要受管"的判断交给了被约束的一方，而这正是门禁要消除的自由度，所以取消。
+- **代价**：新会话第一次改文件必须先 `init` + `create` + `claim`（一次性 bootstrap，不是每次写都重复三步）；「看一眼顺手改一行」也变重了。这是有意为之，理由与被否决的替代方案见 ADR-0001。
+- 提示词同步：`host/prompt.js` 的无树提醒不再写「一次性操作可跳过建树」（那句话在邀请已被拒绝的行为），改为说明 A 类在无任务树时会被拒、以及建树 → claim → 再动手的顺序。
+- TDD：`test/e2e/scenarios/baseline-write.mjs` 语义**反转**并保留为最基本反证——无树时 `write` 被拒、理由写出 bootstrap 路径、磁盘上没有任何文件；`execution-gate` 补上「无树时 `write`/`bash` 被拒 → `init`/`create`（B 类无需执行）→ 无 claim 仍被拒 → `claim` → **同一个** `write` 调用成功 → `release` 后再次被拒」的完整链路；`test/tasks.mjs` 的门禁单测从"空工作线放行"反转为"空工作线拒绝且理由含 init/create/claim"。
+- 文档：新增 `docs/adr/0001-every-write-needs-an-execution.md`（决策、原因、代价、被否决的方案 A/B/C）；`docs/implementation-status.md`（规则与代价）、`docs/CONTRACT.md`（不变量 14）、`docs/testing/manual-acceptance.md`（A1 预期反转为被拒，新增 A1b）同步更新。
+- 顺带记录两条本次验收暴露的实测限制：`ask_user_question` 卡片里的回答**不算**用户原话，不能作为授权/验收引用（只有聊天框里打出来的才算）；未持有执行的 Worker 没有 shell，连「等几秒再重试」都做不到，只能靠 `wait_agent`。
+- 本次不改版本号。
+
 **执行调度：验收与文档（票据 #11）**
 
 - 三条用户可见的承诺现在由真实进程验收，而不是单测：标准模式下一条工作线只有一个执行位，父任务的三个子任务依次进行（下一步在前一步完成前会被拒绝，任何时刻最多一个进行中）；团队模式下 Lead 只协调，三个 Worker 各自绑定一个任务并真正同时运行（Lead 自己的观察里三个人都在跑）；异常重派时被强制终止的旧 Worker 失去全部权限，新 Worker 接管同一任务并拿到新的执行号。

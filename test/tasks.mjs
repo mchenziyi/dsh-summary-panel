@@ -607,7 +607,8 @@ function titles(snapshot) {
 {
   const root = tempRoot();
   const store = createTaskStore({ root, logger: { warn() {} } });
-  // An absent file is the unmanaged workline: no tree, no restriction.
+  // An absent file is an empty workline. The snapshot only reports the fact;
+  // the gate denies class A on it (ADR-0001), so absence is not permission.
   assert.deepEqual(store.snapshot('session-cold'), { present: false, tasks: [] });
 
   await store.update('session-root', (current) => ({
@@ -632,14 +633,15 @@ function titles(snapshot) {
   assert.equal(cold.tasks[0].title, '落盘');
   assert.equal(cold.tasks[0].owner.sessionId, 'session-root');
 
-  // Fail closed: a present-but-unreadable tree reports no tasks (which denies
-  // class A) rather than reporting an unmanaged workline (which would allow).
+  // Fail closed: a present-but-unreadable tree reports no tasks, which denies
+  // class A, rather than inventing a tree that might grant something.
   writeFileSync(join(root, 'session-corrupt.json'), '{ not json');
   const corrupt = reopened.snapshot('session-corrupt');
   assert.equal(corrupt.present, true);
   assert.deepEqual(corrupt.tasks, []);
 
-  // An invalid workline id can never map to a file, so it stays unmanaged.
+  // An invalid workline id can never map to a file, so it reports the empty
+  // workline — which the gate denies, it never frees a class A call.
   assert.deepEqual(reopened.snapshot('../escape'), { present: false, tasks: [] });
 }
 
@@ -696,8 +698,9 @@ function titles(snapshot) {
     assert.equal(classifyTool(name), 'C', `${name} is read-only and must be class C`);
   }
 
-  // The guard itself is a pure synchronous decision: an unmanaged workline is
-  // free, and a managed one needs the calling session's claim stamp.
+  // The guard itself is a pure synchronous decision: every class A call needs
+  // the calling session's claim stamp, in a workline with a tree and in one
+  // with no tree at all (ADR-0001).
   const root = tempRoot();
   const store = createTaskStore({ root, logger: { warn() {} } });
   const sessions = new Map([
@@ -715,7 +718,14 @@ function titles(snapshot) {
     },
   });
 
-  assert.equal(guard(exec('session-root')), undefined, 'no tree yet: the workline is unmanaged');
+  // No tree yet: refused like any other unclaimed workline, and the reason has
+  // to carry the bootstrap path because there is nothing to claim.
+  const cold = guard(exec('session-root'));
+  assert.match(cold, /holds no active execution/, 'no tree yet: class A is refused, the absent tree is not permission');
+  assert.match(cold, /no task tree yet/, 'the cold refusal names the missing tree');
+  assert.match(cold, /"op":"init"/, 'the cold refusal gives the bootstrap path');
+  assert.match(cold, /"op":"create"/);
+  assert.match(cold, /"op":"claim"/);
   await store.update('session-root', (current) => ({
     envelope: envelopeAfter(current, [
       { op: 'init', originalGoal: '门禁' },
@@ -727,8 +737,9 @@ function titles(snapshot) {
   assert.equal(guard(exec('session-root', undefined, 'read')), undefined, 'class C is always allowed');
   // A branch/subagent session resolves to its workline root, not to itself.
   assert.match(guard(exec('session-branch', 'session-root')), /holds no active execution/);
-  // A session in another workline is unaffected.
-  assert.equal(guard(exec('session-other')), undefined);
+  // A claim in one workline never grants anything in another: that workline
+  // has no tree, so it is denied on its own empty-tree reason.
+  assert.match(guard(exec('session-other')), /no task tree yet/);
 
   await store.update('session-root', (current) => ({
     envelope: envelopeAfter(current, [{ op: 'claim', id: 't1' }]).envelope,
@@ -778,8 +789,8 @@ function titles(snapshot) {
     name: 'write',
     agent: { id: 'session-root', session: { header: { id: 'session-root' } } },
   });
-  // The read model already calls that execution `missing`; the gate must agree
-  // instead of treating the absent ledger as an unmanaged workline that allows.
+  // The read model already calls that execution `missing`; the gate must say
+  // so per task, instead of falling back to the workline-level refusal.
   assert.equal(readSnapshot(legacy, 'session-root').tasks[0].executionState, 'missing');
   assert.match(denied, /execution ledger has no record/);
   assert.match(denied, /fail closed/);
@@ -1340,8 +1351,8 @@ function titles(snapshot) {
   };
   const exec = (tool) => ({ name: tool, agent: { id: 'session-gate', session } });
 
-  // No tree: unconstrained.
-  assert.equal(registeredGuard(exec('write')), undefined);
+  // No tree: refused, with the bootstrap path (ADR-0001).
+  assert.match(registeredGuard(exec('write')), /no task tree yet/);
 
   const write = registeredTools.get('task_tree_write');
   const writeExec = { agent: { id: 'session-gate', session } };

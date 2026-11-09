@@ -1,7 +1,7 @@
 # 实现现状（v0.3.7）
 
 > 给 agent 与协作者的项目快照。改动后请同步本文件，否则它会比代码更旧。
-> 最后核对：2026-11-06，`npm test` 与 `npm run test:e2e` 全绿，工作区干净。
+> 最后核对：2026-11-09，`npm test` 与 `npm run test:e2e`（18 个场景）全绿。
 
 ## 版本与运行环境
 
@@ -55,7 +55,7 @@
 - **执行账本是索引，不是真相**：`workline.executions[]`（执行号 `ex-N`，单调递增、终态不可复活）、`task.owner` 执行戳、`workline.workers{}` 终身台账三处镜像同一次原子落盘；索引缺失等于没有权限，权威状态永远优先。
 - **三个执行状态**：`active`（活动，唯一授予 A 类权限的状态）、`orphaned`（失联，面板显示“执行者已失联”，保留执行戳与 Board 归属，绝不自动释放或改派）、`ended`（结束，永不复活）；无法识别的持久状态一律按 fail-closed 方向归一化（执行→`orphaned`，Worker 台账→`ended`）。
 - **两个执行调度操作**：`task_tree_write {"op":"dispatch","id","member","teamTaskId"}` 只写团队路由（不写 owner、不建执行，Worker 自己的 Board claim 才绑定）；`task_tree_write {"op":"release","id","force":true,"reason"}` 是 Lead 的强制释放，要求 Host 先记过 `interrupt_agent`、且运行时证明该 Worker 已不在运行，成功后结束执行（`force-terminated`）、结束其终身台账、清空执行戳并释放 Board。
-- **执行的门禁**：A 类工具（改工作区、跑代码）只有 `active` 执行的持有者能调用；任务管理与只读工具是 B/C 类，不受限制；未建任务树的工作线不受约束。`claim` 建立执行，`release` / `complete` / 暂缓 / 归档都会结束执行。
+- **执行的门禁**：A 类工具（改工作区、跑代码）只有 `active` 执行的持有者能调用；任务管理与只读工具是 B/C 类，不受限制。**没有任务树的空工作线同样被拒**——空树里没有可 claim 的任务，拒绝理由改为给出 bootstrap 序列（`init` 建树 → `create` 建任务 → `claim` → 重试）。`claim` 建立执行，`release` / `complete` / 暂缓 / 归档都会结束执行。依据见 `docs/adr/0001-every-write-needs-an-execution.md`。
 
 ## 已交付能力
 
@@ -64,7 +64,7 @@
 - 完成判定：父任务只有整棵活动子树完成才算完成，`settled` 派生
 - 归档：归档 / 恢复 / 归档批次 / 归档查询（`includeArchived`）
 - 协作边界：只有 Lead 维护任务树；标准模式下的子代理只能 `claim`/`release` 分配给自己的任务，team 模式下 teammate 仍不能写树
-- 执行门禁（标准模式）：A 类工具（改工作区 / 跑代码）必须持有该工作线的活动执行；`claim` 建立、`release` 结束，两者与其余任务管理工具都是 B 类，不需要执行权；只读工具永远放行；未建任务树的工作线不受约束
+- 执行门禁（标准模式）：A 类工具（改工作区 / 跑代码）必须持有该工作线的活动执行，**空工作线也不例外**（ADR-0001）；`claim` 建立、`release` 结束，两者与其余任务管理工具都是 B 类，不需要执行权；只读工具永远放行；无树与"有树但没 claim"走同一条拒绝分支，区别只在出路——有树提示 claim 一个任务，无树提示 `init` → `create` → `claim` → 重试
 - 单执行位与交接（标准模式）：整条工作线只有一个执行位，`executions[]` + `task.owner.executionId` 与树同一次落盘；`assign` 只做路由；交接按 Lead release → assign 子代理 → 子代理 claim/release → assign "lead" + claim 闭环，执行号单调递增且终态不可复活
 - 团队模式 Lead 只协调：Agent Team 服务被组合即为团队模式；Lead 的 A 类工具（写文件、`edit`、shell、`terminal_*`、worktree、`workflow`、`ralph`、子代理派生）在执行之前一律被拒；`spawn_teammate`/消息/等待/列成员/两个任务系统/只读工具照常，任务树仍归 Lead 维护、teammate 不能写树；团队模式下 Lead 不能再用树 `claim` 建立执行
 - 并发占位：改变执行归属的调用（树 `claim`/`release`/`complete`，Board `claim`/`release`/`complete`/`reopen`）在 guard 放行前同步占位，第二个在途认领立刻被拒；座位按标准模式工作线、执行者、任务三个维度取键（团队模式不取工作线，Worker 可并行）；只有真实调用已结束证据（匹配的 `tools/result`，或持位 Agent 转 `idle`）才释放，计时器只标记 `suspect` 并继续拒绝、绝不释放
@@ -103,6 +103,9 @@
 6. **团队模式下 Lead 看不到改动**：Lead 没有 A 类工具（包括 shell），所以看不了 diff、跑不了测试、也读不到 Worker 改了哪些文件，只能由 Worker 汇报。这是“纯协调者”的直接代价，不是缺陷。
 7. **执行权只证明“谁持位”，不证明“改了哪些文件”**：Worker 持位期间的 `bash` 仍可执行任意命令修改文件；本版不做每个 Worker 的文件系统隔离（独立工作树 / 沙箱）。
 8. **冲突还没有面板 UI**：`workline.conflicts[]` 目前只通过工具读取、日志与拒绝理由可见，面板不展示冲突列表。
+9. **第一次改文件必须先 bootstrap（ADR-0001 的直接代价）**：新会话里任何 A 类工具（写文件、`edit`、shell、terminal、worktree、`workflow`、`ralph`、子代理派生）都要先 `init` → `create` → `claim`，没有"这次改动很小所以豁免"的通道。这是有意为之：豁免曾让模型自判 trivial 并直接写盘。代价是"看一眼顺手改一行"也要先建树。
+10. **`ask_user_question` 卡片里的回答不算用户原话**：`approvalBasis` / `acceptanceBasis` 只认用户在聊天框里打出来的文本；用卡片选出来的答案无法通过引用校验，也就不能作为授权或验收依据。
+11. **未持有执行的 Worker 没有 shell，因此连等待都做不到**：A 类被拒的会话无法用 `bash sleep` 之类的变通手段延时，重试间隔只能用 `wait_agent` 这类 B 类工具。
 
 ## 外部文档
 
@@ -111,6 +114,7 @@
 | 需求文档 | `~/Desktop/AI-TodoList/REQUIREMENTS.md` | 已冻结的 MVP 需求 |
 | 实现契约 | `~/Desktop/AI-TodoList/CONTRACT.md` | Host/Client 唯一接口约定；与需求冲突以它为准 |
 | 执行调度设计 v8 | `docs/plans/dsh-execution-scheduling-v8.md` | 已冻结；已实现标准模式的执行门禁（#3）、单执行位/交接（#4）、团队模式 Lead 只协调（#5）、认领绑定（#6）、成员终身绑定（#7）、执行证据与崩溃对账（#8）、并发占位（#9）与失联/强制终止（#10）切片，并由三场景真实进程验收与文档（#11）收尾 |
+| 架构决策 ADR | `docs/adr/` | 0001 取消空工作线豁免：任何改工作区都要 claim（含原因、代价与被否决的方案） |
 | 变更记录 | `CHANGELOG.md` | 每版做了什么 |
 | 真实进程 e2e | `test/e2e/README.md` | 场景清单、装置原理、如何运行与装置的边界 |
 
