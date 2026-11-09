@@ -32,7 +32,7 @@ export const TASK_TREE_PROMPT = [
   '- You start executing a task: take its real id from the tree (create it first if it is missing), put it in progress, and call `focus` before the first file edit or command. A task that makes real progress, pauses, or blocks also needs its progress and status kept truthful.',
   '- Work is finished or dropped: complete it, or defer/archive it with a reason once the user agrees.',
   '',
-  '**Focus, status, and claim are three different writes.** `status` says how far the task is, `focus` says what you are working on right now, and `claim` says which session owns it. Never use one in place of another, and do not expect any of them to set the others.',
+  '**Focus, status, and claim are three different writes.** `status` says how far the task is, `focus` says what you are working on right now, and `claim` records which session is working on it. Never use one in place of another, and do not expect any of them to set the others.',
   '',
   '- Focus is one write with the complete set: `{"op":"focus","ids":["<id>"]}`. `ids` replaces the whole focus set rather than adding to it, so pass every task you are working on and `[]` to clear it. The id above is only a shape — always use the id `create` or `task_tree_read` returned for the task you actually started.',
   '- A task created with `status: "in_progress"` still needs the `focus` call; creating or updating the status never sets the focus by itself.',
@@ -97,9 +97,9 @@ export const TASK_TREE_PROMPT = [
   '',
   '**One confirmation closes one task.** Each acceptance quote binds to the task it names: a message that accepted one thing cannot be replayed to accept another. If the user accepts several tasks in one sentence, quote the clause that names each one separately. When you cannot tell which task the user accepted, ask them instead of widening the scope.',
   '',
-  'Only the lead session maintains the tree. In standard mode the whole workline shares one execution seat: while it is held, every other claim is refused. To hand a task to a subagent, release it, assign the subagent session id from the spawn result, let the subagent claim and release it, then assign `"lead"` and claim again — the new claim gets a new execution id and an ended execution is never revived. Assignment is routing, not a claim. A subagent may only claim and release the task assigned to it; in an Agent Team, teammates report progress, blockers, and completion to the lead and never write the tree themselves. In an Agent Team the lead only coordinates: the host refuses it every class A tool (writing files, edit, shell, terminal, worktree, workflow, ralph, subagent spawn) even while a task execution is held, so spawn a teammate with `spawn_teammate`, send it the work, and keep the tree and the Team board to yourself. Team mode is claim-first: create the Team-board task and the tree task, then dispatch with `task_tree_write {"op":"dispatch","id":"<task>","member":"<worker-name>","teamTaskId":"<task-N>"}`; the named Worker claims the board task itself with `team_task_update {action:"claim"}`, and only that claim creates the execution and turns the tree task in progress with its executor. Dispatch is routing, not assignment. The host refuses `team_task_update reassign` outright, and the lead cannot create an execution with `task_tree_write claim` in team mode.',
+  '**Only the lead session maintains the tree — by convention, not by force.** Teammates and subagents report progress, blockers and completion to the lead instead of restructuring the tree themselves; the tool accepts their calls, but the tree stays coherent when one session owns it.',
   '',
-  '**A lost executor is not a free task.** `task_tree_read` marks a task `executorLost` when the session holding its execution can no longer be resolved at all: that execution grants no workspace permission, is not released on its own, and the task is never handed to another session. Only the Lead may end it, and only after interrupting the worker and confirming it stopped: call `interrupt_agent`, check that the worker is not running, then `task_tree_write {"op":"release","id":"<task>","force":true,"reason":"<why>"}`. That force release ends the execution (`force-terminated`), ends that Worker\'s one lifetime binding and clears the Team-board ownership, so a NEW Worker can be dispatched and claim the task with a NEW execution id. A worker that was force-terminated can never write for this workline again. An idle worker between turns is NOT lost: its session is still live and keeps its execution.',
+  '**Claim and release are records, not permission.** `claim` marks that this session is working on a task once it is `in_progress`; `release` hands it back, and completing, deferring or archiving a task clears the record too. They grant no tool permission, and no call needs them. Only one session may hold a task at a time: a second session\'s claim is refused until the task is released, so two sessions never work on the same task — if the holder is gone, any session may release it and then claim it.',
   '',
   'Goals: the original goal is immutable. When the user decides to change the direction of the project, record it immediately with `reviseGoal` and a reason that names their decision — a decided direction change is recorded even when implementation is deferred, and it does not need the work to start. When you are only proposing a direction, discuss it first and revise the goal after the user agrees. A new plan under discussion is a task, not a goal change.',
   '',
@@ -125,15 +125,13 @@ export const TASK_TREE_REMINDER = [
  * The same nudge for a workline without a tree: a new session that starts real
  * project work should get a tree instead of waiting to be asked.
  *
- * It is also the honest description of the gate: with no tree there is nothing
- * to claim, so every class A tool is refused until the model bootstraps
- * (ADR-0001). The last line used to say one-off operations could skip the
- * tree, which is exactly the reasoning that bypassed the gate.
+ * Nothing refuses a tool call while the tree is missing (ADR-0003), so this
+ * reminder has to earn the tree by what the user gets from it: a tree-less
+ * session leaves the panel empty, which is exactly what the nudge prevents.
  */
 export const TASK_TREE_START_REMINDER = [
-  'This workline has no task tree yet.',
-  'Class A tools — writing files, `edit`, shell, `terminal_*`, worktrees, `workflow`, `ralph`, subagents — are refused here until a task is claimed, and with no tree there is nothing to claim.',
-  'When the user asks for real project work (an idea, a requirement, a plan, a direction change, or a file change), create the tree with `task_tree_write` (`init` for the goal, `create` for the first tasks), `claim` the task, and only then run the tool.',
+  'This workline has no task tree yet, so the user\'s panel is empty.',
+  'When the user asks for real project work (an idea, a requirement, a plan, a direction change, or a file change), create the tree with `task_tree_write` (`init` for the goal, `create` for the first tasks), put the task you are working on in the focus, and `claim` it so the panel says who is doing it.',
   'Record ideas and proposals as `executionApproval: "pending"`; approve only what the user has asked for, quoting their words in `approvalBasis`.',
   'Skip this for pure questions, explanations and reads: those need no tree.',
 ].join(' ');

@@ -65,8 +65,6 @@ window.__ModuleLoader__.load({
       'tasks.detail.owner': '占用会话',
       'tasks.detail.ownerLive': '存活',
       'tasks.detail.ownerGone': '已离线',
-      'tasks.detail.ownerLost': '执行者已失联',
-      'tasks.tip.executorLost': '执行者已失联：该执行不授予工作区权限，需 Lead 先中断并确认其已停止，再强制释放',
       'tasks.detail.completion': '完成方式',
       'tasks.detail.completionUser': '用户确认',
       'tasks.detail.completionSelf': 'Agent 自行确认',
@@ -204,8 +202,6 @@ window.__ModuleLoader__.load({
       'tasks.detail.owner': 'Owner session',
       'tasks.detail.ownerLive': 'live',
       'tasks.detail.ownerGone': 'offline',
-      'tasks.detail.ownerLost': 'executor lost',
-      'tasks.tip.executorLost': 'Executor lost: this execution grants no workspace permission; the Lead must interrupt the worker, confirm it stopped, then force-release it',
       'tasks.detail.completion': 'Completion',
       'tasks.detail.completionUser': 'User confirmed',
       'tasks.detail.completionSelf': 'Self-confirmed',
@@ -451,7 +447,6 @@ window.__ModuleLoader__.load({
 .sp-task-row-done>.sp-task-arrow{opacity:.55}
 .sp-task-progress{flex:none;font-size:9.5px;line-height:1;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;opacity:.85;padding-left:2px}
 .sp-task-progress-warn{color:var(--dsw-alias-state-warn-primary);opacity:1}
-.sp-task-lost{flex:none;font-size:9px;line-height:1;letter-spacing:.02em;color:var(--dsw-alias-state-warn-primary);opacity:.95;padding:1px 3px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-warn-primary) 38%,transparent);border-radius:3px;white-space:nowrap}
 .sp-task-approval{flex:none;font-size:9px;line-height:1;letter-spacing:.02em;color:var(--dsw-alias-label-secondary);opacity:.72;padding:1px 3px;border:1px solid color-mix(in srgb,var(--dsw-alias-label-secondary) 26%,transparent);border-radius:3px;white-space:nowrap}
 .sp-task-row-focus>.sp-task-main>.sp-task-title{font-weight:700}
 .sp-task-tip{position:fixed;z-index:80;pointer-events:none;max-width:min(220px,calc(100vw - 16px));padding:4px 7px;border-radius:7px;background:color-mix(in srgb,var(--dsw-alias-bg-overlay) 74%,transparent);backdrop-filter:blur(10px) saturate(1.15);border:1px solid color-mix(in srgb,var(--dsw-alias-border-l1) 70%,transparent);box-shadow:0 6px 18px rgba(0,0,0,.10);display:flex;flex-direction:column;gap:1px;color:var(--dsw-alias-label-primary)}
@@ -1623,10 +1618,6 @@ window.__ModuleLoader__.load({
         const showApproval = task.executionApproval === 'pending'
           && task.status === 'pending'
           && task.deferred !== true;
-        // The worker session behind this execution cannot be resolved any more:
-        // the task still records who held it, but nobody has permission until a
-        // Lead force-releases it (design v8 I16, ticket #10).
-        const showLost = task.executorLost === true;
         const isOpen = expanded[task.id] === true;
         const guides = [];
         for (let level = 0; level < depth; level += 1) {
@@ -1665,9 +1656,6 @@ window.__ModuleLoader__.load({
             h('span', { className: 'sp-task-title' }, task.title),
             showApproval
               ? h('span', { className: 'sp-task-approval', title: t('tasks.tip.approval') }, t('tasks.approvalPending'))
-              : null,
-            showLost
-              ? h('span', { className: 'sp-task-lost', title: t('tasks.tip.executorLost') }, t('tasks.detail.ownerLost'))
               : null,
             showProgress
               ? h('span', {
@@ -2113,9 +2101,9 @@ window.__ModuleLoader__.load({
             fields.push(h(DetailField, { key: 'nextStep', label: t('tasks.detail.nextStep'), value: active.nextStep }));
           }
           if (typeof active.ownerSessionId === 'string' && active.ownerSessionId !== '') {
-            const liveText = active.executorLost === true
-              ? t('tasks.detail.ownerLost')
-              : (active.ownerLive === true ? t('tasks.detail.ownerLive') : t('tasks.detail.ownerGone'));
+            // The panel only shows the claim record now (ADR-0003): whether that
+            // session is live, not whether a ledger ever marked it lost.
+            const liveText = active.ownerLive === true ? t('tasks.detail.ownerLive') : t('tasks.detail.ownerGone');
             const ownerLabel = typeof active.ownerName === 'string' && active.ownerName !== ''
               ? active.ownerName
               : active.ownerSessionId;

@@ -52,7 +52,11 @@
     "dsh": ">=0.2.0-rc.2"
   },
   "scripts": {
-    "test": "node test/isolation.mjs && node test/host.mjs && node test/tasks.mjs && node test/evidence.mjs && node test/client.mjs",
+    "test": "node test/isolation.mjs && node test/host-contract.mjs && node test/host.mjs && node test/tasks.mjs && node test/client.mjs",
+    "test:contract": "node test/host-contract.mjs",
+    "test:host": "node test/host.mjs",
+    "test:tasks": "node test/tasks.mjs",
+    "test:client": "node test/client.mjs",
     "test:e2e": "node test/e2e/run.mjs"
   }
 }
