@@ -1,6 +1,6 @@
 /**
- * Session facts the task tree needs: header lookup, workline resolution, and
- * session liveness.
+ * Session facts the task tree needs: who is calling a tool, header lookup,
+ * workline resolution, and session liveness.
  *
  * A workline is identified by the ROOT session id: branches and subagent
  * children walk `SessionHeader.parentSession` up to the top, at most 50 levels
@@ -9,6 +9,34 @@
  */
 
 const MAX_WORKLINE_DEPTH = 50;
+
+/**
+ * The calling session of one tool execution.
+ *
+ * The identity comes from the live agent's session header, never from model
+ * input: a wrong answer here would file a write under someone else's workline.
+ * Only when the header names nothing does the session id (or, last, the agent
+ * id) stand in — a host adapter or a test may expose a session without a
+ * header.
+ *
+ * This function is pure: no I/O, no dependencies, no dsh package.
+ *
+ * @param exec - the tool execution object (`{ agent }`); anything else is
+ *   treated as "no caller".
+ * @returns `{ sessionId, header }`; `sessionId` is `undefined` when nothing
+ *   names the caller.
+ */
+export function callerOf(exec) {
+  const agent = exec !== null && typeof exec === 'object' ? exec.agent : undefined;
+  const session = agent !== null && typeof agent === 'object' ? agent.session : undefined;
+  const header = session !== null && typeof session === 'object' ? session.header : undefined;
+  const sessionId = typeof header?.id === 'string' && header.id !== ''
+    ? header.id
+    : (typeof session?.id === 'string' && session.id !== ''
+      ? session.id
+      : (typeof agent?.id === 'string' && agent.id !== '' ? agent.id : undefined));
+  return { sessionId, header };
+}
 
 /**
  * Build the session helpers for one plugin context.
@@ -82,27 +110,5 @@ export function createSessionSupport(ctx) {
     return false;
   }
 
-  /**
-   * The resolution of one executor session (design v8 I0/I16):
-   *
-   * - `active`   — the Host can still name the session: it is live, or its
-   *                persisted record resolves and the same session can resume.
-   *                A session that cannot resume can never call a tool, so a
-   *                restart of a provable worker must NOT strip its execution;
-   * - `orphaned` — nothing resolves it any more ("executor lost"). The panel
-   *                shows it as lost, it is never silently released, and only a
-   *                Lead force-release ends it.
-   *
-   * A session that cannot even be looked up (an empty id) is orphaned: the
-   * fail-closed direction is always "no permission", never "assume alive".
-   * @param sessionId - the executor session recorded in the execution ledger.
-   */
-  async function resolveSession(sessionId) {
-    if (typeof sessionId !== 'string' || sessionId === '') return 'orphaned';
-    if (isLive(sessionId)) return 'active';
-    const header = await headerOf(sessionId);
-    return header === undefined ? 'orphaned' : 'active';
-  }
-
-  return { headerOf, rootSessionId, isLive, resolveSession };
+  return { headerOf, rootSessionId, isLive };
 }
