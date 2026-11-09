@@ -206,7 +206,7 @@ function approvedParent(state, parentId) {
 function assertExecutable(task) {
   if (task.executionApproval === 'approved') return;
   fail(
-    `task ${task.id} is not approved for execution: ask the user, then set executionApproval: "approved"`
+    `task ${task.id} is not approved: ask the user, then set executionApproval: "approved"`
     + ' with their words in approvalBasis, and only then start it',
   );
 }
@@ -596,8 +596,8 @@ function hasNotes(task) {
 /**
  * Whether work has already happened on a task.
  *
- * Explicit execution state is the evidence: a status of in_progress/blocked, an
- * owner, or a completion record. Free-text notes alone are not execution — an
+ * Explicit state is the evidence: a status of in_progress/blocked, an owner,
+ * or a completion record. Free-text notes alone are not work — an
  * idea under discussion collects notes without anyone starting it — so they
  * only count once the task was actually authorised.
  */
@@ -1176,7 +1176,7 @@ function applyFocus(state, op, context) {
   }
   for (const id of next) {
     const task = state.tasks.find((candidate) => candidate.id === id);
-    // Focus is attention, not execution: an unapproved task can be the current
+    // Focus is attention, not permission: an unapproved task can be the current
     // subject of discussion without being started.
     if (task.status === 'pending' && task.executionApproval === 'approved') {
       task.status = 'in_progress';

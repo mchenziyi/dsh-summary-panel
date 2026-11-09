@@ -16,6 +16,12 @@
  *    the contract only on a line that marks it historical, or inside the
  *    deprecated record definitions. A rule stated as live must not survive in
  *    that block.
+ * 4. The shipped, user-facing docs (README, requirements, implementation
+ *    status, contract, glossary, AGENTS) do not describe the removed gate, and
+ *    a line marked as history is allowed to name it. CHANGELOG and ADRs keep
+ *    the history; `docs/testing/manual-acceptance.md` still carries the old
+ *    expectations until #20 rewrites it, and the teardown's own spec names the
+ *    layer it removes — neither is a shipped surface, so neither is scanned.
  *
  * Run with `node test/docs-contract.mjs`; it reads files only, writes nothing.
  */
@@ -30,8 +36,8 @@ import { TASK_OPS } from '../host/model.js';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (path) => readFileSync(join(ROOT, path), 'utf8');
 
-/** A line that already says the thing it names is gone. */
-const HISTORY_LINE = /@deprecated|deprecated|已拆除|已删除|历史|老记录|旧|不再/;
+/** A line that already says the thing it names is gone, or points at the history. */
+const HISTORY_LINE = /@deprecated|deprecated|已拆除|拆除|已删除|历史|老记录|旧|不再|ADR-0003/;
 
 // ---------------------------------------------------------------------------
 // 1. the contract's op list is the live op list
@@ -57,7 +63,7 @@ const HISTORY_LINE = /@deprecated|deprecated|已拆除|已删除|历史|老记�
 // ---------------------------------------------------------------------------
 
 {
-  const docs = ['docs/CONTRACT.md', 'GLOSSARY.md', 'AGENTS.md', 'README.md'];
+  const docs = ['docs/CONTRACT.md', 'GLOSSARY.md', 'AGENTS.md', 'README.md', 'docs/implementation-status.md'];
   let checked = 0;
   for (const doc of docs) {
     if (!existsSync(join(ROOT, doc))) continue;
@@ -99,6 +105,38 @@ const HISTORY_LINE = /@deprecated|deprecated|已拆除|已删除|历史|老记�
         `docs/CONTRACT.md:${index + 1} still states "${surface}" as a live rule; ADR-0003 removed it`,
       );
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 4. shipped docs do not describe the removed gate as a live feature
+// ---------------------------------------------------------------------------
+
+{
+  const GATE = [
+    'execution gate', 'execution ledger', 'force release',
+    '执行门禁', '执行位', '终身绑定', '强制释放', '执行账本', '执行号', '并发占位', '失联',
+  ];
+  const shipped = [
+    'README.md',
+    'AGENTS.md',
+    'GLOSSARY.md',
+    'docs/CONTRACT.md',
+    'docs/requirements/REQUIREMENTS.md',
+    'docs/implementation-status.md',
+  ];
+  for (const doc of shipped) {
+    if (!existsSync(join(ROOT, doc))) continue;
+    read(doc).split('\n').forEach((line, index) => {
+      if (HISTORY_LINE.test(line)) return;
+      for (const phrase of GATE) {
+        assert.equal(
+          line.includes(phrase),
+          false,
+          `${doc}:${index + 1} still describes "${phrase}"; ADR-0003 removed it (CHANGELOG and ADRs keep the history)`,
+        );
+      }
+    });
   }
 }
 

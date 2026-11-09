@@ -20,7 +20,7 @@ or reading the README — not whether an agent can be blocked. A ticket that onl
 adds a denial path makes the machine stricter without making the product clearer,
 so it needs the extra sentence saying why.
 
-**2. A guard's default when its data is missing.** The execution gate is gone, so
+**2. A guard's default when its data is missing.** The gate from v0.3.x is gone, so
 this now covers the checks that still exist — the `claim` compare-and-set and
 `executionApproval` — and any new one. Ask what happens when the record it reads
 is absent, empty, or unreadable, and require the deny direction: a guard that

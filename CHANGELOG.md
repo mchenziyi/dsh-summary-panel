@@ -1,104 +1,40 @@
 # 变更记录
 
-## 未发布
+## 0.4.0 — 2026-11-09
 
-**行为反转：取消「空工作线豁免」（方案 F，ADR-0001）**
+**拆除执行门禁与执行账本；任务树回到"记录 + 展示"**（决策与理由见 `docs/adr/0003-remove-the-execution-gate.md`）。
 
-- 任何 A 类工具（写文件、`edit`、shell、`terminal_*`、worktree、`workflow`、`ralph`、子代理派生）现在都必须持有当前工作线的 `active` 执行，**工作线还没有持久化任务树时同样被拒绝**。以前这条路径直接放行（`host/guard.js` 里那句 "A workline with no persisted tree is unmanaged"）。B 类（`task_tree_*`、`team_task_*`、goal/schedule/session 控制）与 C 类（只读）完全不变，模型因此仍能从零建立执行。
-- 拒绝文案改为可执行引导：有树时提示 claim 一个任务；空树时提示完整 bootstrap「`init` 建树 → `create` 建任务 → `claim` → 重试这次调用」。两者走同一条拒绝分支，只有"出路"不同。
-- **原因（真实来源）**：v8 落地后的手动验收里，模型接到「把 README 第一行改成 hello」，自行判断为 "trivial one-off, no task tree needed"，据此按豁免不建树、不 claim，直接写盘成功。门禁没有被绕过——是门禁自己声明了这块不设防。豁免把"要不要受管"的判断交给了被约束的一方，而这正是门禁要消除的自由度，所以取消。
-- **代价**：新会话第一次改文件必须先 `init` + `create` + `claim`（一次性 bootstrap，不是每次写都重复三步）；「看一眼顺手改一行」也变重了。这是有意为之，理由与被否决的替代方案见 ADR-0001。
-- 提示词同步：`host/prompt.js` 的无树提醒不再写「一次性操作可跳过建树」（那句话在邀请已被拒绝的行为），改为说明 A 类在无任务树时会被拒、以及建树 → claim → 再动手的顺序。
-- TDD：`test/e2e/scenarios/baseline-write.mjs` 语义**反转**并保留为最基本反证——无树时 `write` 被拒、理由写出 bootstrap 路径、磁盘上没有任何文件；`execution-gate` 补上「无树时 `write`/`bash` 被拒 → `init`/`create`（B 类无需执行）→ 无 claim 仍被拒 → `claim` → **同一个** `write` 调用成功 → `release` 后再次被拒」的完整链路；`test/tasks.mjs` 的门禁单测从"空工作线放行"反转为"空工作线拒绝且理由含 init/create/claim"。
-- 文档：新增 `docs/adr/0001-every-write-needs-an-execution.md`（决策、原因、代价、被否决的方案 A/B/C）；`docs/implementation-status.md`（规则与代价）、`docs/CONTRACT.md`（不变量 14）、`docs/testing/manual-acceptance.md`（A1 预期反转为被拒，新增 A1b）同步更新。
-- 顺带记录两条本次验收暴露的实测限制：`ask_user_question` 卡片里的回答**不算**用户原话，不能作为授权/验收引用（只有聊天框里打出来的才算）；未持有执行的 Worker 没有 shell，连「等几秒再重试」都做不到，只能靠 `wait_agent`。
-- 本次不改版本号。
+0.3.7 之后这一层开发过一批执行调度能力（门禁、执行账本、认领意图日志、崩溃对账、Worker 终身绑定、团队认领绑定、并发占位、失联与强制终止，另有 18 个 e2e 场景），它们没有发布过；本版决定不发布，而是整层拆除。原因：它管的是 Agent，产品承诺是让人看清；它唯一的产出是一段拒绝文案，代价是一整套需要永远对账的状态；而且它有硬上限（8 个团队成员 × 终身一任务用完后无法再干活）。宪法规则：**不在工具运行前拒绝任何调用**。
 
-**执行调度：验收与文档（票据 #11）**
+### Removed
 
-- 三条用户可见的承诺现在由真实进程验收，而不是单测：标准模式下一条工作线只有一个执行位，父任务的三个子任务依次进行（下一步在前一步完成前会被拒绝，任何时刻最多一个进行中）；团队模式下 Lead 只协调，三个 Worker 各自绑定一个任务并真正同时运行（Lead 自己的观察里三个人都在跑）；异常重派时被强制终止的旧 Worker 失去全部权限，新 Worker 接管同一任务并拿到新的执行号。
-- `npm run test:e2e` 现在跑 18 个场景：新增 `acceptance-serial`、`acceptance-parallel`、`acceptance-retry`，原有 15 个继续通过。验收只断言三类用户可见事实：工具调用的真实返回、磁盘上的任务树（与认领意图日志）、运行中导出的 Team Board；不依赖测试专用开关。
-- 文档：README 增加“一次只做一件事：标准模式与团队模式”；`docs/implementation-status.md` 补充执行调度能力、`dispatch` 与强制释放两个操作、`active | cold | orphaned | ended` 四态以及真实进程测试装置；`test/e2e/README.md` 补充三个验收场景。
-- 已知限制如实记录：团队模式下 Lead 看不到 diff、也不能自己跑测试（只能由 Worker 汇报）；Worker 持位期间仍可用 shell 任意改文件；冲突目前只在任务树记录与拒绝理由里，面板还没有冲突 UI。
-- 本次不改变产品行为，也没有版本号变更。
+- **执行门禁**：A/B/C 三类工具分类、`ctx.tools.guard`、并发占位、执行权校验、空工作线也拒绝的 bootstrap 分支。任何工具调用都不再需要先建树或先 claim。
+- **执行账本与证据层**：`workline.executions[]` / `workers{}` / `conflicts[]`、`executionId`、执行状态 `active|orphaned|ended`、失联标记、强制释放 `release {force:true}`、`interrupt` 证据、认领意图日志、崩溃对账、roster 身份解析、Team claim 绑定；对应模块 `host/{guard,reservation,journal,reconcile,recovery,lifetime,team-lifetime,binding,roster,caller}.js` 全部删除。
+- **三个 op**：`assign`、`dispatch`、`resolveConflict`；`task_tree_write` 收敛为 13 个 op。`claim` / `release` 保留，但从"分配执行号、校验持有者"降为**记录**：写下谁在做，交还；唯一的机械规则是一次 compare-and-set（第二个会话的 claim 被拒）。
+- **面板上的执行痕迹**：`executorLost` / `executionState` / 冲突视图的字段与文案；任务详情只显示领取记录（谁在做、是否在线）。
+- **0.3.7 之后从未发布的"取消空工作线豁免"反转**（ADR-0001）：整层都不发布，这条反转也随之撤回。
+- `docs/CONTRACT.md` 不变量 18 → 11；执行相关字段保留结构定义但标 `@deprecated`（老 json 读取时忽略，不迁移、不重写）。
 
-**失联与强制终止（执行调度 v8 的恢复切片，票据 #10）**
+### Changed
 
-- 执行状态从"活动/结束"扩为 `active | cold | orphaned | ended`：`active` 是唯一授予 A 类权限的状态；`orphaned` 就是用户看到的"执行者已失联"（`executorLost`）。重启对账会解析每个未终结执行的执行者会话：会话仍可解析（活着的，或已持久化、可作为同一会话恢复的）保持 `active`——正常的两轮空闲不会被误判；只有谁都解析不出来的会话转为 `orphaned`，此时执行戳、Worker 台账与 Board 归属全部保留，**绝不悄悄释放、也绝不改派给别的会话**。
-- 失联可见：`task_tree_read` 的任务行新增 `executorLost` 与 `executionState`，HTTP 面板载荷同步新增 `executorLost`，任务行显示"执行者已失联"徽标、详情显示"执行者已失联"；对账时在日志里点名执行号、任务与会话。
-- 强制释放只属于 Lead，且必须"先中断、再确认已停止"：Host 在 post-execute 观察成功的 `interrupt_agent`（团队按 roster 名字解析会话，标准模式按 `agent_id`）并把 `interruptedAt` 记到该会话的执行上；`task_tree_write {"op":"release","id","force":true,"reason"}` 的放行条件是调用者就是 Lead、执行未终结、Host 记过这个中断、并且运行时的 Agent 状态证明它当前不在 `running`（读不到就按"仍在运行"处理）。仍空闲但没有中断、或中断后仍在运行，都会被拒并说明原因。
-- 释放顺序与终态：团队模式先释放 Board（I13：Board 失败则账本保持原样、可重试），然后在同一次原子树写里结束执行（`endReason:"force-terminated"`，可带 Lead 的 `reason`）、结束该 Worker 的终身台账、清空执行戳；任务本身保持 `in_progress`，等待重新派发。被强制终止的 Worker 再写文件会被明确拒绝（`force-terminated` 理由），因为它的执行已结束、终身绑定也已结束；重试必须换新的 Worker 实例。
-- 新 Worker 接管：重新 `dispatch` 后，新 Worker 自己认领 Board 任务，得到新的执行号；失联与终止都不会复活旧执行。
-- 执行门禁改为读执行账本状态：只有 `active` 放行；`cold`/`orphaned` 只有在同一会话又能被解析为活着时才恢复（I16），否则明确拒绝并给出"Lead 先中断、确认停止、再强制释放"的出口。团队模式下 Lead 的树 `release`/`complete` 现在同时占用 Board 任务的 `tk:` 座位，避免与 Worker 的 Board 认领在途重叠。
-- 真实进程 e2e 新增 `lost-executor`（两轮）：空闲但未中断时强制释放被拒、Worker 真在运行时被拒、中断并确认停止后成功且终止的 Worker 再写被拒、新 Worker 拿到新执行号；轮次之间删除 worker-b 的持久化 Session 制造真实的"无法解析"，重启后执行被标为失联且仍持有任务、另一 Worker 不能写也不能接管，Lead 中断并确认后强制释放成功，worker-c 认领得到第三个执行号。测试装置新增 `waitForMemberStatus`、`waitForTeammateTurns` 与 `holdMs`（让脚本模型的某一轮真的慢下来，便于观察运行态）。
+- **提示词**（`host/prompt.js`）：不再教 claim / 执行位 / 终身绑定；改为"**动手前先更新任务树，并保持进展 / 下一步 / 结果最新**"，并说明后果——不维护树，用户打开面板就是空的，写旧了就是过时的进度。两档提醒同步改写。
+- **任务域的语义**：`task.owner` 从凭证降为记录；"只有 Lead 维护这棵树"从代码拒绝改为提示词约定；团队模式不再有特殊执行规则。
+- **仍在写入时校验的规则**保持不变：未授权任务不能变 `in_progress`、授权与验收原话必须能在真实用户消息里核对、父任务有未完成子任务时不能完成、已授权未完成的交付要暂缓/归档必须带用户原话。
+- 18 个 e2e 场景删到 2 个：保留 `baseline-write`（无树时 `write` 必须成功——门禁不许回来）与 `tree-init`；#20 再把它们整理成 3 个验收场景。
 
-**执行证据与崩溃对账（执行调度 v8 的证据切片）**
+### Added
 
-- 只有认领证据才能建立执行：`dispatch` 只是路由，Board 上的 `ownerId` 单独也不构成证据。团队模式的判定要求"认领意图 + Board revision 恰好 +1 + owner 匹配 + Worker 未终结"同时成立，缺一即冲突，绝不猜执行者。
-- 团队模式 Board 先行、账本后写，中间由一份 `fsync` 的认领意图日志兜住：Worker 认领前，Host 先把 roster 解析出的会话 id、成员名、期望 revision 与 Registry callId 追加到 `<workline>.claims.jsonl`；Board 提交后由 post-execute 写账本并把该意图标记 `committed`，调用失败则标记 `aborted`。日志是索引，丢了只会**减少**权限，不会给出执行。
-- 重启对账：进程内每条工作线在第一次工具调用前收敛一次（在 guard 读树之前）。Board 已提交而账本缺失时，按三件套把执行重建成恰好一条（`rebuiltFrom:"wal"`）；Board 已完成/已释放则结束执行并清掉执行戳；已关闭任务（`done`/`deferred`/`archived`）不得留有非终态执行；第二次重启不再产生任何新执行。
-- 证据矛盾进入冲突态：`workline.conflicts[]` 记录 `unproven-claim` / `claim-without-record` / `ended-but-owned` / `seat-ambiguous`，带触发证据、影响范围与未解除标记；不建、不删、不复活执行，并在 guard 里**先于 Board 调用**拒绝该任务的新认领，标准模式的 `claim` 同样被拒。冲突是工作线记录，不是执行状态，重复对账只记一条。
-- 三处镜像一次原子写：`allocateExecution` 现在同时写执行账本与 Worker 台账，`bindTeamClaim` 与标准 `claim` 不再各自追加一份；已结束的 Worker 记录保留并带 `executionId`。
-- 对账改三处镜像都带 `executionId` 守卫（I17）：Worker 台账已指向更新一轮时，旧一轮的结束是 no-op，不会清掉这一轮的数据。
-- 真实进程 e2e 新增 `execution-evidence`（只派发不产生执行、认领产生唯一执行、Worker 自己完成则结束执行）、`crash-reconcile`（真实 SIGKILL 落在 Board 提交与账本之间，重启收敛为恰好一条执行，二次重启不变）、`evidence-conflict`（意图日志丢失 + Board 仍有 owner → `unproven-claim` 冲突并拒绝新认领）。测试装置支持多轮与续跑会话（`runs`/`resume`/`expect:"crash"`/`after`）、新增崩溃注入 fixture 与认领日志导出；`npm test` 新增 `test/evidence.mjs`。
+- `test/host-contract.mjs`：模型可见文本 / `client.js` 与活着的 op、字段一致；`host/` 里 `execution` 只允许出现在注释与保留字段 `executionApproval` 中。
+- `test/modules.mjs`：逐个加载 `host/*.js`，删模块时残留的 import 立即可见。
+- `test/docs-contract.mjs`：契约 op 列表与 `TASK_OPS` 一致、文档点名的模块存在、已删 surface 不写成现行规则、用户可见文档不再描述门禁语汇。
+- `npm test:*` 分套件脚本（`test:modules` / `test:docs` / `test:contract` / `test:host` / `test:tasks` / `test:client` / `test:e2e`）。
 
-**并发占位（执行调度 v8 的并发切片）**
+### Docs
 
-- 认领不再只靠"落盘后再查"：guard 在放行之前就同步占位，第二个在途认领立刻被拒，不会出现"两个都成功"的窗口。座位按三个维度取键：标准模式 `wl:<worklineId>`（整条工作线一个执行位）、执行者 `wk:<sessionId>`、任务 `tk:<taskId>`；团队模式只取后两个，多个 Worker 仍可并行。
-- 占位只由真实的"调用已结束"证据释放：E1 是对应调用的 `tools/result`（注册表对每次调用都会发布，被拒、报错、中止都算），E2 是持位 Agent 转为 `idle`（运行中的 Agent 会 await 自己的工具调用，因此空闲即无在途）。`interrupt`、Board 写失败、被模型规则拒绝的认领都不算证据，必须等自己的工具结果。
-- 计时器只把超时仍未结束的占位标记为 `suspect` 并继续拒绝新认领，**绝不释放**；占位表只在进程内，是索引不是事实来源，进程重启即清空。
-- 占位覆盖所有改变执行归属的操作：`claim`/`release`/`complete`（树）与 `claim`/`release`/`complete`/`reopen`（Team Board）；`create`/`focus`/`edit` 这类结构性操作不占位。
-- 真实进程 e2e 新增 `seat-race`（团队）与 `seat-standard`（标准）：同一 Worker 并发认领两个任务只有一个成功、重复认领同一任务只有一个成功、持位时的第三次认领被拒、调用结束后座位释放（被 Board 拒绝的认领不会卡住重试）、Lead 与真实子代理并发认领只有一个成功。测试装置新增并发探针：脚本模型一次只能发一个工具调用，探针用真实 `tools.execute` 在同一瞬间派发两条真实工具调用，其余全部走产品路径。
-
-**团队模式：认领绑定（claim-first）**
-
-- 团队模式的绑定不再来自"分配"，而来自 Worker 自己的认领：Lead 用 `task_tree_write {"op":"dispatch","id","member","teamTaskId"}` 只写路由（不写 owner、不建执行、不改状态），被指名的 Worker 自己在 Team Board 上 `claim`；Host 在拿到 Board 提交后的真实返回值时写入执行。
-- 绑定由 Host 完成：从活 Agent 经 Team roster 解析出真实会话 id 与成员名（roster 的 `id` 是 Team 标识，真正的成员会话 id 取活 Agent 的 id），核对 `dispatch.member`、`Board.ownerName`、revision 恰好 +1 后，一次落盘写入 `status=in_progress` + `owner{sessionId,executionId,member}` + `executions[]`（`mode:"team"`, `teamTaskId`, `member`, `claimRevision`），并清空 `dispatch`。
-- 未绑定的 Worker 改文件一律被拒；认领成功后只有该 Worker 持有执行，其他成员既不能认领同一任务（dispatch 不匹配即拒），也不能在没有自己执行的情况下写文件。
-- 一个任务、一个会话最多一条非终态执行：guard 在认领前检查，绑定时再在树写锁内复核；树上的 `claim` 在团队模式被拒绝（执行只能由 Board claim 产生）。
-- Host 直接拒绝 `team_task_update reassign`（两种角色都拒）：`claim` 只能从 `pending` 开始，而 `reassign` 直接写 `in_progress + owner`，不存在"先分配再认领"的自洽路径；模型在参数里自报的 `owner` 等身份字段不参与任何判定。
-- `task_tree_read` 与面板显示执行者：任务行新增 `executor{kind,name,sessionId}`（Lead / 具名 teammate / subagent），任务详情优先显示成员名。
-- 真实进程 e2e 新增 `team-bind`：两个真实 Worker 各自认领、各自可写，未绑定写入被拒，跨成员认领/写入被拒，`reassign` 被拒且 Board 不变，树文件与账本记录真实会话 id；`team-lead` 同步改为证明团队 Lead 无法用树 `claim` 建立执行。测试装置新增按成员名分流的脚本队列与 `waitForTeammate`。
-
-**团队模式：Lead 只协调**
-
-- 模式判定按组合而非模型自报：插件上下文里存在 Agent Team 服务即为团队模式，标准模式的行为完全不变。
-- 团队模式下 Lead 一律被拒所有 A 类工具（写文件、`edit`、shell、`terminal_*`、worktree、`workflow`、`ralph`、子代理派生），**即使它持有任务执行**；拒绝发生在工具执行之前，与提示词无关，理由写明"Lead 只协调"并指向 `spawn_teammate`。
-- 协调类照常可用：`spawn_teammate`、`send_message`、`wait_agent`、`list_agents`、`interrupt_agent`、两个任务系统、只读工具。任务树的维护仍归 Lead；teammate 写树依旧被拒。
-- 真实进程 e2e 新增 `team-lead`：无树、持位、释放后三种状态下全部 A 类代表工具被拒且磁盘无副作用；队伍任务、真实 teammate 的派生与消息、只读工具照常。测试装置顺带修正为优先选择真实 PATH 上的 `dsh`，避免 npm 注入的祖先 `node_modules/.bin` 旧启动器在团队 profile 下解析不到 bundle。
-
-执行门禁（执行调度 v8 的第一切片），以及审计后修复的三处授权/交付边界漏洞与一处引用校验下限：
-
-**执行门禁（标准模式）**
-
-- 工具按三类授权：A 类（工作区修改与代码执行：`write`、`edit`、`bash`、`terminal_*`、`workflow`、`ralph`、子代理派生、worktree、未知的新工具）必须在该工作线持有一个活动执行才放行；B 类（`task_tree_*`、`team_task_*`、spawn/message/wait/interrupt、`todo_write`、`schedule_*`、`present` 等任务管理与执行控制）不需要执行权；C 类只读永远放行。
-- 分类是**默认拒绝**：只有"可证明只读"与"可证明属于任务管理"的工具进白名单，其余一律按 A 类处理，所以新插件注册的写工具不会被漏掉。
-- 门禁是 `ctx.tools.guard` 注册的单调守卫，在工具真正执行之前同步判定；身份取活 Agent 的会话 id（不采信模型字段），任务树通过 store 的同步快照读取（进程内缓存，冷启动时只同步读一个小文件，不 await）。拒绝理由写明"未持有执行"以及 claim 的用法。
-- `claim` 建立执行、`release` 结束执行；两者都是 B 类，因此不存在"先有执行权才能认领"的循环依赖。未建立任务树的工作线不受约束，普通问答不受影响。
-- 新增真实进程 e2e 场景 `execution-gate`：无树时放行 → 建树后 `write`/`bash` 被拒且磁盘无副作用 → claim 后放行 → release 后立刻再拒 → 全程 `task_tree_*` 可用。
-
-**标准模式单执行位与交接**
-
-- 同一工作线只有一个执行位：`claim` 会先看整条工作线，只要还有一条非终态执行，其他任何会话（包括 Lead 自己换任务）的认领都被拒绝；已死会话占着的位置也不会被后来者顶掉，必须显式 `release`。
-- 执行号由 Host 单调分配（`ex-1`、`ex-2`…），与 claim 戳一起写在任务树文件的同一次落盘：`workline.executions[]` 是执行账本，`task.owner.executionId` 是当前戳。结束的执行只追加 `endedAt`/`endReason`，永不复活；重新认领一定拿到新号。
-- 新增 `task_tree_write {"op":"assign","id","member"}`：`member` 是 spawn 返回值里的子会话 id 或 `"lead"`。分配只是路由，不产生执行；Host 会核对目标确实是本工作线下的 subagent 会话。
-- 交接闭环：Lead `release` → `assign` 子代理 → 子代理 `claim`/`release` → Lead `assign "lead"` + `claim`（新执行号）。只有持位者能写工作区，也只有持位者能 `release`/`complete` 自己的执行；Lead 在子代理持位期间不可写、不可代为完成。
-- 子代理只被允许 `claim`/`release`，且只能认领分配给自己的任务；其余任务树写操作仍被拒绝。未组成 Agent Team 即为标准模式，团队模式留给后续切片。
-- 完成、暂缓、归档都会结束对应的执行，终态任务（done/deferred/archived）不会挂着非终态执行。
-- 真实进程 e2e 新增 `execution-seat`：Lead 持位时子代理认领被拒 → 释放并分配后子代理可写而 Lead 不可写 → 子代理结束后 Lead 重新接手拿到新执行号 → 连续三个任务得到三个不同执行号；测试装置新增逐会话工具记录、子代理脚本队列、`{{subagentId}}` 模板与子代理回合等待。
-
-**授权不能被嵌套绕过**
-
-- 新建任务时，只有**直接父任务**已授权才继承批准；此前的实现会沿祖先链一路向上找，导致"显式 pending 的中间步骤 + 一个已授权的祖父"可以绕过人工边界。多套一层不再能开工。
-- 直接以 `status: "in_progress"` 创建任务时，同样必须通过 `assertExecutable`；此前只有 `update` 走这道门，创建路径可以绕过授权。
-
-**归档不能把在途工作洗出交付**
-
-- 归档会连带整个子树，所以现有的 `userBasis` 校验从"只看被归档的那个任务"改为"子树里任何一个已授权且未完成的任务都需要用户依据"；`archiveBasis` 会真正记到被连带归档的子任务上。此前一个 pending 容器可以把已开工的子任务静默归档，`archiveBasis` 为 `null`。
-
-**引用校验下限**
-
-- `verifyUserQuote` 增加 2 个字符（按用户原样，与 200 上限同一计量口径）的下限：单个字符几乎出现在任何句子里，接受它会让授权/验收校验形同虚设；两个字符是「ok」「同意」这类真实回答，所以下限停在这里。超出下限的引用仍按原规则逐字比对。
+- `README.md`：删除"一次只做一件事：标准模式与团队模式"，改为"没有强制：记录靠自觉，面板让缺失一眼可见"。
+- `docs/requirements/REQUIREMENTS.md` §10 改为"记录与接手（约定，不是锁）"；§11 团队模式改为"Lead 维护树是约定，不是校验"。
+- `docs/implementation-status.md`：模块地图、已交付能力、测试与已知限制按拆除后的真实状态重写。
+- 本文件 `### Removed` 首次记录拆除；`docs/adr/0003-remove-the-execution-gate.md` 记录决策。
 
 ## 0.3.7 — 2026-11-03
 

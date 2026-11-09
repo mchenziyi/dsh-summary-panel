@@ -67,8 +67,8 @@ _代码_：`host/model.js` 的 `applyClaim` / `applyRelease` / `executorOf`。
 Agent Team 里的命名成员。插件不再解析 roster：老记录里 `owner.member` 存的名字只用于面板显示。
 
 **已拆除的执行语汇（历史）**
-`执行（execution）`、执行证据、认领意图日志、执行账本 / Worker 台账 / 执行戳、冲突、对账、派发都是 v0.4.0 拆掉的
-执行层概念（ADR-0003），代码已不存在；它们还留在 ADR-0001、ADR-0003、老 json，以及 #19 / #20 待改写的 CHANGELOG、`docs/implementation-status.md`、需求文档与 e2e 里。
+`执行（execution）`、执行证据、认领意图日志、执行账本 / Worker 台账 / 执行戳、冲突、对账、派发都是 v0.4.0 已拆除的执行层概念（ADR-0003）；
+代码已不存在，它们还留在 ADR-0001、ADR-0003、老 json、CHANGELOG 的 0.4.0 `### Removed`，以及 #20 待重写的 e2e 文档与手动验收里。
 现行语义见 ADR-0003 决策表与 `docs/CONTRACT.md` 不变量 7。
 
 ---
