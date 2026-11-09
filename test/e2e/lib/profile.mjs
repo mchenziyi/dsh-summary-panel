@@ -20,7 +20,7 @@ import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** Fixture files copied beside the generated patch file. */
-const FIXTURE_PLUGINS = ['scripted-llm.js', 'web-server-stub.js', 'connection-stub.js', 'team-board-probe.js', 'tool-transcript.js', 'class-a-probe.js', 'seat-race-probe.js', 'crash-injector.js'];
+const FIXTURE_PLUGINS = ['scripted-llm.js', 'web-server-stub.js', 'connection-stub.js', 'team-board-probe.js', 'tool-transcript.js', 'crash-injector.js'];
 
 export const PROFILE_NAME = 'e2e';
 
@@ -51,20 +51,11 @@ function patchLayer({ fixtureDir, pluginRoot, scriptPath, teamBoardPath, transcr
       name: ./plugins/tool-transcript.js
       config:
         out: ${JSON.stringify(transcriptPath)}`);
-  // The concurrency probe dispatches two real tool calls at the same instant,
-  // which a scripted, one-call-per-step model cannot do (ticket #9).
-  rows.push(`    - id: e2e-seat-race-probe
-      name: ./plugins/seat-race-probe.js`);
   if (team) {
     rows.push(`    - id: e2e-team-probe
       name: ./plugins/team-board-probe.js
       config:
         out: ${JSON.stringify(teamBoardPath)}`);
-    // The team profile replaces `tool-subagent` and disables `ralph`; these
-    // named stubs stand in for the class A tools the headless profile does not
-    // ship, so a refusal can be proven down to the tool body.
-    rows.push(`    - id: e2e-class-a-probe
-      name: ./plugins/class-a-probe.js`);
   }
   // The crash injector must run its post-execute listener BEFORE the plugin
   // under test, so its SIGKILL lands between the Team board's commit and the

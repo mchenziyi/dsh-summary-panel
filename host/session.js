@@ -89,9 +89,9 @@ export function createSessionSupport(ctx) {
    *                persisted record resolves and the same session can resume.
    *                A session that cannot resume can never call a tool, so a
    *                restart of a provable worker must NOT strip its execution;
-   * - `orphaned` — nothing resolves it any more ("executor lost"). It grants
-   *                no class A permission, is never silently released, and only
-   *                a Lead force-release ends it.
+   * - `orphaned` — nothing resolves it any more ("executor lost"). The panel
+   *                shows it as lost, it is never silently released, and only a
+   *                Lead force-release ends it.
    *
    * A session that cannot even be looked up (an empty id) is orphaned: the
    * fail-closed direction is always "no permission", never "assume alive".

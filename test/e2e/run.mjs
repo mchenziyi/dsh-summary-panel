@@ -17,7 +17,7 @@
  * Usage:
  *   node test/e2e/run.mjs                     # every scenario
  *   node test/e2e/run.mjs --list              # list scenarios
- *   node test/e2e/run.mjs baseline-write tree-init team-board
+ *   node test/e2e/run.mjs baseline-write tree-init
  *   node test/e2e/run.mjs --keep [scenario]   # keep the temporary directory
  *   node test/e2e/run.mjs --out DIR           # copy the artefacts to DIR
  */

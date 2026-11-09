@@ -1,10 +1,9 @@
 /**
  * Claim-evidence tests: the intent journal, crash convergence, conflicts, and
- * the executionId guard (design v8 §7, §8, I12, I17; ticket #8).
+ * the executionId guard over the ledger (design v8 §7, §8, I12, I17; ticket #8).
  *
- * These are regression guards over the pure pieces; the functional proof lives
- * in the real-process e2e scenarios (`crash-reconcile`, `evidence-conflict`,
- * `execution-evidence`). Run with `node test/evidence.mjs`.
+ * These are regression guards over the pure pieces. Run with
+ * `node test/evidence.mjs`.
  */
 
 import assert from 'node:assert/strict';
@@ -19,7 +18,6 @@ import {
 import { appendIntent, journalPath, readJournal, unsettledIntents } from '../host/journal.js';
 import { convergeWorkline } from '../host/reconcile.js';
 import { createTaskStore } from '../host/store.js';
-import { createExecutionGuard } from '../host/guard.js';
 import { endWorkerLifetime, workerLifetimeOf } from '../host/lifetime.js';
 
 const NOW = 1_700_000_000_000;
@@ -380,7 +378,7 @@ const INTENT = {
 }
 
 // ---------------------------------------------------------------------------
-// the store exposes unresolved conflicts to the synchronous guard
+// the store exposes unresolved conflicts to a synchronous reader
 // ---------------------------------------------------------------------------
 
 {
@@ -399,54 +397,8 @@ const INTENT = {
     return { envelope: next };
   });
   const snapshot = store.snapshot('session-root');
-  assert.equal(snapshot.conflicts.length, 1, 'the guard can see the stop without awaiting storage');
+  assert.equal(snapshot.conflicts.length, 1, 'a synchronous reader can see the stop without awaiting storage');
   assert.equal(snapshot.conflicts[0].taskId, 't1');
-}
-
-// ---------------------------------------------------------------------------
-// the guard refuses a stopped Team claim before the board is even consulted
-// ---------------------------------------------------------------------------
-
-{
-  const root = tempRoot();
-  const store = createTaskStore({ root, logger: { warn() {} } });
-  const sessions = new Map([['team-lead', { header: { id: 'team-lead' } }]]);
-  const members = new Map([
-    ['team-lead', { id: 'team-lead', role: 'lead', name: 'lead', root: { id: 'team-lead' } }],
-    ['team-worker', { id: 'team-worker', role: 'teammate', name: 'worker-a', root: { id: 'team-lead' } }],
-  ]);
-  const ctx = {
-    get: (name) => {
-      if (name === 'sessions') return { get: (id) => sessions.get(id) ?? (id === 'team-worker' ? { header: { id: 'team-worker', parentSession: 'team-lead' } } : undefined) };
-      if (name === 'agentTeams') return { tryMembership: (agent) => members.get(agent.id) };
-      return undefined;
-    },
-  };
-  const guard = createExecutionGuard({ ctx, store });
-  const exec = (sessionId, tool, args) => ({
-    name: tool,
-    arguments: args,
-    agent: { id: sessionId, session: { header: { id: sessionId, ...(sessionId === 'team-worker' ? { parentSession: 'team-lead' } : {}) } } },
-  });
-
-  await store.update('team-lead', (current) => ({
-    envelope: envelopeAfter(current, [
-      { op: 'init', originalGoal: '团队' },
-      { op: 'create', title: '任务', executionApproval: 'approved', approvalBasis: '开始吧' },
-      { op: 'dispatch', id: 't1', member: 'worker-a', teamTaskId: 'task-1' },
-    ], { worklineId: 'team-lead', actorSessionId: 'team-lead', standardMode: false }).envelope,
-  }));
-  assert.equal(guard(exec('team-worker', 'team_task_update', { task_id: 'task-1', action: 'claim' })), undefined,
-    'a dispatched Worker may claim when the evidence is consistent');
-
-  await store.update('team-lead', (current) => {
-    const next = cloneEnvelope(current);
-    recordConflict(next.workline, { kind: 'unproven-claim', taskId: 't1', evidence: { boardRevision: 2 }, now: NOW });
-    return { envelope: next };
-  });
-  const denial = guard(exec('team-worker', 'team_task_update', { task_id: 'task-1', action: 'claim' }));
-  assert.match(denial, /stopped by conflict cf-1 \(unproven-claim\)/);
-  assert.match(denial, /no claim may start on it until a human resolves the conflict/);
 }
 
 // ---------------------------------------------------------------------------
@@ -624,63 +576,6 @@ function claimedTeamWorkline() {
     }),
     /only its holder can release it/,
   );
-}
-
-// ---------------------------------------------------------------------------
-// the execution gate: a lost or force-terminated executor grants no class A
-// permission, and the stamp's missing ledger record fails closed
-// ---------------------------------------------------------------------------
-
-{
-  const root = tempRoot();
-  const store = createTaskStore({ root, logger: { warn() {} } });
-  const worklineId = 'session-root';
-  const live = new Set(['session-root']);
-  const ctx = {
-    get(name) {
-      if (name === 'sessions') {
-        return { get: (id) => (live.has(id) ? { header: { id, ...(id === 'worker-session' ? { parentSession: 'session-root' } : {}) } } : undefined) };
-      }
-      if (name === 'agents') return { get: () => undefined };
-      return undefined;
-    },
-  };
-  const guard = createExecutionGuard({ ctx, store });
-  const call = (sessionId, tool = 'write') => ({
-    name: tool,
-    callId: 'call-guard',
-    agent: { id: sessionId, session: { header: { id: sessionId, ...(sessionId === 'worker-session' ? { parentSession: 'session-root' } : {}) } } },
-  });
-
-  const claimed = claimedTeamWorkline();
-  await store.update(worklineId, () => ({ envelope: claimed }));
-  assert.equal(guard(call('worker-session')), undefined, 'an active execution grants class A');
-
-  await store.update(worklineId, () => ({
-    envelope: convergeWorkline(claimed, {
-      now: NOW + 1, teamMode: true, board: BOARD_CLAIMED, journal: [], sessionStates: { 'worker-session': 'orphaned' },
-    }).envelope,
-  }));
-  const lost = guard(call('worker-session'));
-  assert.match(lost, /can no longer be resolved \(executor lost\)/);
-  assert.match(lost, /Only an `active` execution grants class A permission/);
-  assert.match(lost, /force-release/);
-
-  // Force-terminated: no stamp at all, but the lifetime record explains why.
-  const released = applyOps(markInterrupted(claimed, { sessionId: 'worker-session', now: NOW + 2 }).envelope, [
-    { op: 'release', id: 't1', force: true, reason: 'gone' },
-  ], { ...CTX, standardMode: false, now: NOW + 3, isRunning: () => false }).envelope;
-  await store.update(worklineId, () => ({ envelope: released }));
-  const terminated = guard(call('worker-session'));
-  assert.match(terminated, /was force-terminated/);
-  assert.match(terminated, /never write for this workline again/);
-
-  // A stamp whose ledger record is missing fails closed instead of granting.
-  const broken = cloneEnvelope(claimed);
-  broken.tasks[0].owner.executionId = 'ex-missing';
-  await store.update(worklineId, () => ({ envelope: broken }));
-  const missing = guard(call('worker-session'));
-  assert.match(missing, /the execution ledger has no record/);
 }
 
 console.log('evidence ok');

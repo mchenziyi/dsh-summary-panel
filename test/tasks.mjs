@@ -21,10 +21,8 @@ import {
 } from '../host/model.js';
 import { createTaskStore } from '../host/store.js';
 import { callerOf } from '../host/caller.js';
-import { classifyTool, createExecutionGuard } from '../host/guard.js';
 import { normalizeWorker } from '../host/lifetime.js';
 import { mountTaskTree } from '../host/mount.js';
-import { createSeatTable, registerSeatObservers, seatRequestFor } from '../host/reservation.js';
 import { taskTreeReminderFor, TASK_TREE_REMINDER, TASK_TREE_START_REMINDER, TASK_TREE_PROMPT } from '../host/prompt.js';
 import { MAX_BASIS, MIN_QUOTE, verifyUserQuote } from '../host/evidence.js';
 
@@ -760,14 +758,15 @@ function titles(snapshot) {
 }
 
 // ---------------------------------------------------------------------------
-// store: the synchronous snapshot the execution gate decides on
+// store: the synchronous snapshot the claim evidence pass reads
 // ---------------------------------------------------------------------------
 
 {
   const root = tempRoot();
   const store = createTaskStore({ root, logger: { warn() {} } });
   // An absent file is an empty workline. The snapshot only reports the fact;
-  // the gate denies class A on it (ADR-0001), so absence is not permission.
+  // a claim binding reads it as "nothing was dispatched", so absence is not
+  // permission.
   assert.deepEqual(store.snapshot('session-cold'), { present: false, tasks: [] });
 
   await store.update('session-root', (current) => ({
@@ -792,20 +791,20 @@ function titles(snapshot) {
   assert.equal(cold.tasks[0].title, '落盘');
   assert.equal(cold.tasks[0].owner.sessionId, 'session-root');
 
-  // Fail closed: a present-but-unreadable tree reports no tasks, which denies
-  // class A, rather than inventing a tree that might grant something.
+  // Fail closed: a present-but-unreadable tree reports no tasks, so the claim
+  // binding refuses rather than inventing a tree that might grant something.
   writeFileSync(join(root, 'session-corrupt.json'), '{ not json');
   const corrupt = reopened.snapshot('session-corrupt');
   assert.equal(corrupt.present, true);
   assert.deepEqual(corrupt.tasks, []);
 
   // An invalid workline id can never map to a file, so it reports the empty
-  // workline — which the gate denies, it never frees a class A call.
+  // workline — a claim binding reads no tree, never a grant.
   assert.deepEqual(reopened.snapshot('../escape'), { present: false, tasks: [] });
 }
 
 // ---------------------------------------------------------------------------
-// caller resolution: one module shared by the gate, the tools and recovery
+// caller resolution: one module shared by the tools and reconciliation
 // ---------------------------------------------------------------------------
 
 {
@@ -834,234 +833,6 @@ function titles(snapshot) {
   assert.equal(normalizeWorker({ state: 'ended' }).state, 'ended');
   assert.equal(normalizeWorker({ state: 'created' }).state, 'ended');
   assert.equal(normalizeWorker({ state: 'whatever' }).state, 'ended');
-}
-
-// ---------------------------------------------------------------------------
-// execution gate: tool classification is default-deny
-// ---------------------------------------------------------------------------
-
-{
-  // Class A: workspace modification and code execution, by default.
-  for (const name of ['write', 'edit', 'str_replace_editor', 'apply_patch', 'bash', 'terminal_open', 'pwsh_run', 'create_worktree', 'working_directory', 'run_code', 'workflow', 'ralph', 'subagent_spawn', 'plugin_manager']) {
-    assert.equal(classifyTool(name), 'A', `${name} modifies the workspace and must be class A`);
-  }
-  // A tool a later plugin registers is class A too: no short blacklist can hide it.
-  assert.equal(classifyTool('some_future_plugin_tool'), 'A');
-  assert.equal(classifyTool(undefined), 'A');
-  // Class B: task management and execution control, which never needs an execution.
-  for (const name of ['task_tree_read', 'task_tree_write', 'team_task_create', 'team_task_update', 'spawn_teammate', 'send_message', 'interrupt_agent', 'list_agents', 'ask_user_question', 'todo_write', 'schedule_create', 'session_search', 'present', 'create_goal']) {
-    assert.equal(classifyTool(name), 'B', `${name} is task management or execution control and must be class B`);
-  }
-  // Class C: read-only, always allowed.
-  for (const name of ['read', 'grep', 'glob', 'read_image', 'web_fetch', 'web_search', 'job_output', 'skill', 'cordis_inspect_list', 'plugin_market', 'load_workspace_dependencies']) {
-    assert.equal(classifyTool(name), 'C', `${name} is read-only and must be class C`);
-  }
-
-  // The guard itself is a pure synchronous decision: every class A call needs
-  // the calling session's claim stamp, in a workline with a tree and in one
-  // with no tree at all (ADR-0001).
-  const root = tempRoot();
-  const store = createTaskStore({ root, logger: { warn() {} } });
-  const sessions = new Map([
-    ['session-root', { header: { id: 'session-root' } }],
-    ['session-branch', { header: { id: 'session-branch', parentSession: 'session-root' } }],
-    ['session-other', { header: { id: 'session-other' } }],
-  ]);
-  const ctx = { get: (name) => (name === 'sessions' ? { get: (id) => sessions.get(id) } : undefined) };
-  const guard = createExecutionGuard({ ctx, store });
-  const exec = (sessionId, parentSession, tool = 'write') => ({
-    name: tool,
-    agent: {
-      id: sessionId,
-      session: { header: parentSession === undefined ? { id: sessionId } : { id: sessionId, parentSession } },
-    },
-  });
-
-  // No tree yet: refused like any other unclaimed workline, and the reason has
-  // to carry the bootstrap path because there is nothing to claim.
-  const cold = guard(exec('session-root'));
-  assert.match(cold, /holds no active execution/, 'no tree yet: class A is refused, the absent tree is not permission');
-  assert.match(cold, /no task tree yet/, 'the cold refusal names the missing tree');
-  assert.match(cold, /"op":"init"/, 'the cold refusal gives the bootstrap path');
-  assert.match(cold, /"op":"create"/);
-  assert.match(cold, /"op":"claim"/);
-  await store.update('session-root', (current) => ({
-    envelope: envelopeAfter(current, [
-      { op: 'init', originalGoal: '门禁' },
-      { op: 'create', title: '任务', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
-    ]).envelope,
-  }));
-  assert.match(guard(exec('session-root')), /holds no active execution/);
-  assert.equal(guard(exec('session-root', undefined, 'task_tree_write')), undefined, 'class B never needs an execution');
-  assert.equal(guard(exec('session-root', undefined, 'read')), undefined, 'class C is always allowed');
-  // A branch/subagent session resolves to its workline root, not to itself.
-  assert.match(guard(exec('session-branch', 'session-root')), /holds no active execution/);
-  // A claim in one workline never grants anything in another: that workline
-  // has no tree, so it is denied on its own empty-tree reason.
-  assert.match(guard(exec('session-other')), /no task tree yet/);
-
-  await store.update('session-root', (current) => ({
-    envelope: envelopeAfter(current, [{ op: 'claim', id: 't1' }]).envelope,
-  }));
-  assert.equal(guard(exec('session-root')), undefined, 'the claim holder is allowed');
-  assert.match(guard(exec('session-branch', 'session-root')), /holds no active execution/, 'a different session in the same workline is denied');
-
-  await store.update('session-root', (current) => ({
-    envelope: envelopeAfter(current, [{ op: 'release', id: 't1' }]).envelope,
-  }));
-  assert.match(guard(exec('session-root')), /holds no active execution/, 'release denies the same session immediately');
-}
-
-// ---------------------------------------------------------------------------
-// execution gate: a missing ledger grants nothing (fail closed)
-// ---------------------------------------------------------------------------
-
-{
-  // A record written before the execution ledger existed: the task still
-  // carries a claim stamp and the workline has no `executions` array at all.
-  // The stamp is an index, never the truth, so this grants no permission.
-  const legacy = {
-    version: 1,
-    workline: {
-      id: 'session-root', createdAt: 1, updatedAt: 2, goal: { original: 'g', current: 'g', changes: [] }, outline: '', focus: [], nextSeq: 2,
-    },
-    tasks: [{
-      id: 't1',
-      worklineId: 'session-root',
-      parentId: null,
-      order: 0,
-      title: '旧任务',
-      status: 'in_progress',
-      executionApproval: 'approved',
-      owner: { sessionId: 'session-root', since: 3 },
-      createdAt: 1,
-      updatedAt: 3,
-    }],
-  };
-  const root = tempRoot();
-  writeFileSync(join(root, 'session-root.json'), JSON.stringify(legacy));
-  const store = createTaskStore({ root, logger: { warn() {} } });
-  const sessions = new Map([['session-root', { header: { id: 'session-root' } }]]);
-  const ctx = { get: (name) => (name === 'sessions' ? { get: (id) => sessions.get(id) } : undefined) };
-  const guard = createExecutionGuard({ ctx, store });
-  const denied = guard({
-    name: 'write',
-    agent: { id: 'session-root', session: { header: { id: 'session-root' } } },
-  });
-  // The read model already calls that execution `missing`; the gate must say
-  // so per task, instead of falling back to the workline-level refusal.
-  assert.equal(readSnapshot(legacy, 'session-root').tasks[0].executionState, 'missing');
-  assert.match(denied, /execution ledger has no record/);
-  assert.match(denied, /fail closed/);
-
-  // An explicitly empty ledger is the same absent index.
-  writeFileSync(join(root, 'session-empty-ledger.json'), JSON.stringify({
-    version: 1,
-    workline: { ...legacy.workline, id: 'session-empty-ledger', executions: [] },
-    tasks: [{ ...legacy.tasks[0], worklineId: 'session-empty-ledger', owner: { sessionId: 'session-empty-ledger', since: 3 } }],
-  }));
-  const emptyCtx = { get: (name) => (name === 'sessions' ? { get: () => undefined } : undefined) };
-  const emptyDenied = createExecutionGuard({ ctx: emptyCtx, store })({
-    name: 'write',
-    agent: { id: 'session-empty-ledger', session: { header: { id: 'session-empty-ledger' } } },
-  });
-  assert.match(emptyDenied, /execution ledger has no record/);
-}
-
-// ---------------------------------------------------------------------------
-// execution gate: team mode makes the Lead a pure coordinator
-// ---------------------------------------------------------------------------
-
-{
-  const root = tempRoot();
-  const store = createTaskStore({ root, logger: { warn() {} } });
-  const sessions = new Map([
-    ['team-lead', { header: { id: 'team-lead' } }],
-    ['team-worker', { header: { id: 'team-worker', parentSession: 'team-lead' } }],
-    ['plain-child', { header: { id: 'plain-child', parentSession: 'team-lead', origin: 'subagent' } }],
-  ]);
-  // The real roster resolves membership from the live Agent; this stand-in does
-  // the same by id. A provider-owned subagent is not a Team member.
-  const members = new Map([
-    ['team-lead', { id: 'team-lead', role: 'lead', name: 'lead', root: { id: 'team-lead' } }],
-    ['team-worker', { id: 'team-worker', role: 'teammate', name: 'worker-a', root: { id: 'team-lead' } }],
-  ]);
-  const agentTeams = { tryMembership: (agent) => members.get(agent.id) };
-  const ctx = {
-    get: (name) => {
-      if (name === 'sessions') return { get: (id) => sessions.get(id) };
-      if (name === 'agentTeams') return agentTeams;
-      return undefined;
-    },
-  };
-  const guard = createExecutionGuard({ ctx, store });
-  const exec = (sessionId, parentSession, tool = 'write') => ({
-    name: tool,
-    agent: {
-      id: sessionId,
-      session: { header: parentSession === undefined ? { id: sessionId } : { id: sessionId, parentSession } },
-    },
-  });
-
-  // Team mode is decided by composition: even before any tree exists, the Lead
-  // may not touch the workspace.
-  const noTree = guard(exec('team-lead'));
-  assert.match(noTree, /only coordinates/, 'a Team Lead is refused before any tree exists');
-  assert.match(noTree, /class A/, 'the reason names the tool class');
-  assert.match(noTree, /team-lead/, 'the reason names the calling session');
-
-  // Class B and C stay open: the Lead still maintains the tree and coordinates.
-  assert.equal(guard(exec('team-lead', undefined, 'task_tree_write')), undefined);
-  assert.equal(guard(exec('team-lead', undefined, 'team_task_update')), undefined);
-  assert.equal(guard(exec('team-lead', undefined, 'spawn_teammate')), undefined);
-  assert.equal(guard(exec('team-lead', undefined, 'send_message')), undefined);
-  assert.equal(guard(exec('team-lead', undefined, 'read')), undefined);
-  const future = guard(exec('team-lead', undefined, 'some_future_plugin_tool'));
-  assert.match(future, /some_future_plugin_tool is a class A tool/, 'an unclassified tool is class A for the Lead');
-  assert.match(future, /only coordinates/);
-
-  await store.update('team-lead', (current) => ({
-    envelope: envelopeAfter(current, [
-      { op: 'init', originalGoal: '团队模式' },
-      { op: 'create', title: '协调', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
-    ], { worklineId: 'team-lead', actorSessionId: 'team-lead', standardMode: false }).envelope,
-  }));
-  // A tree does not widen the Lead's permission either.
-  assert.match(guard(exec('team-lead')), /only coordinates/, 'a Lead with a tree is still refused');
-  // The Lead cannot create an execution from the tree in team mode; the
-  // Worker's board claim is the only way (ticket #6).
-  assert.throws(
-    () => envelopeAfter(store.snapshot('team-lead').present === true
-      ? { version: 1, workline: { id: 'team-lead' }, tasks: store.snapshot('team-lead').tasks }
-      : undefined, [{ op: 'claim', id: 't1' }],
-    { worklineId: 'team-lead', actorSessionId: 'team-lead', standardMode: false }),
-    /Team-board claim/,
-  );
-
-  // An unbound teammate holds no execution yet, and the provider-owned
-  // subagent is not mistaken for the Lead.
-  assert.match(guard(exec('team-worker', 'team-lead')), /holds no active execution/);
-  assert.match(guard(exec('plain-child', 'team-lead')), /holds no active execution/);
-
-  // A service exposing only the strict resolver is detected the same way.
-  const strictCtx = {
-    get: (name) => {
-      if (name === 'sessions') return { get: (id) => sessions.get(id) };
-      if (name === 'agentTeams') return { membership: (agent) => { if (agent.id !== 'team-lead') throw new Error('not a member'); return { id: 'team-lead', role: 'lead', name: 'lead', root: { id: 'team-lead' } }; } };
-      return undefined;
-    },
-  };
-  assert.match(createExecutionGuard({ ctx: strictCtx, store })(exec('team-lead')), /only coordinates/);
-
-  // No Agent Team service: standard mode keeps its seat rule untouched.
-  const standardCtx = { get: (name) => (name === 'sessions' ? { get: (id) => sessions.get(id) } : undefined) };
-  assert.match(createExecutionGuard({ ctx: standardCtx, store })(exec('team-lead')), /holds no active execution/);
-  await store.update('team-lead', (current) => ({
-    envelope: envelopeAfter(current, [{ op: 'claim', id: 't1' }], {
-      worklineId: 'team-lead', actorSessionId: 'team-lead', standardMode: true,
-    }).envelope,
-  }));
-  assert.equal(createExecutionGuard({ ctx: standardCtx, store })(exec('team-lead')), undefined, 'a standard-mode claim still grants class A');
 }
 
 // ---------------------------------------------------------------------------
@@ -1196,79 +967,6 @@ function titles(snapshot) {
   assert.equal(released.tasks[0].status, 'in_progress', 'release does not complete the task');
 }
 
-{
-  // The guard refuses reassign and a claim that does not match the tree
-  // dispatch, using the roster identity rather than any argument field.
-  const root = tempRoot();
-  const store = createTaskStore({ root, logger: { warn() {} } });
-  const members = new Map([
-    ['team-lead', { id: 'team-lead', role: 'lead', name: 'lead', root: { id: 'team-lead' } }],
-    ['session-a', { id: 'session-a', role: 'teammate', name: 'worker-a', root: { id: 'team-lead' } }],
-    ['session-b', { id: 'session-b', role: 'teammate', name: 'worker-b', root: { id: 'team-lead' } }],
-  ]);
-  const agentTeams = { tryMembership: (agent) => members.get(agent.id) };
-  const ctx = {
-    get: (name) => {
-      if (name === 'sessions') return { get: () => undefined };
-      if (name === 'agentTeams') return agentTeams;
-      return undefined;
-    },
-  };
-  const guard = createExecutionGuard({ ctx, store });
-  const exec = (sessionId, tool, args) => ({
-    name: tool,
-    arguments: args,
-    agent: { id: sessionId, session: { header: { id: sessionId, parentSession: 'team-lead' } } },
-  });
-  const claim = (sessionId, taskId, extra = {}) => exec(sessionId, 'team_task_update', {
-    task_id: taskId, expected_revision: 1, action: 'claim', ...extra,
-  });
-
-  // No tree yet: no dispatch, so no claim.
-  assert.match(guard(claim('session-a', 'task-1')), /no dispatch can exist/);
-
-  await store.update('team-lead', (current) => ({
-    envelope: envelopeAfter(current, [
-      { op: 'init', originalGoal: '团队模式派工' },
-      { op: 'create', title: '任务', executionApproval: 'approved', approvalBasis: '开始吧' },
-      { op: 'dispatch', id: 't1', member: 'worker-a', teamTaskId: 'task-1' },
-    ], { worklineId: 'team-lead', standardMode: false, actorSessionId: 'team-lead' }).envelope,
-  }));
-  assert.equal(guard(claim('session-a', 'task-1')), undefined, 'the dispatched Worker may claim');
-  assert.match(guard(claim('session-b', 'task-1', { owner: 'worker-a' })),
-    /dispatched to worker-a, not worker-b/,
-    'a model-supplied owner field never decides identity');
-  assert.match(guard(claim('team-lead', 'task-1')), /Team Lead coordinates/);
-
-  // reassign is refused for both roles (I18).
-  const reassign = (sessionId) => exec(sessionId, 'team_task_update', {
-    task_id: 'task-1', expected_revision: 1, action: 'reassign', owner: 'worker-b',
-  });
-  assert.match(guard(reassign('team-lead')), /reassign is refused/);
-  assert.match(guard(reassign('session-a')), /reassign is refused/);
-  assert.match(guard(reassign('team-lead')), /claim only start from pending|can never be combined/);
-  // A non-claim Team action is still class B.
-  assert.equal(guard(exec('team-lead', 'team_task_update', { task_id: 'task-1', expected_revision: 1, action: 'complete' })), undefined);
-
-  // Once bound, the Worker holds class A; another member does not.
-  const snapshot = store.snapshot('team-lead');
-  const bound = bindTeamClaim(snapshot.present === true ? { version: 1, workline: { id: 'team-lead' }, tasks: snapshot.tasks } : undefined, {
-    taskId: 't1', teamTaskId: 'task-1', sessionId: 'session-a', member: 'worker-a', revision: 2, now: NOW,
-  });
-  await store.update('team-lead', () => ({ envelope: bound.envelope }));
-  assert.equal(guard(exec('session-a', 'write')), undefined, 'the bound Worker may write');
-  assert.match(guard(exec('session-b', 'write')), /holds no active execution/);
-  // It can no longer claim another task: the session already holds one.
-  await store.update('team-lead', (current) => ({
-    envelope: envelopeAfter(current, [
-      { op: 'create', title: '第二', executionApproval: 'approved', approvalBasis: '开始吧' },
-      { op: 'dispatch', id: 't2', member: 'worker-a', teamTaskId: 'task-2' },
-    ], { worklineId: 'team-lead', standardMode: false, actorSessionId: 'team-lead' }).envelope,
-  }));
-  assert.match(guard(claim('session-a', 'task-2')), /already holds an execution/);
-  assert.match(guard(claim('session-b', 'task-2')), /dispatched to worker-a, not worker-b/);
-}
-
 // ---------------------------------------------------------------------------
 // mount: tools and HTTP handlers against a fake context
 // ---------------------------------------------------------------------------
@@ -1397,7 +1095,6 @@ function titles(snapshot) {
 {
   const root = tempRoot();
   const registeredTools = new Map();
-  let registeredGuard;
   const headers = new Map([
     ['session-root', { id: 'session-root' }],
     ['session-child', { id: 'session-child', parentSession: 'session-root', origin: 'subagent' }],
@@ -1413,7 +1110,6 @@ function titles(snapshot) {
       if (name === 'tools') {
         return {
           register: (definition) => { registeredTools.set(definition.name, definition); return () => {}; },
-          guard: (fn) => { registeredGuard = fn; return () => {}; },
         };
       }
       if (name === 'systemPrompt') return undefined;
@@ -1431,7 +1127,6 @@ function titles(snapshot) {
   const sessionFor = (header) => ({ id: header.id, header, seq: 2, snapshotEvents: () => userMessage('开始吧') });
   const lead = { agent: { id: 'session-root', session: sessionFor(headers.get('session-root')) } };
   const child = { agent: { id: 'session-child', session: sessionFor(headers.get('session-child')) } };
-  const classified = (sessionId) => (tool) => ({ name: tool, agent: { id: sessionId, session: sessionFor(headers.get(sessionId)) } });
 
   // The Lead sets up and claims.
   await write.execute({
@@ -1441,7 +1136,6 @@ function titles(snapshot) {
       { op: 'claim', id: 't1' },
     ],
   }, lead);
-  assert.match(registeredGuard(classified('session-child')('write')), /holds no active execution/);
 
   // Release and assign to the child, using the session id from the spawn result.
   await write.execute({ ops: [{ op: 'release', id: 't1' }] }, lead);
@@ -1460,8 +1154,6 @@ function titles(snapshot) {
   // The subagent claims through the same tool; only claim/release are allowed.
   const childClaim = await write.execute({ ops: [{ op: 'claim', id: 't1' }] }, child);
   assert.equal(childClaim.applied[0].executionId, 'ex-2');
-  assert.equal(registeredGuard(classified('session-child')('write')), undefined, 'the subagent may now write');
-  assert.match(registeredGuard(classified('session-root')('write')), /holds no active execution/, 'the lead may not');
   await assert.rejects(
     () => write.execute({ ops: [{ op: 'init', originalGoal: 'again' }] }, child),
     /reserved for the lead session/,
@@ -1476,60 +1168,6 @@ function titles(snapshot) {
   await write.execute({ ops: [{ op: 'assign', id: 't1', member: 'lead' }] }, lead);
   const reclaim = await write.execute({ ops: [{ op: 'claim', id: 't1' }] }, lead);
   assert.equal(reclaim.applied[0].executionId, 'ex-3');
-}
-
-// ---------------------------------------------------------------------------
-// mount: the execution gate is registered through the tool registry's guard
-// ---------------------------------------------------------------------------
-
-{
-  const root = tempRoot();
-  const registeredTools = new Map();
-  let registeredGuard;
-  const ctx = {
-    effect: (factory) => factory(),
-    get(name) {
-      if (name === 'sessions') return { get: () => undefined };
-      if (name === 'tools') {
-        return {
-          register: (definition) => { registeredTools.set(definition.name, definition); return () => {}; },
-          guard: (fn) => { registeredGuard = fn; return () => {}; },
-        };
-      }
-      return undefined;
-    },
-  };
-  const mounted = mountTaskTree(ctx, { root, logger: { warn() {} }, route: () => {} });
-  assert.equal(mounted.guard, true, 'the execution gate is registered');
-  assert.equal(typeof registeredGuard, 'function');
-  const session = {
-    id: 'session-gate',
-    header: { id: 'session-gate' },
-    seq: 2,
-    snapshotEvents: () => [{ type: 'user/message', seq: 1, time: Date.now(), data: { source: { kind: 'user' }, content: [{ type: 'text', text: '开始吧' }] } }],
-  };
-  const exec = (tool) => ({ name: tool, agent: { id: 'session-gate', session } });
-
-  // No tree: refused, with the bootstrap path (ADR-0001).
-  assert.match(registeredGuard(exec('write')), /no task tree yet/);
-
-  const write = registeredTools.get('task_tree_write');
-  const writeExec = { agent: { id: 'session-gate', session } };
-  await write.execute({
-    ops: [
-      { op: 'init', originalGoal: '门禁' },
-      { op: 'create', title: '任务', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
-    ],
-  }, writeExec);
-  assert.match(registeredGuard(exec('write')), /holds no active execution/);
-  assert.match(registeredGuard(exec('bash')), /holds no active execution/);
-  assert.equal(registeredGuard(exec('task_tree_write')), undefined, 'the gate never blocks the tool that creates the execution');
-
-  await write.execute({ ops: [{ op: 'claim', id: 't1' }] }, writeExec);
-  assert.equal(registeredGuard(exec('write')), undefined);
-
-  await write.execute({ ops: [{ op: 'release', id: 't1' }] }, writeExec);
-  assert.match(registeredGuard(exec('write')), /holds no active execution/);
 }
 
 // ---------------------------------------------------------------------------
@@ -3417,149 +3055,6 @@ function assertSchema(schema, value, path = 'value') {
   assert.equal(conflictView.conflicts.length, 1);
   assert.equal(conflictView.conflicts[0].id, 'cf-1');
   assert.equal(conflictView.conflicts[0].resolvedAt, null);
-}
-
-// ---------------------------------------------------------------------------
-// execution seats: the three synchronous keys, suspicion, and real evidence
-// ---------------------------------------------------------------------------
-
-{
-  // Which keys one call takes: standard mode books the workline, the executor
-  // and the task; team mode books executor and task only, because Workers run
-  // in parallel on different tasks.
-  const standard = seatRequestFor({ tool: 'task_tree_write', args: { ops: [{ op: 'claim', id: 't1' }] }, mode: 'standard', worklineId: 'wl-root', sessionId: 's1' });
-  assert.deepEqual(standard, { keys: ['wl:wl-root', 'wk:s1', 'tk:t1'], action: 'claim', taskId: 't1', sessionId: 's1', worklineId: 'wl-root' });
-  assert.deepEqual(seatRequestFor({ tool: 'team_task_update', args: { action: 'claim', task_id: 'task-1' }, mode: 'team', worklineId: 'wl-root', sessionId: 'w1' }),
-    { keys: ['wk:w1', 'tk:task-1'], action: 'claim', taskId: 'task-1', sessionId: 'w1', worklineId: 'wl-root' });
-  // Ownership-changing ops take a seat even when they end an execution.
-  assert.deepEqual(seatRequestFor({ tool: 'task_tree_write', args: { ops: [{ op: 'release', id: 't1' }, { op: 'complete', id: 't2' }] }, mode: 'standard', worklineId: 'wl-root', sessionId: 's1' })?.keys,
-    ['wl:wl-root', 'wk:s1', 'tk:t1', 'tk:t2']);
-  assert.deepEqual(seatRequestFor({ tool: 'team_task_update', args: { action: 'reopen', task_id: 'task-2' }, mode: 'team', worklineId: 'wl-root', sessionId: 'w1' })?.keys,
-    ['wk:w1', 'tk:task-2']);
-  // Structural changes and other tools hold no seat.
-  assert.equal(seatRequestFor({ tool: 'task_tree_write', args: { ops: [{ op: 'create', title: 'x' }, { op: 'focus', ids: [] }] }, mode: 'standard', worklineId: 'wl-root', sessionId: 's1' }), undefined);
-  assert.equal(seatRequestFor({ tool: 'team_task_update', args: { action: 'edit', task_id: 'task-1' }, mode: 'team', worklineId: 'wl-root', sessionId: 'w1' }), undefined);
-  assert.equal(seatRequestFor({ tool: 'read', args: {}, mode: 'standard', worklineId: 'wl-root', sessionId: 's1' }), undefined);
-  assert.equal(seatRequestFor({ tool: 'task_tree_write', args: { ops: [{ op: 'claim', id: 't1' }] }, mode: 'standard', worklineId: 'wl-root', sessionId: undefined }), undefined);
-
-  // The standard workline seat: one claim at a time for the whole workline.
-  const seats = createSeatTable({ ttlMs: 1000, now: () => 0 });
-  const claim = (requestId, sessionId, taskId, mode = 'standard', worklineId = 'wl-root') => seats.reserve({
-    requestId,
-    mode,
-    sessionId,
-    worklineId,
-    ...seatRequestFor({ tool: 'task_tree_write', args: { ops: [{ op: 'claim', id: taskId }] }, mode, worklineId, sessionId }),
-  });
-  assert.equal(claim('c1', 's1', 't1').ok, true);
-  const worklineBlocked = claim('c2', 's2', 't2');
-  assert.equal(worklineBlocked.ok, false, 'a second in-flight claim sees the first');
-  assert.equal(worklineBlocked.holder.dimension, 'workline');
-  assert.equal(worklineBlocked.holder.requestId, 'c1');
-  // Repeating the very same request id is idempotent, not a self-conflict.
-  assert.equal(claim('c1', 's1', 't1').ok, true);
-  // No timer releases a seat: only real end-of-call evidence does.
-  assert.equal(seats.sweep(999).length, 0, 'before the TTL nothing is suspect');
-  const suspect = seats.sweep(1000);
-  assert.equal(suspect.length, 1, 'the TTL only marks the reservation suspect');
-  assert.equal(seats.size(), 1, 'a suspect seat is still held');
-  const suspectBlocked = claim('c3', 's3', 't3');
-  assert.equal(suspectBlocked.ok, false, 'a suspect seat still refuses new claims');
-  assert.equal(suspectBlocked.holder.state, 'suspect');
-  assert.equal(seats.release('c1'), true, 'a matching tool result releases it');
-  assert.equal(claim('c3', 's3', 't3').ok, true, 'the freed seat can be taken again');
-  assert.equal(seats.release('c3'), true);
-  assert.equal(seats.size(), 0);
-
-  // The team seats: one executor, one task.
-  const team = createSeatTable();
-  const board = (requestId, sessionId, taskId) => team.reserve({
-    requestId,
-    ...seatRequestFor({ tool: 'team_task_update', args: { action: 'claim', task_id: taskId }, mode: 'team', worklineId: 'wl-root', sessionId }),
-  });
-  assert.equal(board('d1', 'w1', 'task-1').ok, true);
-  const executorBlocked = board('d2', 'w1', 'task-2');
-  assert.equal(executorBlocked.ok, false, 'one executor cannot claim two tasks');
-  assert.equal(executorBlocked.holder.dimension, 'executor');
-  const taskBlocked = board('d3', 'w2', 'task-1');
-  assert.equal(taskBlocked.ok, false, 'one task cannot be claimed twice');
-  assert.equal(taskBlocked.holder.dimension, 'task');
-  assert.equal(board('d4', 'w2', 'task-2').ok, true, 'different executors on different tasks stay parallel');
-  // E2: an idle Agent proves none of its calls can still be in flight.
-  assert.equal(team.releaseSession('w1'), 1);
-  assert.equal(team.size(), 1, 'only the idle agent\'s own reservation was cleared');
-  assert.equal(board('d5', 'w1', 'task-3').ok, true, 'the executor seat is free after its agent went idle');
-  assert.equal(team.size(), 2);
-}
-
-{
-  // The guard takes the seat synchronously, before dispatch, and E1 releases it.
-  const root = tempRoot();
-  const store = createTaskStore({ root, logger: { warn() {} } });
-  const sessions = new Map([
-    ['session-root', { header: { id: 'session-root' } }],
-    ['session-branch', { header: { id: 'session-branch', parentSession: 'session-root' } }],
-  ]);
-  const ctx = { get: (name) => (name === 'sessions' ? { get: (id) => sessions.get(id) } : undefined) };
-  await store.update('session-root', (current) => ({
-    envelope: envelopeAfter(current, [
-      { op: 'init', originalGoal: '并发占位' },
-      { op: 'create', title: '任务一', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
-      { op: 'create', title: '任务二', executionApproval: 'approved', approvalBasis: '开始吧', status: 'in_progress' },
-    ]).envelope,
-  }));
-  const seats = createSeatTable();
-  const guard = createExecutionGuard({ ctx, store, seats });
-  const claimExec = (callId, sessionId, parentSession, id) => ({
-    callId,
-    name: 'task_tree_write',
-    arguments: { ops: [{ op: 'claim', id }] },
-    agent: {
-      id: sessionId,
-      session: { header: parentSession === undefined ? { id: sessionId } : { id: sessionId, parentSession } },
-    },
-  });
-  assert.equal(guard(claimExec('call-1', 'session-root', undefined, 't1')), undefined);
-  assert.equal(seats.size(), 1, 'an admitted claim holds its seat before dispatch');
-  const blocked = guard(claimExec('call-2', 'session-branch', 'session-root', 't2'));
-  assert.match(blocked, /reserved by an in-flight call/);
-  assert.match(blocked, /in-flight call \(task_tree_write claim for wl:session-root/);
-  // E1: the matching tool result frees the seat, and the retry is admitted.
-  seats.release('call-1');
-  assert.equal(guard(claimExec('call-2', 'session-branch', 'session-root', 't2')), undefined);
-  // E2: the owning agent going idle frees whatever it still holds.
-  seats.releaseSession('session-branch');
-  assert.equal(seats.size(), 0);
-  // Without a seat table the guard behaves exactly as before (regression).
-  const plain = createExecutionGuard({ ctx, store });
-  assert.equal(plain(claimExec('call-9', 'session-branch', 'session-root', 't2')), undefined);
-}
-
-{
-  // The evidence wiring: a seat is released by the matching tool result (E1) or
-  // by the owning Agent going idle (E2), and by nothing else.
-  const seats = createSeatTable();
-  const listeners = new Map();
-  const disposers = [];
-  const ctx = {
-    on: (event, handler) => { listeners.set(event, handler); return () => listeners.delete(event); },
-    effect: (factory, _label) => { const dispose = factory(); if (typeof dispose === 'function') disposers.push(dispose); return () => {}; },
-  };
-  assert.equal(registerSeatObservers(ctx, { seats, logger: { warn() {} }, intervalMs: 60_000 }), true);
-  const take = (requestId, sessionId) => seats.reserve({
-    requestId,
-    ...seatRequestFor({ tool: 'task_tree_write', args: { ops: [{ op: 'claim', id: 't1' }] }, mode: 'standard', worklineId: 'wl-root', sessionId }),
-  });
-  assert.equal(take('r1', 's1').ok, true);
-  listeners.get('tools/result')({ callId: 'r1' });
-  assert.equal(seats.size(), 0, 'E1: the matching tool result releases the seat');
-  assert.equal(take('r2', 's2').ok, true);
-  assert.equal(take('r3', 's2').ok, false);
-  listeners.get('agent/status')({ agent: { id: 's2' }, status: 'running' });
-  assert.equal(seats.size(), 1, 'a running Agent proves nothing');
-  listeners.get('agent/status')({ agent: { id: 's2' }, status: 'idle' });
-  assert.equal(seats.size(), 0, 'E2: an idle Agent releases what it still held');
-  for (const dispose of disposers) dispose();
 }
 
 console.log('tasks ok');
