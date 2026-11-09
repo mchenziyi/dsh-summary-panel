@@ -4,14 +4,14 @@ What a reviewer should enforce here. Every rule below is a judgement call — th
 mechanical ones already have a check, and duplicating a check as prose just
 gives it somewhere to go stale.
 
-The mechanical checks, for reference: `npm test` (harness suites plus the test
-isolation check) and `npm run test:e2e` (real processes). Both run in CI and in
-the pre-commit hook.
+The mechanical checks, for reference: `npm test` (harness suites, harness
+hygiene, the docs-contract check) and `npm run test:e2e` (real processes). Both
+run in CI and in the pre-commit hook.
 
 ## Review focus
 
-Three defect shapes have shipped from this repo more than once. Check all three on
-every change.
+Three defect shapes have shipped from this repo more than once. Check each one
+where its shape still exists.
 
 **1. Human visibility.** Every change must either make the panel better at showing
 "where the work stands now", or say in the PR/report why this change does not
@@ -20,18 +20,19 @@ or reading the README — not whether an agent can be blocked. A ticket that onl
 adds a denial path makes the machine stricter without making the product clearer,
 so it needs the extra sentence saying why.
 
-**2. A guard's default when its data is missing.** For each new permission check
-ask what happens when the record it reads is absent, empty, or unreadable, and
-require the deny direction. The execution gate once allowed every workspace
-write when the ledger array was absent; the fix was a single normalizer with a
-fail-closed default. A guard that grants on missing data is worse than no guard,
-because the read model still reports the execution as missing.
+**2. A guard's default when its data is missing.** The execution gate is gone, so
+this now covers the checks that still exist — the `claim` compare-and-set and
+`executionApproval` — and any new one. Ask what happens when the record it reads
+is absent, empty, or unreadable, and require the deny direction: a guard that
+grants on missing data is worse than no guard. (The gate once allowed every
+workspace write when the ledger array was absent.)
 
-**3. A terminal action reachable from another entry point.** For each new way to
-end something, enumerate the other operations that can reach the same state, and
-require the caller to prove they cannot bypass it. `defer` and `archive` could
-end another session's execution without an interrupt, straight through the
-force-termination flow the design put in place.
+**3. A terminal action reachable from another entry point.** Execution lifecycles
+and force release are gone; the remaining terminal actions are `complete`,
+`defer` and `archive`. For each new way to end something, enumerate the other
+operations that can reach the same state, and require the caller to prove they
+cannot bypass it. (`defer` and `archive` once ended another session's execution
+without an interrupt.)
 
 Two more that cost real time:
 

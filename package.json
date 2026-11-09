@@ -52,8 +52,9 @@
     "dsh": ">=0.2.0-rc.2"
   },
   "scripts": {
-    "test": "node test/isolation.mjs && node test/modules.mjs && node test/host-contract.mjs && node test/host.mjs && node test/tasks.mjs && node test/client.mjs",
+    "test": "node test/isolation.mjs && node test/modules.mjs && node test/docs-contract.mjs && node test/host-contract.mjs && node test/host.mjs && node test/tasks.mjs && node test/client.mjs",
     "test:modules": "node test/modules.mjs",
+    "test:docs": "node test/docs-contract.mjs",
     "test:contract": "node test/host-contract.mjs",
     "test:host": "node test/host.mjs",
     "test:tasks": "node test/tasks.mjs",

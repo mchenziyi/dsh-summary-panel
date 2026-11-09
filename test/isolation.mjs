@@ -1,11 +1,14 @@
 /**
- * Convention check: a test that shells out to `git` must go through the shared
- * fixture helper.
+ * Harness hygiene: the tests themselves follow two rules.
  *
- * Git exports `GIT_DIR` to the processes a hook starts, so a test that spawns
- * `git` directly commits into whichever repository runs `npm test`. That bug
- * once put a stream of junk commits on the real branch. This check makes the
- * rule mechanical instead of a thing to remember.
+ * 1. A test that shells out to `git` goes through the shared fixture helper.
+ *    Git exports `GIT_DIR` to the processes a hook starts, so a test that
+ *    spawns `git` directly commits into whichever repository runs `npm test`.
+ *    That bug once put a stream of junk commits on the real branch.
+ * 2. Every top-level `test/*.mjs` harness is wired into a `package.json` script,
+ *    because a harness nobody runs is a check that silently does not exist.
+ *    Ticket #18 added `test/modules.mjs` and had to remember the wiring by
+ *    hand; this makes the forgetting red.
  *
  * Run with `node test/isolation.mjs`; it reads files only.
  */
@@ -60,8 +63,24 @@ for (const file of testFiles()) {
   console.error(`  ${relative(TEST_DIR, file)} spawns git without the isolation helper:\n${shown}`);
 }
 
+// ---------------------------------------------------------------------------
+// 2. every top-level harness is wired into a package.json script
+// ---------------------------------------------------------------------------
+
+{
+  const packageJson = JSON.parse(readFileSync(join(TEST_DIR, '..', 'package.json'), 'utf8'));
+  const scripts = Object.values(packageJson.scripts ?? {}).join(' ');
+  const harnesses = readdirSync(TEST_DIR).filter((name) => name.endsWith('.mjs')).sort();
+  assert.ok(harnesses.length > 0, `no harness found in ${TEST_DIR}; the wiring check would be vacuous`);
+  for (const name of harnesses) {
+    if (scripts.includes(`test/${name}`)) continue;
+    failures += 1;
+    console.error(`  test/${name} is not referenced by any package.json script; add it to \`npm test\` (and a test:<suite> alias)`);
+  }
+}
+
 if (failures > 0) {
-  console.error('isolation: use test/support/isolated-git.mjs (initRepo / gitIn / cleanGitEnv)');
+  console.error('isolation: fix the harness hygiene problems above');
   process.exit(1);
 }
 console.log('isolation ok');
