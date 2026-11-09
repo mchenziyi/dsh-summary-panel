@@ -1,6 +1,6 @@
 /**
  * The system-prompt section that teaches the model how to maintain the task
- * tree (REQUIREMENTS.md §4, §5, §12; CONTRACT.md §3).
+ * tree (docs/requirements/REQUIREMENTS.md §4, §5, §12; CONTRACT.md §3).
  *
  * The section is registered on the optional `systemPrompt` service at order 60,
  * ahead of the plan and team policies. When the service is absent (a headless
@@ -40,6 +40,8 @@ export const TASK_TREE_PROMPT = [
   '- Focus the work you are doing now, not every `in_progress` task "just in case"; several ids are allowed only when you genuinely work on them in parallel.',
   '- Completing a task removes it from the focus, so move the focus to the next task in the same write, and pass `[]` when you stop working on anything.',
   '',
+  '**An urgent interruption is a recorded task, not a detour.** When something unrelated and urgent pulls you away from the task you were doing, create a task with `temporary: true` and `temporaryFor: <the interrupted task id>`, set it as the focus, and go back to the interrupted task (resume it and focus it again) once the interruption is fixed. The source must exist in the same workline, be active, not be the task itself, and temporary chains may not loop; a temporary task without its source is refused. Finish the temporary task instead of letting it grow into a container.',
+  '',
   '**Before you create a task, decide what it belongs to.** A task is a placement decision, not just a record: the tree is how the user sees which work belongs together, so one top-level task per request turns it into an unreadable log.',
   '',
   '- Compare the work with the existing tree: is it the next step of an existing feature, a bug in an existing task, an implementation step of an approved requirement, a follow-up on something already discussed, or genuinely new work that nothing owns?',
@@ -77,6 +79,8 @@ export const TASK_TREE_PROMPT = [
   '- Never set `requiresUserAcceptance: false` to get around this. Waiving the user\'s acceptance needs a real user instruction plus an `acceptanceBasis` quote, and the host rejects anything else. Never record the user\'s acceptance on your own, and never guess it from silence.',
   '',
   'Keep task titles short (at most 40 characters) and put explanations in the summary. Do not create a node for a trivial fix or an intermediate step; record it in the current task progress.',
+  '',
+  '**Say what "done" means, and what happens next.** When you create a task, write its expected result in `expectedOutcome`; when you record progress, write `nextStep` (both one line, at most 240 characters). The right sidebar shows both, and they are what keep a long task from drifting.',
   '',
   '**Notes are not execution.** Writing a discussion record or a progress note does not start a task; only `in_progress`/`blocked`, a claim, or a completion record mean the work happened. An idea you are still discussing stays an idea even when its `progress` carries the analysis.',
   '',

@@ -118,6 +118,165 @@ function titles(snapshot) {
 }
 
 // ---------------------------------------------------------------------------
+// model: expected outcome and next step (right-sidebar fields, REQ:364/369)
+// ---------------------------------------------------------------------------
+
+{
+  const { envelope } = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    {
+      op: 'create',
+      title: '登录',
+      expectedOutcome: '  用户能用邮箱登录  ',
+      nextStep: '补失败提示',
+    },
+    { op: 'create', title: '补测试', parentId: 't1' },
+  ]);
+
+  // Free text is trimmed, exactly like summary/progress.
+  const details = readSnapshot(envelope, CTX.worklineId, true).tasks[0];
+  assert.equal(details.expectedOutcome, '用户能用邮箱登录');
+  assert.equal(details.nextStep, '补失败提示');
+
+  // The compact read stays compact: only the interrupt relation rides along.
+  const compact = readSnapshot(envelope, CTX.worklineId).tasks[0];
+  assert.equal(compact.expectedOutcome, undefined);
+  assert.equal(compact.nextStep, undefined);
+
+  // The panel reads the HTTP payload, so both fields must be there.
+  const http = httpSnapshot(envelope, CTX.worklineId).tasks[0];
+  assert.equal(http.expectedOutcome, '用户能用邮箱登录');
+  assert.equal(http.nextStep, '补失败提示');
+
+  // Updating either field is a partial write; an empty string clears it.
+  const updated = envelopeAfter(envelope, [
+    { op: 'update', id: 't1', expectedOutcome: '用户能登录并看到错误提示' },
+    { op: 'update', id: 't1', nextStep: '' },
+  ]).envelope;
+  const afterUpdate = httpSnapshot(updated, CTX.worklineId).tasks[0];
+  assert.equal(afterUpdate.expectedOutcome, '用户能登录并看到错误提示');
+  assert.equal(afterUpdate.nextStep, '');
+
+  // Same shape rules as summary: one line, bounded length.
+  assert.throws(
+    () => envelopeAfter(envelope, [{ op: 'update', id: 't1', expectedOutcome: 'a\nb' }]),
+    /expectedOutcome must be a single line/,
+  );
+  assert.throws(
+    () => envelopeAfter(envelope, [{ op: 'create', title: 'x', expectedOutcome: 'x'.repeat(241) }]),
+    /expectedOutcome must be at most 240/,
+  );
+  assert.throws(
+    () => envelopeAfter(envelope, [{ op: 'update', id: 't1', nextStep: 'a\nb' }]),
+    /nextStep must be a single line/,
+  );
+  assert.throws(
+    () => envelopeAfter(envelope, [{ op: 'create', title: 'x', nextStep: 'x'.repeat(241) }]),
+    /nextStep must be at most 240/,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// model: temporary tasks and the interrupt relation (REQ:107, §6.3, §16.18)
+// ---------------------------------------------------------------------------
+
+{
+  const base = envelopeAfter(undefined, [
+    { op: 'init', originalGoal: 'g' },
+    { op: 'create', title: '主线 A' },
+    { op: 'create', title: '主线 B' },
+  ]).envelope;
+
+  // A temporary task names the mainline task it interrupted.
+  const withTemporary = envelopeAfter(base, [
+    { op: 'create', title: '紧急修复', temporary: true, temporaryFor: 't1' },
+  ]).envelope;
+  const created = withTemporary.tasks.find((task) => task.title === '紧急修复');
+  assert.equal(created.temporary, true);
+  assert.equal(created.temporaryFor, 't1');
+  const createdRow = readSnapshot(withTemporary, CTX.worklineId).tasks.find((task) => task.id === created.id);
+  assert.equal(createdRow.temporary, true);
+  assert.equal(createdRow.temporaryFor, 't1');
+  const createdHttp = httpSnapshot(withTemporary, CTX.worklineId).tasks.find((task) => task.id === created.id);
+  assert.equal(createdHttp.temporary, true);
+  assert.equal(createdHttp.temporaryFor, 't1');
+
+  // Naming the interrupted task is the actionable write: it makes the task
+  // temporary by itself, so one field is enough.
+  const namedOnly = envelopeAfter(base, [
+    { op: 'create', title: '临时排查', temporaryFor: 't2' },
+  ]).envelope;
+  const namedTask = namedOnly.tasks.find((task) => task.title === '临时排查');
+  assert.equal(namedTask.temporary, true);
+  assert.equal(namedTask.temporaryFor, 't2');
+
+  // A temporary task without its source is refused: it would be a detour with
+  // no way back to the mainline work.
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'create', title: '临时', temporary: true }]),
+    /must name the task it interrupted/,
+  );
+  // Explicitly dropping the source makes the task ordinary again.
+  const orphaned = envelopeAfter(withTemporary, [{ op: 'update', id: 't3', temporaryFor: null }]).envelope;
+  const orphanedTask = orphaned.tasks.find((task) => task.id === 't3');
+  assert.equal(orphanedTask.temporary, false);
+  assert.equal(orphanedTask.temporaryFor, null);
+
+  // The source must exist.
+  assert.throws(
+    () => envelopeAfter(base, [{ op: 'create', title: '临时', temporary: true, temporaryFor: 't99' }]),
+    /unknown task/,
+  );
+
+  // A task cannot interrupt itself.
+  assert.throws(
+    () => envelopeAfter(withTemporary, [{ op: 'update', id: 't3', temporaryFor: 't3' }]),
+    /cannot be a temporary task for itself/,
+  );
+
+  // And the interrupt chain cannot loop back to the task.
+  assert.throws(
+    () => envelopeAfter(withTemporary, [{ op: 'update', id: 't1', temporaryFor: 't3' }]),
+    /cycle of temporary tasks/,
+  );
+  const chain = envelopeAfter(withTemporary, [
+    { op: 'create', title: '二级临时', temporaryFor: 't3' },
+  ]).envelope;
+  assert.throws(
+    () => envelopeAfter(chain, [{ op: 'update', id: 't1', temporaryFor: 't4' }]),
+    /cycle of temporary tasks/,
+  );
+
+  // The interrupted task must still be active: an archived task is history and
+  // cannot be the mainline work that is being paused.
+  const archivedBase = envelopeAfter(base, [{ op: 'archive', id: 't2', reason: '不要了' }]).envelope;
+  assert.throws(
+    () => envelopeAfter(archivedBase, [{ op: 'create', title: '临时', temporary: true, temporaryFor: 't2' }]),
+    /temporaryFor must name an active task/,
+  );
+
+  // Same workline only: a task record carrying another workline's id cannot be
+  // the interrupted mainline task.
+  const foreign = JSON.parse(JSON.stringify(base));
+  foreign.tasks.push({ id: 'tx', worklineId: 'other-workline', title: '别的工作线', order: 9 });
+  assert.throws(
+    () => envelopeAfter(foreign, [{ op: 'create', title: '临时', temporary: true, temporaryFor: 'tx' }]),
+    /temporaryFor must name a task in the same workline/,
+  );
+
+  // Dropping the marker clears the link; keeping a source on an ordinary task
+  // is a contradiction the model refuses instead of half-applying.
+  const cleared = envelopeAfter(withTemporary, [{ op: 'update', id: 't3', temporary: false }]).envelope;
+  const clearedTask = cleared.tasks.find((task) => task.id === 't3');
+  assert.equal(clearedTask.temporary, false);
+  assert.equal(clearedTask.temporaryFor, null);
+  assert.throws(
+    () => envelopeAfter(withTemporary, [{ op: 'update', id: 't3', temporary: false, temporaryFor: 't1' }]),
+    /not temporary cannot name/,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // model: completion and parent invariants
 // ---------------------------------------------------------------------------
 
@@ -2126,10 +2285,13 @@ function titles(snapshot) {
 // ---------------------------------------------------------------------------
 
 {
-  for (const needle of ['executionApproval', 'approvalBasis', 'confirmationBasis', 'confirmedByUser', 'reviseGoal', 'pending']) {
+  for (const needle of ['executionApproval', 'approvalBasis', 'confirmationBasis', 'confirmedByUser', 'reviseGoal', 'pending',
+    'expectedOutcome', 'nextStep', 'temporaryFor']) {
     assert.equal(TASK_TREE_PROMPT.includes(needle), true, `prompt should mention ${needle}`);
   }
   assert.equal(TASK_TREE_PROMPT.includes('Record work that is worth tracking as soon as it appears'), true);
+  // Interruptions are model-facing: the prompt says to record the source task.
+  assert.equal(TASK_TREE_PROMPT.includes('temporary: true'), true);
   // Team mode is model-facing too: the prompt says the Lead only coordinates.
   assert.equal(TASK_TREE_PROMPT.includes('the lead only coordinates'), true);
   assert.notEqual(TASK_TREE_REMINDER, TASK_TREE_START_REMINDER);
@@ -3187,6 +3349,19 @@ function assertSchema(schema, value, path = 'value') {
   assertSchema(read.output.schema, settledRead, 'read-settled');
   assert.equal(settledRead.tasks.find((task) => task.id === 't1').settled, true);
 
+  // A temporary task survives the real file store and comes back with the task
+  // it interrupted: the interrupt relation is persisted, not a render-time flag.
+  const tempWrite = await write.execute({ ops: [
+    { op: 'create', title: '主线工作' },
+    { op: 'create', title: '临时修复', temporary: true, temporaryFor: 't4' },
+  ] }, exec);
+  assert.equal(tempWrite.ok, true);
+  const tempRead = await read.execute({ details: true }, exec);
+  assertSchema(read.output.schema, tempRead, 'read-temporary');
+  const tempTask = tempRead.tasks.find((task) => task.title === '临时修复');
+  assert.equal(tempTask.temporary, true);
+  assert.equal(tempTask.temporaryFor, 't4');
+
   // an empty workline is equally valid (goal null, no tasks, archived list present)
   const emptyView = await read.execute({ details: true, includeArchived: true }, {
     agent: { id: 'session-empty', session: { header: { id: 'session-empty' }, seq: 0, snapshotEvents: () => [] } },
@@ -3209,6 +3384,14 @@ function assertSchema(schema, value, path = 'value') {
   assert.ok(read.output.schema.properties.conflicts, 'the read schema declares conflicts');
   assert.equal(write.parameters.properties.ops.items.properties.op.enum.includes('resolveConflict'), true);
   assert.ok(write.parameters.properties.ops.items.properties.conflictId, 'the write schema declares the conflict target');
+  // The right-sidebar fields and the interrupt relation are model-facing: the
+  // tool schema must declare every one of them or the host rejects the call.
+  for (const field of ['expectedOutcome', 'nextStep', 'temporary', 'temporaryFor']) {
+    assert.ok(write.parameters.properties.ops.items.properties[field], `the write schema declares ${field}`);
+  }
+  for (const field of ['expectedOutcome', 'nextStep', 'temporary', 'temporaryFor']) {
+    assert.ok(read.output.schema.properties.tasks.items.properties[field], `the read schema declares ${field}`);
+  }
   writeFileSync(join(root, 'session-conflict.json'), JSON.stringify({
     version: 1,
     workline: {

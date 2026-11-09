@@ -70,6 +70,10 @@ export const TASK_OPS = Object.freeze([
 export const LIMITS = Object.freeze({
   title: 40,
   summary: 240,
+  // What the task is expected to deliver, and the immediate next move. Both are
+  // one-liners shown in the right sidebar, so they share the summary bound.
+  expectedOutcome: 240,
+  nextStep: 240,
   progress: 2000,
   result: 500,
   outline: 4000,
@@ -86,8 +90,8 @@ export const LIMITS = Object.freeze({
 const OP_FIELDS = Object.freeze({
   init: ['op', 'originalGoal', 'outline'],
   reviseGoal: ['op', 'current', 'reason'],
-  create: ['op', 'title', 'summary', 'parentId', 'status', 'progress', 'order', 'executionApproval', 'approvalBasis', 'requiresUserAcceptance', 'acceptanceBasis'],
-  update: ['op', 'id', 'title', 'summary', 'status', 'progress', 'result', 'blockerReason', 'blockerUnblock', 'confirmedByUser', 'executionApproval', 'approvalBasis', 'confirmationBasis', 'requiresUserAcceptance', 'acceptanceBasis'],
+  create: ['op', 'title', 'summary', 'expectedOutcome', 'nextStep', 'parentId', 'status', 'progress', 'order', 'executionApproval', 'approvalBasis', 'requiresUserAcceptance', 'acceptanceBasis', 'temporary', 'temporaryFor'],
+  update: ['op', 'id', 'title', 'summary', 'expectedOutcome', 'nextStep', 'status', 'progress', 'result', 'blockerReason', 'blockerUnblock', 'confirmedByUser', 'executionApproval', 'approvalBasis', 'confirmationBasis', 'requiresUserAcceptance', 'acceptanceBasis', 'temporary', 'temporaryFor'],
   move: ['op', 'id', 'parentId', 'order'],
   defer: ['op', 'id', 'deferredReason', 'resumeCondition', 'userBasis'],
   resume: ['op', 'id'],
@@ -447,6 +451,13 @@ function normalizeTask(task, worklineId) {
     order: numberOr(task.order, 0),
     title: typeof task.title === 'string' ? task.title : '',
     summary: typeof task.summary === 'string' ? task.summary : '',
+    expectedOutcome: typeof task.expectedOutcome === 'string' ? task.expectedOutcome : '',
+    nextStep: typeof task.nextStep === 'string' ? task.nextStep : '',
+    // A task created to absorb an urgent interruption: it names the mainline
+    // task it interrupted (`temporaryFor`) so the panel can say what was paused.
+    // Records written before this field existed are ordinary tasks.
+    temporary: task.temporary === true,
+    temporaryFor: typeof task.temporaryFor === 'string' && task.temporaryFor !== '' ? task.temporaryFor : null,
     status: TASK_STATUSES.includes(task.status) ? task.status : 'pending',
     deferred: task.deferred === true,
     deferredReason: typeof task.deferredReason === 'string' ? task.deferredReason : null,
@@ -1081,6 +1092,10 @@ function applyCreate(state, op, context) {
   if (status === 'done') fail('a new task cannot start done; create it and complete it after the user confirms');
   if (status === 'blocked') fail('a new task cannot start blocked; create it and set the blocker in update');
   const summary = op.summary === undefined ? '' : singleLine(op.summary, 'summary', LIMITS.summary);
+  const expectedOutcome = op.expectedOutcome === undefined
+    ? ''
+    : singleLine(op.expectedOutcome, 'expectedOutcome', LIMITS.expectedOutcome);
+  const nextStep = op.nextStep === undefined ? '' : singleLine(op.nextStep, 'nextStep', LIMITS.nextStep);
   const progress = op.progress === undefined ? '' : multiLine(op.progress, 'progress', LIMITS.progress);
   const order = op.order === undefined ? nextOrder(state, parentId, undefined) : normalizeOrder(op.order);
   const id = nextTaskId(state);
@@ -1094,6 +1109,10 @@ function applyCreate(state, op, context) {
     order,
     title,
     summary,
+    expectedOutcome,
+    nextStep,
+    temporary: false,
+    temporaryFor: null,
     status,
     deferred: false,
     deferredReason: null,
@@ -1123,6 +1142,7 @@ function applyCreate(state, op, context) {
     updatedAt: context.now,
   };
   state.tasks.push(task);
+  applyTemporary(state, task, op);
   applyApproval(task, op, context);
   applyAcceptanceRequirement(task, op, context);
   // The create path is the same execution gate as update: a task may not be
@@ -1147,14 +1167,81 @@ function applyBlocker(state, task, op) {
   task.blocker = { reason, unblock };
 }
 
+/**
+ * Apply the interrupt relation (`temporary` / `temporaryFor`).
+ *
+ * A temporary task absorbs an urgent problem that pulled the agent away from
+ * the mainline task; `temporaryFor` names that interrupted task. The two fields
+ * are kept consistent: naming a task makes the task temporary, dropping the
+ * marker clears the link, and a temporary task must always name its source.
+ *
+ * The link is a pointer into the same workline, never a place to hide history:
+ * the source must exist, be active, and the chain of interrupts must not loop
+ * back to the task itself.
+ */
+function applyTemporary(state, task, op) {
+  const hasFlag = op.temporary !== undefined;
+  const hasFor = op.temporaryFor !== undefined;
+  if (!hasFlag && !hasFor) return;
+  if (hasFlag && typeof op.temporary !== 'boolean') fail(`task ${task.id}: temporary must be a boolean`);
+  if (hasFor && op.temporaryFor !== null && typeof op.temporaryFor !== 'string') {
+    fail(`task ${task.id}: temporaryFor must be a task id or null`);
+  }
+  // `temporaryFor` is the actionable write: naming the interrupted task is what
+  // makes a task temporary, so one field is enough. An explicit false may not
+  // leave a source behind.
+  const temporary = hasFlag ? op.temporary === true : op.temporaryFor !== null;
+  if (temporary === false) {
+    if (hasFor && op.temporaryFor !== null) {
+      fail(`task ${task.id}: a task that is not temporary cannot name the task it interrupted`);
+    }
+    task.temporary = false;
+    task.temporaryFor = null;
+    return;
+  }
+  const target = hasFor ? op.temporaryFor : task.temporaryFor;
+  if (typeof target !== 'string' || target === '') {
+    fail(`task ${task.id}: a temporary task must name the task it interrupted with temporaryFor`);
+  }
+  const source = findTask(state, target);
+  if (source.id === task.id) fail(`task ${task.id} cannot be a temporary task for itself`);
+  if (source.worklineId !== state.workline.id || task.worklineId !== state.workline.id) {
+    fail(`task ${task.id}: temporaryFor must name a task in the same workline (${source.id} belongs to ${source.worklineId})`);
+  }
+  if (source.archived === true) {
+    fail(`task ${task.id}: temporaryFor must name an active task, but ${source.id} is archived`);
+  }
+  // Walk the interrupt chain from the source. Reaching this task would close a
+  // loop: a temporary task that (transitively) interrupted itself has no
+  // mainline task to return to, and reading the panel would never settle.
+  const seen = new Set([task.id]);
+  let cursor = source;
+  while (cursor !== undefined) {
+    if (seen.has(cursor.id)) {
+      fail(`task ${task.id}: temporaryFor would create a cycle of temporary tasks through ${cursor.id}`);
+    }
+    seen.add(cursor.id);
+    cursor = typeof cursor.temporaryFor === 'string'
+      ? state.tasks.find((candidate) => candidate.id === cursor.temporaryFor)
+      : undefined;
+  }
+  task.temporary = true;
+  task.temporaryFor = source.id;
+}
+
 function applyUpdate(state, op, context) {
   const id = requireTaskId(op);
   const task = findTask(state, id, { active: true });
   if (op.title !== undefined) task.title = singleLine(op.title, 'title', LIMITS.title, { required: true });
   if (op.summary !== undefined) task.summary = singleLine(op.summary, 'summary', LIMITS.summary);
+  if (op.expectedOutcome !== undefined) {
+    task.expectedOutcome = singleLine(op.expectedOutcome, 'expectedOutcome', LIMITS.expectedOutcome);
+  }
+  if (op.nextStep !== undefined) task.nextStep = singleLine(op.nextStep, 'nextStep', LIMITS.nextStep);
   if (op.progress !== undefined) task.progress = multiLine(op.progress, 'progress', LIMITS.progress);
   if (op.result !== undefined) task.result = multiLine(op.result, 'result', LIMITS.result);
   applyBlocker(state, task, op);
+  applyTemporary(state, task, op);
   applyApproval(task, op, context, { requireAcceptanceDecision: true });
   applyAcceptanceRequirement(task, op, context);
   // A self-verified completion may later receive the user's acceptance, whether or
@@ -2154,10 +2241,16 @@ export function readSnapshot(envelope, worklineId, details = false, options = {}
       // released or reassigned on its own (design v8 I0/I16).
       executorLost: executionState === 'orphaned',
       executionState: executionState === undefined ? 'missing' : executionState,
+      // The interrupt relation travels with every row: the tree can mark or
+      // explain a temporary task without a second read (right sidebar).
+      temporary: task.temporary === true,
+      temporaryFor: typeof task.temporaryFor === 'string' ? task.temporaryFor : null,
       depth,
     };
     if (details) {
       row.summary = task.summary ?? '';
+      row.expectedOutcome = task.expectedOutcome ?? '';
+      row.nextStep = task.nextStep ?? '';
       row.progress = task.progress ?? '';
       row.result = typeof task.result === 'string' ? task.result : null;
       row.completion = completionOf(task);
@@ -2258,6 +2351,10 @@ export function httpSnapshot(envelope, worklineId, options = {}) {
     order: task.order,
     title: task.title,
     summary: task.summary,
+    expectedOutcome: task.expectedOutcome ?? '',
+    nextStep: task.nextStep ?? '',
+    temporary: task.temporary === true,
+    temporaryFor: typeof task.temporaryFor === 'string' ? task.temporaryFor : null,
     status: task.status,
     settled: settled(task.id),
     executionApproval: approvalOf(task),

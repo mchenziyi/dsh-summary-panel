@@ -54,6 +54,10 @@ window.__ModuleLoader__.load({
       'tasks.detail.status': '状态',
       'tasks.detail.subtreePending': '仍有未完成子任务',
       'tasks.detail.summary': '简介',
+      'tasks.detail.expectedOutcome': '预期结果',
+      'tasks.detail.nextStep': '下一步',
+      'tasks.detail.subtasks': '子任务 ({n})',
+      'tasks.detail.temporary': '临时任务，打断自 {title}',
       'tasks.detail.progress': '进展',
       'tasks.detail.result': '结果',
       'tasks.detail.blocker': '阻塞原因',
@@ -189,6 +193,10 @@ window.__ModuleLoader__.load({
       'tasks.detail.status': 'Status',
       'tasks.detail.subtreePending': 'Unfinished subtasks',
       'tasks.detail.summary': 'Summary',
+      'tasks.detail.expectedOutcome': 'Expected outcome',
+      'tasks.detail.nextStep': 'Next step',
+      'tasks.detail.subtasks': 'Subtasks ({n})',
+      'tasks.detail.temporary': 'Temporary task, interrupted {title}',
       'tasks.detail.progress': 'Progress',
       'tasks.detail.result': 'Result',
       'tasks.detail.blocker': 'Blocker',
@@ -487,6 +495,10 @@ window.__ModuleLoader__.load({
 .sp-detail-archive-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .sp-detail-archive-title{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sp-detail-archive-meta{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sp-detail-subtask-row{display:flex;align-items:center;gap:6px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;padding:4px 6px;border-radius:6px;cursor:pointer;min-width:0}
+.sp-detail-subtask-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.sp-detail-subtask-title{flex:1;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sp-detail-temporary{font-size:11.5px;color:var(--dsw-alias-label-secondary);padding:3px 6px;border-left:2px solid var(--dsw-alias-brand-primary);border-radius:2px}
 .sp-detail-empty{padding:20px 14px;color:var(--dsw-alias-label-secondary);font-size:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .sp-detail-meta{font-size:11px;color:var(--dsw-alias-label-secondary)}
 `;
@@ -1991,6 +2003,12 @@ window.__ModuleLoader__.load({
       const archivedEntry = active === undefined && taskId !== ''
         ? archived.find((entry) => entry !== null && typeof entry === 'object' && entry.id === taskId)
         : undefined;
+      // Direct children only: the tree indentation already shows deeper levels,
+      // and a subtask list that repeated every descendant would be the log the
+      // requirement explicitly keeps out of the tree.
+      const activeChildren = active === undefined
+        ? []
+        : tasks.filter((task) => task !== null && typeof task === 'object' && task.parentId === active.id);
 
       let body;
       if (taskId === '') {
@@ -2029,6 +2047,18 @@ window.__ModuleLoader__.load({
 
         if (active !== undefined) {
           const fields = [];
+          // The interrupt relation is context, not a status: it goes above the
+          // fields so the reader knows what this task displaced before reading
+          // its own state.
+          if (active.temporary === true && typeof active.temporaryFor === 'string' && active.temporaryFor !== '') {
+            const source = tasks.find((task) => task !== null && typeof task === 'object' && task.id === active.temporaryFor)
+              ?? archived.find((entry) => entry !== null && typeof entry === 'object' && entry.id === active.temporaryFor);
+            const sourceTitle = source !== undefined && typeof source.title === 'string' && source.title !== ''
+              ? source.title
+              : active.temporaryFor;
+            fields.push(h('div', { key: 'temporary', className: 'sp-detail-temporary' },
+              t('tasks.detail.temporary', { title: sourceTitle })));
+          }
           fields.push(h('div', { key: 'status', className: 'sp-detail-field' },
             h('div', { className: 'sp-detail-label' }, t('tasks.detail.status')),
             h('div', { className: 'sp-detail-value' },
@@ -2062,6 +2092,9 @@ window.__ModuleLoader__.load({
           if (typeof active.summary === 'string' && active.summary !== '') {
             fields.push(h(DetailField, { key: 'summary', label: t('tasks.detail.summary'), value: active.summary }));
           }
+          if (typeof active.expectedOutcome === 'string' && active.expectedOutcome !== '') {
+            fields.push(h(DetailField, { key: 'expectedOutcome', label: t('tasks.detail.expectedOutcome'), value: active.expectedOutcome }));
+          }
           if (typeof active.progress === 'string' && active.progress !== '') {
             fields.push(h(DetailField, { key: 'progress', label: t('tasks.detail.progress'), value: active.progress }));
           }
@@ -2075,6 +2108,9 @@ window.__ModuleLoader__.load({
             if (typeof active.blocker.unblock === 'string' && active.blocker.unblock !== '') {
               fields.push(h(DetailField, { key: 'unblock', label: t('tasks.detail.unblock'), value: active.blocker.unblock }));
             }
+          }
+          if (typeof active.nextStep === 'string' && active.nextStep !== '') {
+            fields.push(h(DetailField, { key: 'nextStep', label: t('tasks.detail.nextStep'), value: active.nextStep }));
           }
           if (typeof active.ownerSessionId === 'string' && active.ownerSessionId !== '') {
             const liveText = active.executorLost === true
@@ -2111,6 +2147,27 @@ window.__ModuleLoader__.load({
           blocks.push(h('section', { key: 'task', className: 'sp-detail-block' },
             h('div', { className: 'sp-detail-block-title' }, t('tasks.detail.info')),
             fields));
+          // Direct subtasks: title + status, and each row opens that task's
+          // detail through the same openTask path the tree rows use.
+          if (activeChildren.length > 0) {
+            blocks.push(h('section', { key: 'subtasks', className: 'sp-detail-block' },
+              h('div', { className: 'sp-detail-block-title' }, t('tasks.detail.subtasks', { n: activeChildren.length })),
+              h('div', { className: 'sp-detail-list' },
+                activeChildren.map((child) => h('button', {
+                  key: child.id,
+                  type: 'button',
+                  className: 'sp-detail-subtask-row',
+                  title: typeof child.title === 'string' ? child.title : '',
+                  onClick: () => {
+                    if (api !== undefined && typeof api.openTask === 'function') api.openTask(targetSession, child.id);
+                  },
+                },
+                  h('span', { className: 'sp-detail-subtask-title' }, child.title),
+                  h('span', { className: 'sp-task-status sp-task-status-' + String(child.status ?? 'pending') }, taskStatusText(child.status, t)),
+                  child.deferred === true
+                    ? h('span', { className: 'sp-task-status sp-task-status-deferred' }, t('tasks.deferred'))
+                    : null)))));
+          }
           const archiveHistory = Array.isArray(active.archiveHistory) ? active.archiveHistory : [];
           if (archiveHistory.length > 0) {
             blocks.push(h('section', { key: 'archive-history', className: 'sp-detail-block' },
@@ -2512,7 +2569,10 @@ window.__ModuleLoader__.load({
         : t('entry.label');
       const focusBlocked = firstFocus !== null
         && (firstFocus.blocked === true || firstFocus.status === 'blocked');
-      const dot = firstFocus === null
+      // The lamp belongs to the closed panel: REQ:352 is "面板关闭时，入口按钮上
+      // 显示一个很小的状态点". While the panel is open the focus highlight is
+      // already on screen, so a second pulsing dot only repeats it.
+      const dot = firstFocus === null || openForThisSession
         ? null
         : h('span', {
           className: 'sp-entry-dot' + (focusBlocked ? ' sp-entry-dot-warn' : ''),
