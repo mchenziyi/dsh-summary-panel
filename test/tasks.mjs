@@ -2135,6 +2135,11 @@ function titles(snapshot) {
   assert.notEqual(TASK_TREE_REMINDER, TASK_TREE_START_REMINDER);
   assert.equal(TASK_TREE_START_REMINDER.includes('no task tree yet'), true);
   assert.equal(TASK_TREE_REMINDER.includes('task_tree_write'), true);
+  // "不需要任务" may cover read-only work only: a command still needs an
+  // execution (ADR-0001), so no prompt sentence may exempt one-off commands.
+  assert.equal(TASK_TREE_PROMPT.includes('one-off commands'), false);
+  assert.equal(TASK_TREE_REMINDER.includes('trivial single-step work'), false);
+  assert.equal(TASK_TREE_PROMPT.includes('read-only inspection'), true);
 }
 
 // ---------------------------------------------------------------------------
