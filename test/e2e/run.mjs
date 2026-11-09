@@ -4,11 +4,11 @@
  *
  * One command does the whole loop: create a throwaway DSH profile, run a
  * scripted session against it (real `dsh` process, real headless agent loop,
- * real tools, real Agent Team), export what the run actually produced — tool
- * results, the task tree and claim journal on disk, the live Team board —
- * assert the scenario, then clean everything up. A crash scenario runs several
- * real processes against one profile, resuming the first one's Session. A
- * failed run keeps its temporary directory and says where it is.
+ * real tools), export what the run actually produced — tool results and the
+ * task tree on disk — assert the scenario, then clean everything up. A
+ * multi-run scenario (for example "deliver, then the user accepts") resumes the
+ * first run's Session so both processes see one workline. A failed run keeps
+ * its temporary directory and says where it is.
  *
  * Only the model is scripted (a fixture adapter in the throwaway profile), so
  * runs are deterministic and need no credentials. Nothing here changes product
@@ -17,7 +17,7 @@
  * Usage:
  *   node test/e2e/run.mjs                     # every scenario
  *   node test/e2e/run.mjs --list              # list scenarios
- *   node test/e2e/run.mjs baseline-write tree-init
+ *   node test/e2e/run.mjs tree-basics         # any scenario by name
  *   node test/e2e/run.mjs --keep [scenario]   # keep the temporary directory
  *   node test/e2e/run.mjs --out DIR           # copy the artefacts to DIR
  */
@@ -84,7 +84,7 @@ async function loadScenarios(names) {
     if (!existsSync(modulePath)) throw new Error(`unknown scenario ${JSON.stringify(name)} (see --list)`);
     const module = await import(pathToFileURL(modulePath).href);
     const multi = Array.isArray(module.runs) && module.runs.length > 0;
-    if (typeof module.prompt !== 'string' || typeof module.verify !== 'function' || (!multi && !Array.isArray(module.program))) {
+    if (typeof module.verify !== 'function' || (!multi && (typeof module.prompt !== 'string' || !Array.isArray(module.program)))) {
       throw new Error(`scenario ${name} must export prompt, program (or runs), and verify`);
     }
     if (multi && module.runs.some((step) => typeof step?.prompt !== 'string' || !Array.isArray(step?.program))) {
@@ -99,17 +99,14 @@ async function listScenarios() {
   const names = (await readdir(SCENARIO_DIR)).filter((file) => file.endsWith('.mjs')).map((file) => file.replace(/\.mjs$/, '')).sort();
   for (const name of names) {
     const module = await import(pathToFileURL(join(SCENARIO_DIR, `${name}.mjs`)).href);
-    console.log(`${name}${module.team === true ? ' [team]' : ''} — ${module.summary ?? ''}`);
+    console.log(`${name} — ${module.summary ?? ''}`);
   }
 }
 
 function printArtefacts(artefacts) {
   const blocks = [
     ['tool-results.json', artefacts.toolResults],
-    ['tool-transcript.json', artefacts.toolTranscript],
     ['task-tree.json', artefacts.taskTree],
-    ['claim-journal.json', artefacts.claimJournal],
-    ['team-board.json', artefacts.teamBoard],
   ];
   for (const [label, value] of blocks) {
     const text = JSON.stringify(value, null, 2);
@@ -129,25 +126,16 @@ async function runScenario(scenario, options) {
   const root = await mkdtemp(join(tmpdir(), `dsh-e2e-${scenario.name}-`));
   let keep = false;
   try {
-    // A crash/restart scenario drives several real `dsh` processes against one
+    // A multi-run scenario drives several real `dsh` processes against one
     // profile and one workline; every other scenario is a single run.
     const steps = Array.isArray(scenario.runs) && scenario.runs.length > 0
       ? scenario.runs
-      : [{
-        prompt: scenario.prompt,
-        program: scenario.program,
-        subagentProgram: scenario.subagentProgram,
-        teamResponses: scenario.teamResponses,
-      }];
+      : [{ prompt: scenario.prompt, program: scenario.program }];
     const profile = await buildProfile({
       root,
       pluginRoot: PLUGIN_ROOT,
       fixtureDir: FIXTURE_DIR,
       program: steps[0].program,
-      subagentProgram: steps[0].subagentProgram,
-      teamResponses: steps[0].teamResponses,
-      team: scenario.team === true,
-      crash: scenario.crash,
     });
     console.log(`== ${scenario.name} — ${scenario.summary ?? ''}`);
     console.log(`   profile  ${profile.profileDir}`);
@@ -166,28 +154,19 @@ async function runScenario(scenario, options) {
         sessionId: step.resume === true ? worklineId : undefined,
       });
       // The workline is the FIRST run's root Session: a resumed run reports that
-      // same id, and a crash leaves the tree it wrote behind.
+      // same id, and both processes see one tree.
       if (worklineId === undefined) worklineId = run.sessionId;
       const outDir = steps.length === 1 ? profile.outDir : join(profile.outDir, `run-${index + 1}`);
       const artefacts = await collectArtefacts({
         outDir,
         run,
         taskTreeDir: profile.taskTreeDir,
-        teamBoardPath: profile.teamBoardPath,
-        transcriptPath: profile.transcriptPath,
-        team: scenario.team === true,
         worklineId,
       });
       const label = steps.length === 1 ? 'the dsh process' : `run ${index + 1}`;
-      if (step.expect === 'crash') {
-        if (run.status === 0) {
-          failures.push({ label: `${label} was expected to crash`, ok: false, detail: 'it exited successfully' });
-        } else {
-          console.log(`   ✓ ${label} crashed as injected (signal ${run.signal ?? 'none'})`);
-        }
-      } else if (run.status !== 0) {
+      if (run.status !== 0) {
         failures.push({
-          label: `${label} exited successfully`,
+          label: `${label} finished successfully`,
           ok: false,
           detail: run.timedOut ? 'timed out' : `exit=${run.status}; stderr: ${run.stderr.trim().split('\n').slice(-6).join(' | ')}`,
         });

@@ -7,7 +7,7 @@
  * #18 then had to hand-sync §1–§4. A reviewer caught the drift both times. This
  * check makes the same mistakes red instead.
  *
- * Three rules, all mechanical:
+ * Five rules, all mechanical:
  *
  * 1. The op list in `docs/CONTRACT.md` §3 is exactly `TASK_OPS`, in order.
  * 2. Every `host/<module>.js` named by the reader-facing docs exists, unless the
@@ -17,16 +17,13 @@
  *    deprecated record definitions. A rule stated as live must not survive in
  *    that block.
  * 4. The shipped, user-facing docs (README, requirements, implementation
- *    status, contract, glossary, AGENTS) do not describe the removed gate, and
- *    a line marked as history is allowed to name it. CHANGELOG and ADRs keep
- *    the history; `docs/testing/manual-acceptance.md` still carries the old
- *    expectations until #20 rewrites it, and the teardown's own spec names the
- *    layer it removes — neither is a shipped surface, so neither is scanned.
+ *    status, contract, glossary, AGENTS, manual acceptance) do not describe the
+ *    removed gate, and a line marked as history is allowed to name it. CHANGELOG
+ *    and ADRs keep the history; the teardown's own spec names the layer it
+ *    removes, so it is a working record rather than a shipped surface.
  * 5. The version anchors in README / AGENTS / requirements / implementation
  *    status equal `package.json`. A release bumps the version in one place and
  *    the docs are caches of it; #19 landed with two of them still on 0.3.7.
- * 6. The one deferred exemption expires: when #20 rewrites the manual
- *    acceptance notes, the tripwire below turns red and says what to do.
  *
  * Run with `node test/docs-contract.mjs`; it reads files only, writes nothing.
  */
@@ -123,6 +120,7 @@ const read = (path) => readFileSync(join(ROOT, path), 'utf8');
     'docs/CONTRACT.md',
     'docs/requirements/REQUIREMENTS.md',
     'docs/implementation-status.md',
+    'docs/testing/manual-acceptance.md',
   ];
   for (const doc of shipped) {
     if (!existsSync(join(ROOT, doc))) continue;
@@ -160,23 +158,6 @@ const read = (path) => readFileSync(join(ROOT, path), 'utf8');
       `${doc} does not say "${anchor}"; a version bump updates package.json and every anchor together`,
     );
   }
-}
-
-// ---------------------------------------------------------------------------
-// 6. the deferred exemption must expire
-// ---------------------------------------------------------------------------
-
-{
-  // #20 rewrites the manual acceptance notes (see the #20 ticket). Until then
-  // they are exempt from rule 4. This tripwire is what makes the exemption
-  // temporary: once the file is clean, the check fails and asks for the file to
-  // join `shipped` and for this block to be deleted.
-  const deferred = 'docs/testing/manual-acceptance.md';
-  assert.equal(
-    existsSync(join(ROOT, deferred)) && /执行位|执行门禁|execution gate|force release/.test(read(deferred)),
-    true,
-    `${deferred} no longer mentions the removed gate — it has expired: add it to the \`shipped\` list in rule 4 and delete this tripwire`,
-  );
 }
 
 console.log('docs contract ok');

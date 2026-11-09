@@ -51,8 +51,8 @@ const DEFAULT_TIMEOUT_MS = 180_000;
  * Run one session and project its NDJSON event stream.
  * @param options - `{ prompt, home, profileDir, workdir, name, timeoutMs, bin,
  *   sessionId }`; `sessionId` adopts that persisted Session, which is how a
- *   scenario restarts a workline after a crash.
- * @returns `{ status, signal, timedOut, stdout, stderr, events, unparsed, sessionId }`.
+ *   multi-run scenario continues one workline.
+ * @returns `{ status, timedOut, stdout, stderr, events, unparsed, sessionId }`.
  */
 export function runSession({ prompt, home, profileDir, workdir, name = 'e2e', timeoutMs = DEFAULT_TIMEOUT_MS, bin, sessionId }) {
   const startedAt = Date.now();
@@ -61,8 +61,8 @@ export function runSession({ prompt, home, profileDir, workdir, name = 'e2e', ti
     throw new Error('no dsh launcher on PATH; set DSH_BIN to the launcher you use');
   }
   const appArgs = ['--json'];
-  // Resume, don't fork: a restart must see the same Session log (and so the
-  // same Team board and task tree), which is the whole point of reconciling.
+  // Resume, don't fork: the second run must see the same Session log, and so
+  // the same workline and task tree.
   if (typeof sessionId === 'string' && sessionId !== '') appArgs.push('--session-id', sessionId);
   appArgs.push(prompt);
   const attempt = (executable) => spawnSync(
@@ -112,7 +112,6 @@ export function runSession({ prompt, home, profileDir, workdir, name = 'e2e', ti
   const session = events.find((event) => event?.type === 'session');
   return {
     status: result.status,
-    signal: result.signal ?? undefined,
     timedOut: result.error?.code === 'ETIMEDOUT',
     stdout: String(result.stdout ?? ''),
     stderr: String(result.stderr ?? ''),
