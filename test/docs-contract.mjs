@@ -22,6 +22,11 @@
  *    the history; `docs/testing/manual-acceptance.md` still carries the old
  *    expectations until #20 rewrites it, and the teardown's own spec names the
  *    layer it removes — neither is a shipped surface, so neither is scanned.
+ * 5. The version anchors in README / AGENTS / requirements / implementation
+ *    status equal `package.json`. A release bumps the version in one place and
+ *    the docs are caches of it; #19 landed with two of them still on 0.3.7.
+ * 6. The one deferred exemption expires: when #20 rewrites the manual
+ *    acceptance notes, the tripwire below turns red and says what to do.
  *
  * Run with `node test/docs-contract.mjs`; it reads files only, writes nothing.
  */
@@ -32,12 +37,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { TASK_OPS } from '../host/model.js';
+import { DOC_GATE_PHRASES, isHistoryLine } from './support/contract-terms.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (path) => readFileSync(join(ROOT, path), 'utf8');
-
-/** A line that already says the thing it names is gone, or points at the history. */
-const HISTORY_LINE = /@deprecated|deprecated|已拆除|拆除|已删除|历史|老记录|旧|不再|ADR-0003/;
 
 // ---------------------------------------------------------------------------
 // 1. the contract's op list is the live op list
@@ -70,7 +73,7 @@ const HISTORY_LINE = /@deprecated|deprecated|已拆除|拆除|已删除|历史|�
     read(doc).split('\n').forEach((line, index) => {
       for (const match of line.matchAll(/`(host\/([a-z0-9-]+)\.js)`/g)) {
         checked += 1;
-        if (HISTORY_LINE.test(line)) continue;
+        if (isHistoryLine(line)) continue;
         assert.ok(
           existsSync(join(ROOT, match[1])),
           `${doc}:${index + 1} points at ${match[1]}, which does not exist — update the pointer or mark the line as history`,
@@ -97,7 +100,7 @@ const HISTORY_LINE = /@deprecated|deprecated|已拆除|拆除|已删除|历史|�
     if (line.includes('已拆除的证据层')) insideDeprecatedBlock = true;
     if (insideDeprecatedBlock && line.startsWith('ConflictRecord = {')) sawConflictRecord = true;
     if (insideDeprecatedBlock && sawConflictRecord && line.trim() === '```') insideDeprecatedBlock = false;
-    if (insideDeprecatedBlock || HISTORY_LINE.test(line)) continue;
+    if (insideDeprecatedBlock || isHistoryLine(line)) continue;
     for (const surface of REMOVED) {
       assert.equal(
         new RegExp(`\\b${surface}\\b`).test(line),
@@ -113,10 +116,6 @@ const HISTORY_LINE = /@deprecated|deprecated|已拆除|拆除|已删除|历史|�
 // ---------------------------------------------------------------------------
 
 {
-  const GATE = [
-    'execution gate', 'execution ledger', 'force release',
-    '执行门禁', '执行位', '终身绑定', '强制释放', '执行账本', '执行号', '并发占位', '失联',
-  ];
   const shipped = [
     'README.md',
     'AGENTS.md',
@@ -128,8 +127,8 @@ const HISTORY_LINE = /@deprecated|deprecated|已拆除|拆除|已删除|历史|�
   for (const doc of shipped) {
     if (!existsSync(join(ROOT, doc))) continue;
     read(doc).split('\n').forEach((line, index) => {
-      if (HISTORY_LINE.test(line)) return;
-      for (const phrase of GATE) {
+      if (isHistoryLine(line)) return;
+      for (const phrase of DOC_GATE_PHRASES) {
         assert.equal(
           line.includes(phrase),
           false,
@@ -138,6 +137,46 @@ const HISTORY_LINE = /@deprecated|deprecated|已拆除|拆除|已删除|历史|�
       }
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// 5. the version anchors in the docs follow package.json
+// ---------------------------------------------------------------------------
+
+{
+  const version = JSON.parse(read('package.json')).version;
+  assert.match(version, /^\d+\.\d+\.\d+$/, `package.json version looks wrong: ${version}`);
+  const anchors = [
+    ['README.md', `当前代码版本：v${version}`],
+    ['AGENTS.md', `ships in v${version}`],
+    ['docs/requirements/REQUIREMENTS.md', `已实现到 v${version}`],
+    ['docs/implementation-status.md', `# 实现现状（v${version}）`],
+    ['docs/implementation-status.md', `| 版本 | ${version} |`],
+  ];
+  for (const [doc, anchor] of anchors) {
+    assert.equal(
+      read(doc).includes(anchor),
+      true,
+      `${doc} does not say "${anchor}"; a version bump updates package.json and every anchor together`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 6. the deferred exemption must expire
+// ---------------------------------------------------------------------------
+
+{
+  // #20 rewrites the manual acceptance notes (see the #20 ticket). Until then
+  // they are exempt from rule 4. This tripwire is what makes the exemption
+  // temporary: once the file is clean, the check fails and asks for the file to
+  // join `shipped` and for this block to be deleted.
+  const deferred = 'docs/testing/manual-acceptance.md';
+  assert.equal(
+    existsSync(join(ROOT, deferred)) && /执行位|执行门禁|execution gate|force release/.test(read(deferred)),
+    true,
+    `${deferred} no longer mentions the removed gate — it has expired: add it to the \`shipped\` list in rule 4 and delete this tripwire`,
+  );
 }
 
 console.log('docs contract ok');

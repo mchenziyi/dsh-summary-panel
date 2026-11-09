@@ -32,33 +32,9 @@ import { fileURLToPath } from 'node:url';
 import { TASK_OPS } from '../host/model.js';
 import { TASK_TREE_PROMPT, TASK_TREE_REMINDER, TASK_TREE_START_REMINDER } from '../host/prompt.js';
 import { mountTaskTree } from '../host/mount.js';
+import { REMOVED_SURFACES } from './support/contract-terms.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-
-/**
- * Surfaces ADR-0003 removed. A model-facing text that still names one is a
- * prompt advertising a call that now throws; client code that reads one renders
- * a branch the host can no longer satisfy.
- */
-const REMOVED_SURFACES = [
-  // The execution ledger: no execution ids, no execution state, no lost-executor
-  // marker (the claim record is all the panel shows now).
-  'executionId',
-  'executorLost',
-  'executionState',
-  'ownerLost',
-  'execution seat',
-  'lifetime binding',
-  // Ops that no longer exist.
-  'resolveConflict',
-  'team_task_update',
-  '"force":true',
-  'force: true',
-  'force-release',
-  'force release',
-  // The gate's vocabulary.
-  'class A',
-];
 
 /** Every `{"op":"<name>"}` call shape in one text. */
 function opCalls(text) {

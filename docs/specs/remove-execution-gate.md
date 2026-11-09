@@ -45,6 +45,7 @@
 4. 改动不夹带：每张票只碰它写作用域里的文件。
 5. 机械性规矩优先落成检查，不写成散文：`test/host-contract.mjs` 守住「模型可见文本 / `client.js` ↔ 活着的 op 与字段」的一致性；`test/modules.mjs` 守住「每个 `host/*.js` 可加载」；`test/docs-contract.mjs` 守住「契约的 op 列表、模块引用、已删 surface」与代码一致。
 6. 验收判据必须能在**开工时**一条命令跑出来。判据引用前一张票的产物时，开工第一件事是把判据跑一遍，红了就当场把判据改准并在同一个 commit 里说明。反例：#18 的 `grep -rn "execution" host/` 判据在 #17 保留 `executionApproval` 之后就永远不可能字面成立，收口见 #19。
+7. 收尾时把 `git diff --name-only <base>...HEAD` 与票面「写作用域」对照一遍：多出来的文件只有两种处理——挪进本票写作用域并披露，或明确留给后续票。票面作用域写不准是常态（#17–#19 每张都被 reviewer 提过同一条），不要等 review 才发现。
 
 ## 回滚
 

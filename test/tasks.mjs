@@ -23,6 +23,7 @@ import { callerOf } from '../host/session.js';
 import { mountTaskTree } from '../host/mount.js';
 import { taskTreeReminderFor, TASK_TREE_REMINDER, TASK_TREE_START_REMINDER, TASK_TREE_PROMPT } from '../host/prompt.js';
 import { MAX_BASIS, MIN_QUOTE, verifyUserQuote } from '../host/evidence.js';
+import { PROMPT_BANNED_TERMS } from './support/contract-terms.mjs';
 
 const NOW = 1_700_000_000_000;
 
@@ -1533,7 +1534,7 @@ function titles(snapshot) {
   // reminder says what a missing tree costs the user. The claim apparatus is a
   // record in the tool schema, not prompt coaching.
   assert.equal(TASK_TREE_PROMPT.includes('leaves their panel empty'), true);
-  for (const gone of ['claim', 'release', 'execution seat', 'lifetime binding']) {
+  for (const gone of PROMPT_BANNED_TERMS) {
     assert.equal(
       TASK_TREE_PROMPT.includes(gone) || TASK_TREE_START_REMINDER.includes(gone),
       false,
