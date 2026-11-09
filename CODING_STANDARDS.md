@@ -34,7 +34,7 @@ operations that can reach the same state, and require the caller to prove they
 cannot bypass it. (`defer` and `archive` once ended another session's execution
 without an interrupt.)
 
-Two more that cost real time:
+A few more that cost real time:
 
 - **A comment states the invariant the code keeps now.** When a rule changes,
   the comment above it changes in the same commit; the review caught a comment
@@ -42,6 +42,10 @@ Two more that cost real time:
 - **Two modules must not hold the same truth.** Before adding a record, find out
   whether something already normalizes it. Two normalizers of one field with
   opposite defaults is how the fail-open above arrived.
+- **A document does not cache a count the repo can report.** The e2e scenario
+  count was restated in three docs and drifted (18 → "12 deleted"); the
+  environment already answers it (`npm run test:e2e -- --list`). Point at the
+  command instead of writing the number.
 
 ## Working agreements
 
