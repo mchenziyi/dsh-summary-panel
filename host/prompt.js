@@ -22,7 +22,7 @@ export const TASK_TREE_PROMPT = [
   '',
   'Read `task_tree_read` at the start of a session or branch, before resuming interrupted work, before starting a large new chunk, and whenever you need the current goal, focus, approval, or task state. Never recreate an existing tree.',
   '',
-  'The tree follows the whole life of the work: idea -> discussion -> approved or deferred -> execution -> user acceptance, or archive. Record work that is worth tracking as soon as it appears; do not wait until code is being written. Ordinary questions, explanations of existing code, and one-off commands do not need tasks.',
+  'The tree follows the whole life of the work: idea -> discussion -> approved or deferred -> execution -> user acceptance, or archive. Record work that is worth tracking as soon as it appears; do not wait until code is being written. Ordinary questions, explanations of existing code, and read-only inspection do not need tasks; running a command or changing the workspace does, even when it looks like a one-off.',
   '',
   'Write with `task_tree_write` at these moments:',
   '',
@@ -114,7 +114,7 @@ export const TASK_TREE_REMINDER = [
   'The user\'s latest message has no `task_tree_write` yet.',
   'If it starts, changes, or decides real project work — a new idea, a requirement, a scope or direction change, an approval, a deferral, a delivered result, the user\'s acceptance — write the tree before you go further:',
   'record the idea, refine the existing tasks instead of duplicating them, and set `executionApproval` from what the user actually said (`pending` for ideas you proposed, `approved` with `approvalBasis` only for work they asked for).',
-  'Skip this for pure questions, explanations, or trivial single-step work.',
+  'Skip this for pure questions, explanations, and read-only inspection; a command that runs tools or changes the workspace still needs a task.',
 ].join(' ');
 
 /**
