@@ -10,17 +10,24 @@ the pre-commit hook.
 
 ## Review focus
 
-Two defect shapes have shipped from this repo more than once. Check for both on
-every change that adds a guard or a terminal action.
+Three defect shapes have shipped from this repo more than once. Check all three on
+every change.
 
-**1. A guard's default when its data is missing.** For each new permission check
+**1. Human visibility.** Every change must either make the panel better at showing
+"where the work stands now", or say in the PR/report why this change does not
+touch that. The test is whether a **person** can see the fact by opening the panel
+or reading the README — not whether an agent can be blocked. A ticket that only
+adds a denial path makes the machine stricter without making the product clearer,
+so it needs the extra sentence saying why.
+
+**2. A guard's default when its data is missing.** For each new permission check
 ask what happens when the record it reads is absent, empty, or unreadable, and
 require the deny direction. The execution gate once allowed every workspace
 write when the ledger array was absent; the fix was a single normalizer with a
 fail-closed default. A guard that grants on missing data is worse than no guard,
 because the read model still reports the execution as missing.
 
-**2. A terminal action reachable from another entry point.** For each new way to
+**3. A terminal action reachable from another entry point.** For each new way to
 end something, enumerate the other operations that can reach the same state, and
 require the caller to prove they cannot bypass it. `defer` and `archive` could
 end another session's execution without an interrupt, straight through the
@@ -46,3 +53,6 @@ once and cost a full rebuild of one ticket.
 
 **A ticket's acceptance is a user-visible fact**, not an internal call. "The
 second claim was refused" is acceptable; "`applyClaim` returned an error" is not.
+For a panel product, a user-visible fact means first of all **what a person can
+see in the panel**: a row, a colour, a hover summary, a screenshot in the README.
+An agent's experience of being blocked is not by itself the user's experience.
