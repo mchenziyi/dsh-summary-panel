@@ -197,10 +197,10 @@ export function createTaskStore(options = {}) {
 
   /**
    * The snapshot shape. The Worker lifetime records travel with the tasks they
-   * constrain, and the unresolved conflicts travel with them too, because a
-   * synchronous decision (the tool guard) must be able to see that a task is
-   * stopped without awaiting storage. Each field is omitted when empty so the
-   * common shape stays exactly `{ present, tasks }`.
+   * constrain, and the unresolved conflicts travel with them too, because the
+   * claim evidence pass reads the tree synchronously and must be able to see
+   * that a task is stopped without awaiting storage. Each field is omitted when
+   * empty so the common shape stays exactly `{ present, tasks }`.
    */
   function snapshotOf(envelope) {
     const tasks = Array.isArray(envelope.tasks) ? envelope.tasks : [];
@@ -211,10 +211,10 @@ export function createTaskStore(options = {}) {
     const conflicts = Array.isArray(rawConflicts)
       ? rawConflicts.filter((conflict) => conflict !== null && typeof conflict === 'object' && conflict.resolvedAt === null)
       : undefined;
-    // The execution ledger travels with the tasks because the guard must decide
-    // SYNCHRONOUSLY whether the stamp's execution is still `active`: an
-    // orphaned or ended execution grants no class A permission even though the
-    // stamp (an index, not the truth) still names it (design v8 I0).
+    // The execution ledger travels with the tasks because the evidence pass
+    // reads it SYNCHRONOUSLY to converge a stale stamp: an orphaned or ended
+    // execution is reported as such even though the stamp (an index, not the
+    // truth) still names it (design v8 I0).
     const executions = Array.isArray(workline.executions)
       ? workline.executions.filter((execution) => execution !== null
         && typeof execution === 'object'
@@ -230,25 +230,24 @@ export function createTaskStore(options = {}) {
   }
 
   /**
-   * Synchronous snapshot of one workline, for a decision that must not await
-   * (the tool guard decides mid-call, before dispatch).
+   * Synchronous snapshot of one workline, for a reader that must not await
+   * (the claim evidence pass reads it before dispatch).
    *
    * It prefers the in-process cache, which every `update` refreshes before it
-   * returns, so a `claim` or `release` is visible to the next guard call
+   * returns, so a `claim` or `release` is visible to the next synchronous read
    * immediately. A cold workline is read from disk with a synchronous read —
    * bounded to one small file, never a pending promise — and then cached.
    *
    * Fail-closed on a present-but-unreadable tree: a corrupt or unreadable
-   * record reports `present: true` with no tasks, which denies class A tools
-   * rather than silently freeing them. A genuinely absent file reports an
-   * empty workline (`present: false`); the execution gate denies class A there
-   * too, so absence is a fact the gate reads, never a permission it grants
-   * (ADR-0001).
+   * record reports `present: true` with no tasks, so the claim binding refuses
+   * rather than inventing a tree that might grant something. A genuinely
+   * absent file reports an empty workline (`present: false`); the claim binding
+   * reads absence as "nothing was dispatched", never as permission.
    *
    * @param worklineId - the root session id of the workline.
    * @returns `{ present, tasks, executions?, workers?, conflicts?, unreadable? }`;
-   *   `executions` is present once a ledger row exists (the guard reads its
-   *   state), `workers` only once a lifetime record exists, and `tasks`,
+   *   `executions` is present once a ledger row exists (the evidence pass reads
+   *   its state), `workers` only once a lifetime record exists, and `tasks`,
    *   `executions` and `workers` are read-only.
    */
   function snapshot(worklineId) {

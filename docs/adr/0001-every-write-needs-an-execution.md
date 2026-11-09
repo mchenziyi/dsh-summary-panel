@@ -1,7 +1,8 @@
 # 0001. 任何改工作区的工具都需要一条 active execution
 
-- **状态**：已采纳（实现见 PR `fix: every workspace write needs an execution (F)`）
-- **取代**：`docs/plans/dsh-execution-scheduling-v8.md` §14「已知限制」第 4 条——「未建树的 workline 不受 A 类约束（普通问答不受影响）」。设计文档是冻结的历史记录，不改原文，以本 ADR 为准。
+- **状态**：已被 `docs/adr/0003-remove-the-execution-gate.md` **取代**（2026-11-09）。本文保留为历史记录：它描述的那条规则、当时的事故与推理，均已不再生效。
+- **原状态**：已采纳（实现见 PR `fix: every workspace write needs an execution (F)`）
+- **取代**：`docs/plans/archive/dsh-execution-scheduling-v8.md` §14「已知限制」第 4 条——「未建树的 workline 不受 A 类约束（普通问答不受影响）」。设计文档是已完成的历史记录（已归档，不再指引开发），不改原文，以本 ADR 为准。
 - **相关代码**：`host/guard.js`（门禁与拒绝文案）、`host/store.js`（同步快照）、`host/prompt.js`（无树提醒）
 - **相关测试**：`test/e2e/scenarios/baseline-write.mjs`、`test/e2e/scenarios/execution-gate.mjs`、`test/tasks.mjs`
 - **词汇**：见 `GLOSSARY.md` 的 class A / class B / class C、execution、claim、workline。

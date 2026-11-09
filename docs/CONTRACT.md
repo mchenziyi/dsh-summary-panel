@@ -1,8 +1,8 @@
 # 任务树实现契约（Host / Client 共享）
 
-需求来源：`~/Desktop/AI-TodoList/REQUIREMENTS.md`（已冻结）。
-本文件是并行的唯一接口约定；两者冲突时以本文件为准，改动须先经 Lead。
-本文件于 2026-11-06 从 `~/Desktop/AI-TodoList/CONTRACT.md` 迁入本仓库，此处为唯一维护位置；旧路径保留为指向本文的存根。
+需求来源：`docs/requirements/REQUIREMENTS.md`（产品承诺，已迁入本仓库）。
+本文件只管 Host/Client 接口；它不决定产品做什么。两者不重叠时各管一段，重叠处（接口）以本文件为准，改动须先经 Lead。
+本文件于 2026-11-06 从原桌面目录的 `CONTRACT.md` 迁入本仓库，此处为唯一维护位置；原位置只留指向本文的存根。需求文档于 2026-11-09 迁入 `docs/requirements/REQUIREMENTS.md`，原位置同样只留指向它的存根。
 
 ## 0. 范围与文件所有权
 
@@ -57,6 +57,10 @@ TaskRecord = {
   order: number              // 同级排序，升序
   title: string              // 简短名，1..40 字符，单行
   summary: string            // 悬停简介，0..240 字符，单行
+  expectedOutcome: string    // 预期结果，0..240 字符，单行；右栏展示
+  nextStep: string           // 下一步，0..240 字符，单行；右栏展示
+  temporary: boolean         // 是否为被紧急问题打断而插入的临时任务
+  temporaryFor?: string | null // 被它打断的主线任务 id；temporary=true 时必须指向同工作线的活跃任务
   status: 'pending' | 'in_progress' | 'blocked' | 'done'
   deferred: boolean
   deferredReason?: string
@@ -150,6 +154,10 @@ ConflictRecord = {
 12. 执行生命周期只有 `active` / `orphaned` / `ended` 三态，只有 `active` 授予 A 类工具权限；声明了却无法识别的状态按 `orphaned` 处理（fail closed，不授予权限、不静默释放）。`orphaned`（executor lost）只能由 Lead 在 `interrupt_agent` 并确认其停止后 `release {force:true}` 结束；结束执行同时结束该 Worker 的终身绑定（同一实例不能再领取第二个任务，重试需要新实例与新 `executionId`）。
 13. 冲突（`conflicts`）是工作线级记录，不是执行状态：未解决（`resolvedAt === null`）的冲突停住其任务（`scope: "workline"` 时停住整条工作线）的新 claim，Host 不猜执行者、不重建执行。只有 Lead 能 `resolveConflict`，记录 `resolvedAt`/`resolvedBy`/`resolution`（谁、何时、为什么）；解决后任务可以重新被领取。
 14. A 类工具在任何工作线都需要调用者持有该工作线的 `active` 执行，**没有任务树的工作线也照拒**：空树里没有可 claim 的任务，所以拒绝理由必须给出完整 bootstrap（`init` 建树 → `create` 建任务 → `claim` → 重试），不能只说"没有执行权"。B 类与 C 类不受影响——否则模型无法从零建立执行（claim 必须始终可达）。依据 `docs/adr/0001-every-write-needs-an-execution.md`。
+15. （留给 ADR 任务。）
+16. `expectedOutcome` / `nextStep` 与 `summary` 同规则：去空白、单行、≤240 字；空字符串表示未填写，创建与更新都可写。
+17. `temporary` 是布尔标记，`temporaryFor` 指向被打断的主线任务。`temporaryFor` 必须是同工作线、未归档的现有任务，不能指向自己；写入非空 `temporaryFor` 会同时把任务标为 `temporary: true`，`temporary: false` 或 `temporaryFor: null` 会清空链接；`temporary: true` 而没有任何来源任务时拒绝写入。
+18. 临时任务的打断链（沿 `temporaryFor` 前进）不能成环，即不能回到任务自己；临时任务完成即更新状态，不长期滞留成容器（`docs/requirements/REQUIREMENTS.md` §6.3、§16.18）。
 
 ## 3. Agent 工具（Host 注册，模型可见）
 
@@ -158,7 +166,7 @@ ConflictRecord = {
 ### `task_tree_read`
 
 参数：`{ details?: boolean, includeArchived?: boolean, archivedLimit?: number }`
-（`details=true` 时额外返回 summary/progress/result/completion/approvalBasis/acceptanceBasis；
+（`details=true` 时额外返回 summary/expectedOutcome/nextStep/progress/result/completion/approvalBasis/acceptanceBasis；
 `includeArchived=true` 时额外返回 `archived` 与 `archivedTotal`，`archivedLimit` 1..200，默认 50）。
 
 输出（JSON，`additionalProperties:false`，未声明的字段会被宿主拒绝）：
@@ -172,7 +180,8 @@ ConflictRecord = {
             executor: { kind: 'lead'|'teammate'|'subagent', name, sessionId } | null,
             executorLost: boolean,
             executionState: 'active'|'orphaned'|'ended'|'missing' | null,
-            depth, summary?, progress?, result?, completion?, approvalBasis?, acceptanceBasis? }],
+            temporary: boolean, temporaryFor: string | null,
+            depth, summary?, expectedOutcome?, nextStep?, progress?, result?, completion?, approvalBasis?, acceptanceBasis? }],
   archived?: [{ id, parentId, title, status, approval, deferred, archivedAt,
                 archiveReason, summary, progress, result, completion, path }],
   archivedTotal?: number }
@@ -197,6 +206,10 @@ ConflictRecord = {
   conflictId?: string       // resolveConflict：要解决的冲突 id（如 "cf-1"）
   title?: string
   summary?: string
+  expectedOutcome?: string  // 预期结果，单行 ≤240 字
+  nextStep?: string         // 下一步，单行 ≤240 字
+  temporary?: boolean       // 被紧急问题打断而插入的临时任务
+  temporaryFor?: string | null // 被打断的主线任务 id（校验见不变量 16-18）
   outline?: string
   current?: string          // reviseGoal
   reason?: string           // reviseGoal / archive / release {force:true} / resolveConflict
@@ -223,8 +236,9 @@ ConflictRecord = {
 行为：
 
 - `init`：工作线不存在时创建，写 `originalGoal`/`outline`；已存在则报错（不要覆盖）。
-- `create`：新建子任务，`parentId` 省略为顶层；返回新 id（`t1`…）。同级 order 默认追加。直接建在已批准父任务下的步骤继承授权。
-- `update`：局部更新 title/summary/status/progress/result/blocker/executionApproval/requiresUserAcceptance；blocker 用两个字段，至少给 reason，两者都空表示清除；`status='done'` 走与 `complete` 相同的完成规则。
+- `create`：新建子任务，`parentId` 省略为顶层；返回新 id（`t1`…）。同级 order 默认追加。直接建在已批准父任务下的步骤继承授权。创建时写 `expectedOutcome` 说明"怎样算做完"。
+- `update`：局部更新 title/summary/expectedOutcome/nextStep/status/progress/result/blocker/executionApproval/requiresUserAcceptance；blocker 用两个字段，至少给 reason，两者都空表示清除；`status='done'` 走与 `complete` 相同的完成规则。记录进度时同时写 `nextStep`。
+- 被紧急问题打断：为紧急问题建一条 `temporary: true` + `temporaryFor: <原任务>` 的任务，转移焦点，修完后 resume 原任务（并清空临时任务的焦点）。
 - `move`：改 parentId / order；校验成环；已开始且未完成的交付任务不能移走。
 - `defer` / `resume`：见不变量 5；持有别人执行的任务不能 defer。
 - `archive` / `restore`：递归归档（同一批）子树；restore 保留原 id 与历史，回到仍活跃的最近祖先。
@@ -259,7 +273,9 @@ ConflictRecord = {
   "updatedAt": 0,
   "tasks": [
     { "id": "t1", "parentId": null, "order": 0, "title": "用户登录",
-      "summary": "…", "status": "in_progress", "settled": false,
+      "summary": "…", "expectedOutcome": "…", "nextStep": "…",
+      "temporary": false, "temporaryFor": null,
+      "status": "in_progress", "settled": false,
       "executionApproval": "approved", "requiresUserAcceptance": true,
       "deferred": false, "deferredReason": null, "resumeCondition": null,
       "blocker": null, "progress": "…", "result": null,
@@ -321,7 +337,7 @@ v1 用轮询，不做 SSE：面板打开时任务树 1.5s、详情 tab 3s、入�
 ### 5.4 右栏详情 tab
 
 - 注册 tab 类型 `summary-panel.task` + `sidebar.right.pane.tab` 的 key，参数 `{ sessionId, taskId }`；打开前收起浮窗（沿用现有模式）。
-- 内容只读：标题、状态文字、summary、进展、结果、阻塞原因、占用会话、完成方式；上方「目标」区块展示 original/current 与修订记录；底部「已归档 N」可展开查看归档列表（原因、时间）。
+- 内容只读：标题、状态文字、summary、预期结果（expectedOutcome）、下一步（nextStep）、进展、结果、阻塞原因、占用会话、完成方式；另有「子任务」区块列出直接子任务（标题 + 状态，点击沿用 `openTask` 打开对应任务）；临时任务在字段上方显示「临时任务，打断自 <任务名>」；上方「目标」区块展示 original/current 与修订记录；底部「已归档 N」可展开查看归档列表（原因、时间）。
 - 同一 tab 复用到不同任务（参照 diff tab 的复用逻辑：按 pane 去重 + 参数更新）。
 - 任务在归档列表中也能打开（显示归档原因）。
 

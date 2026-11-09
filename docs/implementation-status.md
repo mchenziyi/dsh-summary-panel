@@ -106,16 +106,17 @@
 9. **第一次改文件必须先 bootstrap（ADR-0001 的直接代价）**：新会话里任何 A 类工具（写文件、`edit`、shell、terminal、worktree、`workflow`、`ralph`、子代理派生）都要先 `init` → `create` → `claim`，没有"这次改动很小所以豁免"的通道。这是有意为之：豁免曾让模型自判 trivial 并直接写盘。代价是"看一眼顺手改一行"也要先建树。
 10. **`ask_user_question` 卡片里的回答不算用户原话**：`approvalBasis` / `acceptanceBasis` 只认用户在聊天框里打出来的文本；用卡片选出来的答案无法通过引用校验，也就不能作为授权或验收依据。
 11. **未持有执行的 Worker 没有 shell，因此连等待都做不到**：A 类被拒的会话无法用 `bash sleep` 之类的变通手段延时，重试间隔只能用 `wait_agent` 这类 B 类工具。
+12. **策略跑在可卸载插件里，所以它是可选礼仪，不是安全边界。** 插件被禁用时，`task_tree_*` 工具与整个执行门禁**一起消失**、数据（`agent-task-tree/*.json`）保留、而没有任何提示告诉会话"你现在没有门禁了"；关闭那一刻正在飞行的树写入还会丢失（实测：一条 `end` 执行记录丢失，留下一条 `active` 的僵尸执行，需要 interrupt + force release 才能清理）。关掉插件不是事故，但请不要把它当作安全机制——真正的安全边界需要 host 或 OS 层（文件系统隔离 / 独立工作树），而本版明确不做（见已知限制第 7 条）。
 
 ## 外部文档
 
 | 文档 | 位置 | 说明 |
 |---|---|---|
-| 需求文档 | `~/Desktop/AI-TodoList/REQUIREMENTS.md` | 已冻结的 MVP 需求 |
-| 实现契约 | `~/Desktop/AI-TodoList/CONTRACT.md` | Host/Client 唯一接口约定；与需求冲突以它为准 |
-| 执行调度设计 v8 | `docs/plans/dsh-execution-scheduling-v8.md` | 已冻结；已实现标准模式的执行门禁（#3）、单执行位/交接（#4）、团队模式 Lead 只协调（#5）、认领绑定（#6）、成员终身绑定（#7）、执行证据与崩溃对账（#8）、并发占位（#9）与失联/强制终止（#10）切片，并由三场景真实进程验收与文档（#11）收尾 |
+| 需求文档 | `docs/requirements/REQUIREMENTS.md` | 产品承诺：顶部一屏摘要（§1.3 不是目标 / §14 第一版明确不做）；契约只管接口，不决定产品做什么 |
+| 实现契约 | `docs/CONTRACT.md` | Host/Client 接口约定；不决定产品做什么，不重叠时各管一段 |
+| 执行调度设计 v8（历史） | `docs/plans/archive/dsh-execution-scheduling-v8.md` | **已全部实现（已归档，不是待办）**：标准模式的执行门禁（#3）、单执行位/交接（#4）、团队模式 Lead 只协调（#5）、认领绑定（#6）、成员终身绑定（#7）、执行证据与崩溃对账（#8）、并发占位（#9）与失联/强制终止（#10）切片，并由三场景真实进程验收与文档（#11）收尾 |
 | 架构决策 ADR | `docs/adr/` | 0001 取消空工作线豁免：任何改工作区都要 claim（含原因、代价与被否决的方案） |
 | 变更记录 | `CHANGELOG.md` | 每版做了什么 |
 | 真实进程 e2e | `test/e2e/README.md` | 场景清单、装置原理、如何运行与装置的边界 |
 
-> 需求与契约两份文档仍在 `Desktop/AI-TodoList`，不在本仓库——agent 读仓库时看不到它们。是否迁入仓库尚未决定。
+> 需求与契约两份文档都已在本仓库（需求 `docs/requirements/`、契约 `docs/CONTRACT.md`）；原桌面目录只留指向它们的存根。历史设计在 `docs/plans/archive/`，是记录不是待办。

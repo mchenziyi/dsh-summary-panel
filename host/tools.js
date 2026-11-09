@@ -89,6 +89,16 @@ const WRITE_PARAMETERS = Object.freeze({
           },
           title: { type: 'string', description: 'Short task name, 1..40 characters, single line.' },
           summary: { type: 'string', description: 'One-line hover summary, at most 240 characters.' },
+          expectedOutcome: { type: 'string', description: 'What the task is expected to deliver, one line, at most 240 characters. Write it when the task is created; the right sidebar shows it.' },
+          nextStep: { type: 'string', description: 'The immediate next move, one line, at most 240 characters. Update it together with progress; the right sidebar shows it.' },
+          temporary: {
+            type: 'boolean',
+            description: 'True when this task absorbs an urgent problem that interrupted the mainline task; it must then name that task in temporaryFor. Setting temporaryFor alone also makes the task temporary, and temporary: false clears the link.',
+          },
+          temporaryFor: {
+            oneOf: [{ type: 'string' }, { type: 'null' }],
+            description: 'The interrupted mainline task id. Must exist in this workline, be active (not archived), not be this task, and must not close a loop of temporary tasks. A temporary task must always name its source; finish it and go back to the interrupted task.',
+          },
           outline: { type: 'string', description: 'Free-form goal outline for op "init".' },
           current: { type: 'string', description: 'The revised current goal for op "reviseGoal".' },
           reason: { type: 'string', description: 'Why the goal changed (reviseGoal), why the task is archived (archive), or why an execution is force-terminated (release with force).' },
@@ -258,7 +268,17 @@ const READ_OUTPUT = Object.freeze({
             description: 'The lifecycle state behind the task\'s claim stamp: active grants class A permission; orphaned (executor lost) and ended grant none; missing means the stamp has no ledger record; null means the task holds no execution.',
           },
           depth: { type: 'integer' },
+          temporary: {
+            type: 'boolean',
+            description: 'True when this task was created to absorb an urgent interruption of another task in this workline.',
+          },
+          temporaryFor: {
+            ...NULLABLE_STRING,
+            description: 'The interrupted mainline task id; null for an ordinary task.',
+          },
           summary: { type: 'string' },
+          expectedOutcome: { type: 'string', description: 'What the task is expected to deliver (details: true).' },
+          nextStep: { type: 'string', description: 'The immediate next move (details: true).' },
           progress: { type: 'string' },
           result: NULLABLE_STRING,
           completion: NULLABLE_STRING,
@@ -297,7 +317,7 @@ const WRITE_OUTPUT = Object.freeze({
 const READ_DESCRIPTION = [
   'Read the workline task tree: the goal (original and current), the current focus, and every active task in tree order with its depth, status, execution approval, whether it needs the user\'s acceptance, whether it is settled (done with nothing unfinished below it), and who holds its execution (the executor name), if anyone. `executorLost` marks a task whose executor session can no longer be resolved: that execution grants no workspace permission, is never silently released, and needs a Lead force release after interrupt_agent and confirmation the worker stopped.',
   'Call this at the start of a session or branch, before resuming interrupted work, before planning a large new chunk, and whenever you need to confirm the current goal, focus, approval, or task state; do not rebuild a tree that already exists.',
-  'Pass details: true to also get each task summary, progress notes, result, completion kind, and approval basis. Archived tasks are omitted by default; pass includeArchived: true when you need to check what was cancelled before (reason, time, original location, progress), for example before proposing a direction the user may already have rejected.',
+  'Pass details: true to also get each task summary, expected outcome, next step, progress notes, result, completion kind, and approval basis. Archived tasks are omitted by default; pass includeArchived: true when you need to check what was cancelled before (reason, time, original location, progress), for example before proposing a direction the user may already have rejected.',
   '`conflicts` lists the evidence contradictions that stop this workline: an unresolved entry (resolvedAt: null) refuses new claims on its task, or on every task when its scope is "workline". The Host never guesses who holds a stopped task. Only the Lead records the human decision that ends it: task_tree_write {"op":"resolveConflict","conflictId":"<id>","reason":"<why>"} stores who decided, when, and why, and the task can be worked again after that.',
 ].join(' ');
 
@@ -306,6 +326,8 @@ const WRITE_DESCRIPTION = [
   'Placement changes neither permission nor acceptance: a child still needs its own executionApproval (new scope under an approved parent must be created pending), and a child the user will judge on its own needs requiresUserAcceptance: true just like a top-level task. "Accept it separately" is not a reason to lift work out of the feature it belongs to. Do not reorganize existing tasks: move is not part of normal maintenance, and never move, archive or defer a task only to unblock a completion.',
   'Maintain the workline task tree (lead session only). The tree covers the whole life of the work: idea, discussion, approval, execution, acceptance, and cancellation. Write when the user raises an idea, states or changes a requirement, decides to execute, defer, or cancel something, or confirms delivery — and when a task starts, progresses, pauses, or blocks. Do not wait for code to be written: record what is worth tracking when it appears, before you answer.',
   'Keep titles short (1..40 characters) and put explanations in summary; refine an existing task instead of creating a near-duplicate. Do not create a node for a trivial fix or an intermediate step: record it in the current task progress instead.',
+  'Write down what "done" looks like: when you create a task, put its expected result in `expectedOutcome` (one line, at most 240 characters), and when you record progress, also write `nextStep` (one line, at most 240 characters) so the next session knows the immediate move. The right sidebar shows both.',
+  'An urgent, unrelated interruption does not replace the mainline task. Create a task with `temporary: true` and `temporaryFor: <the interrupted task id>`, move the focus to it, finish it, then resume the interrupted task. A temporary task must name its source: the source must exist in this workline, be active (not archived), not be the task itself, and the interrupt chain must never loop back. Naming a source with `temporaryFor` alone makes the task temporary; `temporary: false` clears the link. The right sidebar shows "temporary, interrupted <task>"; do not leave a finished temporary task as a container.',
   `executionApproval separates permission from progress. "approved" means the user asked for this work or agreed to it; "pending" means an idea, a proposal, or scope you invented, which may be discussed and planned but not started. A task created directly under an approved parent inherits approval — only the direct parent decides, so approval never tunnels through a pending step; everything else starts pending. Approving a task whose parent is not approved requires approvalBasis quoting the user\'s own words — the host rejects a quote that appears in no real user message or is shorter than ${MIN_QUOTE} characters. A pending task cannot become in_progress or be claimed.`,
   'Starting to execute is its own sequence: create or read the task to get its real id, set the status to in_progress, then call focus with that id before the first file edit or command — for example {"op":"focus","ids":["<id>"]}, where ids is the COMPLETE focus set (it replaces the previous set, [] clears it). Creating a task as in_progress does not set the focus, and neither does claim: status says how far the task is, focus says what you are working on now, claim says which session owns it. Focus may name a pending, still-unapproved task because it is under discussion; that is attention, not permission, so never approve a task or start coding just to make it focusable, and do not focus every in_progress task "just in case". Completing a task clears it from the focus, so move the focus to the next task in the same write.',
   'Notes are not execution: a discussion or progress note does not start a task, and starting work on a recorded idea reuses that task (same id, same history) while approving it also decides requiresUserAcceptance. Deferring or archiving an approved, unfinished task changes the current delivery and needs userBasis quoting the user\'s decision; archiving takes the whole subtree, so an approved, unfinished descendant needs that quote too. Ideas that never started and finished work are tidied freely.',

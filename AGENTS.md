@@ -5,9 +5,11 @@ A DSH summary panel: named markdown summaries of a session, plus the agent-maint
 ## Where things are
 
 - `docs/implementation-status.md` — what ships in v0.3.7, the module map, test coverage, and the known limits. **Read this before exploring the code**, including the plugin-reload rule after Host changes.
-- `docs/CONTRACT.md` — the Host/Client interface contract; it wins when it disagrees with the requirements doc (which stays in `~/Desktop/AI-TodoList/REQUIREMENTS.md`).
+- `docs/requirements/REQUIREMENTS.md` — the product's promise, in the repo: what this panel is for (§1.3 "not a goal") and what v1 explicitly does not build (§14). Read this before judging whether a change is worth making; the one-screen summary at the top is enough to orient.
+- `docs/CONTRACT.md` — the Host/Client **interface** contract only. It does not decide what the product does; where the two documents do not overlap, each governs its own area.
 - `GLOSSARY.md` — the project's domain vocabulary. Use its words in names, comments and issues.
-- `docs/plans/` — frozen designs that are not implemented yet.
+- `docs/plans/archive/` — finished historical designs (v8 is fully implemented, 10/10 slices); not a to-do list. Do not continue them; new direction comes from `docs/requirements/REQUIREMENTS.md`.
+- `docs/specs/` — specs for work in flight: how it will be sliced, in what order, with what verification.
 - `CODING_STANDARDS.md` — what a reviewer enforces here, and how work is sliced. Read it before reviewing or planning tickets.
 - `docs/agents/` — how the engineering skills consume this repo (issue tracker, triage labels, domain docs).
 
