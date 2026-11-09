@@ -15,13 +15,13 @@
 
 ## 票与依赖
 
-| 票 | 内容 | 依赖 | 完成判据 |
-|---|---|---|---|
-| **#16** | 删门禁层：`guard.js`、`reservation.js`、mount 装配、16 个门禁 e2e | 无 | 不存在任何工具调用前的拒绝路径；`npm test` 全绿 |
-| **#17** | `model.js` 手术：执行账本 / 冲突 / 强制释放 / dispatch → `owner` 记录 + 一行 compare-and-set | #16 | 老 json 可读；二次 claim 被拒；**任何工具调用都不被拒** |
-| **#18** | 删证据层：journal / reconcile / recovery / lifetime / team-lifetime / binding / roster / caller；CONTRACT 18→11 | #17 | `grep execution host/` 只剩注释；契约与实现逐条一致 |
-| **#19** | 文档与提示词：`prompt.js` 改写、README 删「一次只做一件事」、需求 §10/§11 改记录语义、CHANGELOG `Removed`、版本 0.4.0 | #18 | README 不再描述任何强制行为；全仓无现行规则提及执行位 |
-| **#20** | 验收：3 个 e2e（`tree-basics` / `acceptance` / **`no-gate`**）+ 手动验收 | #19 | 3 场景全绿；手动三条通过 |
+| 票 | 内容 | 依赖 | 写作用域 | 本票明确延后的文本 | 完成判据 |
+|---|---|---|---|---|---|
+| **#16** | 删门禁层：`guard.js`、`reservation.js`、mount 装配、16 个门禁 e2e | 无 | `host/mount.js`、`host/session.js`、`host/store.js`、`test/tasks.mjs`、`test/evidence.mjs`、`test/e2e/**` | `prompt.js`（#19） | 不存在任何工具调用前的拒绝路径；`npm test` 全绿 |
+| **#17** | `model.js` 手术：执行账本 / 冲突 / 强制释放 / dispatch → `owner` 记录 + 一行 compare-and-set | #16 | `host/model.js`、`host/tools.js`、`host/mount.js`、`client.js`（只留 owner 显示）、`test/tasks.mjs`、`test/host-contract.mjs`、`package.json` | `prompt.js` 的完整改写（#19；本票只删除已失效的 op/字段描述）、`docs/CONTRACT.md`（#18） | 老 json 可读；二次 claim 被拒；**任何工具调用都不被拒** |
+| **#18** | 删证据层：journal / reconcile / recovery / lifetime / team-lifetime / binding / roster / caller；CONTRACT 18→11 | #17 | 上述 8 个模块、`host/mount.js`、`host/store.js`、`docs/CONTRACT.md`、`test/tasks.mjs`、`test/host-contract.mjs` | `README.md` / 需求（#19） | `grep execution host/` 只剩注释；契约与实现逐条一致 |
+| **#19** | 文档与提示词：`prompt.js` 改写、README 删「一次只做一件事」、需求 §10/§11 改记录语义、CHANGELOG `Removed`、版本 0.4.0 | #18 | `host/prompt.js`、`README.md`、`docs/requirements/REQUIREMENTS.md`、`docs/implementation-status.md`、`package.json`、`CHANGELOG.md` | — | README 不再描述任何强制行为；全仓无现行规则提及执行位 |
+| **#20** | 验收：3 个 e2e（`tree-basics` / `acceptance` / **`no-gate`**）+ 手动验收 | #19 | `test/e2e/**`、`docs/testing/manual-acceptance.md` | — | 3 场景全绿；手动三条通过 |
 
 ## 为什么必须串行（而不是并行）
 
@@ -32,9 +32,10 @@
 
 ## 实施时的环境要求
 
-- **开一个新会话，并且不要开 Agent Team。** 标准模式下 Lead 自己 `claim` 一个任务就能直接干活，不受"8 个成员上限"约束。
-- 插件**可以开着**：那时门禁还在，但它拦的是"不 claim 就写"，而你会 claim。
+- **Agent Team 可选。** 门禁在 #16 已删除，没有成员上限，也不需要为了"能 claim"而避开团队模式；只在确实要并行读或分工时使用，写作用域仍按票面的文件所有权切分。
+- 插件**可以开着**：现在它只是面板与两个任务树工具，不拦任何调用。
 - 每张票一个会话，票自带上下文；不要靠上一张票的对话记忆。
+- 实施后用两个只读 reviewer 做 **Standards / Spec 两轴 review**（`/code-review` 技能），不要实现者自评；机械性规则优先落成检查（见 `test/host-contract.mjs`）。
 
 ## 每张票的通用验收
 
@@ -42,6 +43,7 @@
 2. 已删除的行为**不留半成品**：不留 `if (false)`、不留注释掉的代码、不留 deprecated 但仍在执行的路径。
 3. 注释与规则同一 commit 变更（`CODING_STANDARDS.md` 已有此规矩）。
 4. 改动不夹带：每张票只碰它写作用域里的文件。
+5. 机械性规矩优先落成检查，不写成散文：`test/host-contract.mjs` 守住「模型可见文本 / `client.js` ↔ 活着的 op 与字段」的一致性；#18 起再加「每个 `host/*.js` 可加载」。
 
 ## 回滚
 
