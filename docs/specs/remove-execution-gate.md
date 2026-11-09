@@ -43,7 +43,8 @@
 2. 已删除的行为**不留半成品**：不留 `if (false)`、不留注释掉的代码、不留 deprecated 但仍在执行的路径。
 3. 注释与规则同一 commit 变更（`CODING_STANDARDS.md` 已有此规矩）。
 4. 改动不夹带：每张票只碰它写作用域里的文件。
-5. 机械性规矩优先落成检查，不写成散文：`test/host-contract.mjs` 守住「模型可见文本 / `client.js` ↔ 活着的 op 与字段」的一致性；#18 起再加「每个 `host/*.js` 可加载」。
+5. 机械性规矩优先落成检查，不写成散文：`test/host-contract.mjs` 守住「模型可见文本 / `client.js` ↔ 活着的 op 与字段」的一致性；`test/modules.mjs` 守住「每个 `host/*.js` 可加载」；`test/docs-contract.mjs` 守住「契约的 op 列表、模块引用、已删 surface」与代码一致。
+6. 验收判据必须能在**开工时**一条命令跑出来。判据引用前一张票的产物时，开工第一件事是把判据跑一遍，红了就当场把判据改准并在同一个 commit 里说明。反例：#18 的 `grep -rn "execution" host/` 判据在 #17 保留 `executionApproval` 之后就永远不可能字面成立，收口见 #19。
 
 ## 回滚
 

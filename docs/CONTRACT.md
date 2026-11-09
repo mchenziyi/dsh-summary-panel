@@ -345,12 +345,12 @@ v1 用轮询，不做 SSE：面板打开时任务树 1.5s、详情 tab 3s、入�
 - 所有路由沿用现有 `route()` 封装与信任围栏；新增路由路径不得与既有冲突。
 - 域名与任务 id 不得含 `/`、`..`（per-record 文件路径要求 `[a-zA-Z0-9_-]+`；会话 id 形如 `session-<uuid>` 可用）。
 - 写操作要 `updatedAt`、工作线 `updatedAt` 同步。
-- 单测：`npm test`（isolation / modules / host-contract / host / tasks / client），纯逻辑不引入 dsh 依赖（`host/model.js` 不 import dsh/zod）。`node test/modules.mjs` 逐个加载 `host/*.js`：删模块时残留的 `import` 会在这里变红；`node test/host-contract.mjs` 保证模型可见文本与 `client.js` 不广告已删除的 op 或字段。
+- 单测：`npm test`（isolation / modules / docs-contract / host-contract / host / tasks / client），纯逻辑不引入 dsh 依赖（`host/model.js` 不 import dsh/zod）。`node test/modules.mjs` 逐个加载 `host/*.js`：删模块时残留的 `import` 会在这里变红；`node test/host-contract.mjs` 保证模型可见文本与 `client.js` 不广告已删除的 op 或字段；`node test/docs-contract.mjs` 保证本契约的 op 列表、`host/*.js` 引用与已删 surface 跟代码一致。
 
 ## 7. 验收（Lead 集成时执行）
 
 1. 两半通过语法检查：`node --check index.js`、`node --check client.js`。
-2. `npm test` 全绿（含 `node test/modules.mjs`：每个 `host/*.js` 都可加载）。
+2. `npm test` 全绿（含 `node test/modules.mjs`：每个 `host/*.js` 都可加载；`node test/docs-contract.mjs`：契约与代码一致）。
 3. 契约字段一致（客户端读取的字段 = Host 返回的字段）。
 4. 现有四个分区行为不变；插件加载无报错。
 5. live 验证：工具出现在 Agent 工具列表、`/summary-panel/tasks` 返回预期 JSON、面板显示任务树、入口呼吸灯出现、点击打开右栏详情。
