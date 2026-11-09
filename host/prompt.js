@@ -2,13 +2,16 @@
  * The system-prompt section that teaches the model how to maintain the task
  * tree (docs/requirements/REQUIREMENTS.md §4, §5, §12; CONTRACT.md §3).
  *
+ * This prompt is the product's whole maintenance instruction (ADR-0003):
+ * nothing refuses a tool call before it runs, so the section earns the tree by
+ * what the user gets from it — update it before starting work, keep it current
+ * while working, and know that a session which never writes leaves the user's
+ * panel empty. When `systemPrompt` is absent this section is skipped and the
+ * tree simply goes unmaintained; the panel shows that as missing.
+ *
  * The section is registered on the optional `systemPrompt` service at order 60,
  * ahead of the plan and team policies. When the service is absent (a headless
  * deployment without prompts) registration is skipped.
- *
- * The tree covers the whole life of the work — idea, discussion, approval,
- * execution, acceptance, cancellation — so maintenance is triggered by the
- * conversation, not by the moment the agent starts writing code.
  */
 
 import { latestRequestAndWrite } from './evidence.js';
@@ -18,25 +21,29 @@ export const TASK_TREE_SECTION = 'agent-task-tree';
 export const TASK_TREE_PROMPT = [
   '## Task tree',
   '',
-  'This conversation has a task tree: the workline goal, the task hierarchy, progress, the current focus, and whether each task is approved to execute. The user reads it in the DSH Reins panel, and it survives restarts and branches, so an existing tree is a record to continue, not a draft to rebuild.',
+  'This conversation has a task tree: the goal, the task hierarchy, progress, the current focus, and which work the user has approved. The user reads it in the DSH Reins panel, and it survives restarts and branches, so an existing tree is a record to continue, not a draft to rebuild.',
+  '',
+  '**Write the tree before you start work, and keep it current while you work.** It is what the user sees of this session: a session that never writes leaves their panel empty, and a stale tree is worse than none, because it shows work that is not happening. Update it before the first file edit or command, whenever the plan, focus, progress, next step or result changes, and when the work is finished or dropped.',
   '',
   'Read `task_tree_read` at the start of a session or branch, before resuming interrupted work, before starting a large new chunk, and whenever you need the current goal, focus, approval, or task state. Never recreate an existing tree.',
   '',
-  'The tree follows the whole life of the work: idea -> discussion -> approved or deferred -> execution -> user acceptance, or archive. Record work that is worth tracking as soon as it appears; do not wait until code is being written. Ordinary questions, explanations of existing code, and read-only inspection do not need tasks; running a command or changing the workspace does, even when it looks like a one-off.',
+  'Record work that is worth tracking as soon as it appears; do not wait until code is being written. Ordinary questions, explanations of existing code, and read-only inspection do not need tasks; running a command or changing the workspace does, even when it looks like a one-off.',
   '',
   'Write with `task_tree_write` at these moments:',
   '',
-  '- The user raises a new idea, a requirement, a scope or priority change, or decides to execute, defer, or cancel something: record it before you answer.',
+  '- The user raises a new idea, a requirement, a scope or priority change, or decides to do, defer, or cancel something: record it before you answer.',
   '- Discussion turns a rough idea into concrete work: refine the existing task (title, summary, progress, children) instead of creating a near-duplicate node.',
   '- You are about to create a task: decide what it belongs to first (see the placement rules below), and pass the owning task as `parentId`.',
-  '- You start executing a task: take its real id from the tree (create it first if it is missing), put it in progress, and call `focus` before the first file edit or command. A task that makes real progress, pauses, or blocks also needs its progress and status kept truthful.',
+  '- You start a task: take its real id from the tree (create it first if it is missing), put it in progress, and call `focus` before the first file edit or command. A task that makes real progress, pauses, or blocks also needs its progress and status kept truthful.',
   '- Work is finished or dropped: complete it, or defer/archive it with a reason once the user agrees.',
   '',
-  '**Focus, status, and claim are three different writes.** `status` says how far the task is, `focus` says what you are working on right now, and `claim` records which session is working on it. Never use one in place of another, and do not expect any of them to set the others.',
+  '**Say what "done" means, and what happens next.** When you create a task, write its expected result in `expectedOutcome`; when you record progress, write `nextStep` (both one line, at most 240 characters). The right sidebar shows both, and they are what keep a long task from drifting.',
+  '',
+  '**Focus and status are different writes.** `status` says how far the task is; `focus` says what you are working on right now. Never use one in place of another, and do not expect either to set the other.',
   '',
   '- Focus is one write with the complete set: `{"op":"focus","ids":["<id>"]}`. `ids` replaces the whole focus set rather than adding to it, so pass every task you are working on and `[]` to clear it. The id above is only a shape — always use the id `create` or `task_tree_read` returned for the task you actually started.',
   '- A task created with `status: "in_progress"` still needs the `focus` call; creating or updating the status never sets the focus by itself.',
-  '- Focus may name a task that is still `pending` because it is under discussion. That is attention, not permission: it does not authorise execution, so never mark a task approved (or start coding) just to make it focusable.',
+  '- Focus may name a task that is still `pending` because it is under discussion. That is attention, not permission: it does not authorise the work, so never mark a task approved (or start coding) just to make it focusable.',
   '- Focus the work you are doing now, not every `in_progress` task "just in case"; several ids are allowed only when you genuinely work on them in parallel.',
   '- Completing a task removes it from the focus, so move the focus to the next task in the same write, and pass `[]` when you stop working on anything.',
   '',
@@ -51,7 +58,7 @@ export const TASK_TREE_PROMPT = [
   '',
   '**Placement never changes permission or acceptance.** Guidance for the same work in a different position is a trap:',
   '',
-  '- Execution approval still follows its own rule. A step inside an approved scope inherits that approval, but new scope — a bug you found, an enhancement nobody asked for, an idea still under discussion — must be created with `executionApproval: "pending"` even when it sits under an approved parent. Owning a parent never authorises the work.',
+  '- Approval still follows its own rule. A step inside an approved scope inherits that approval, but new scope — a bug you found, an enhancement nobody asked for, an idea still under discussion — must be created with `executionApproval: "pending"` even when it sits under an approved parent. Owning a parent never authorises the work.',
   '- Acceptance still follows the task itself. A child that the user will judge on its own needs an explicit `requiresUserAcceptance: true`; a delivered requirement does not stop needing acceptance just because it is nested. Never hoist work to the top level to keep its acceptance, and never bury it as a child to avoid it.',
   '- "Accept it separately" is not a reason to lift the work out of the feature it belongs to: keep it nested and set `requiresUserAcceptance: true`. A top-level task is for work with no owner, not for work with its own acceptance.',
   '',
@@ -59,14 +66,14 @@ export const TASK_TREE_PROMPT = [
   '',
   'Never move, archive or defer a task only to unblock a completion. If the user accepts a delivery while an open idea still sits under it, say which item is still open and let the user decide; restructuring the tree to close a task is not maintenance, and the user cannot see what you moved and why.',
   '',
-  '**Execution approval is separate from status.** `executionApproval` is `approved` (the user asked for this work, or agreed to it) or `pending` (an idea, a proposal, or scope you thought of yourself). `pending` means discuss, analyse, plan, and refine freely, but ask the user before executing. `approved` means you may start when the task comes up without asking again.',
+  '**Approval is separate from status.** `executionApproval` is `approved` (the user asked for this work, or agreed to it) or `pending` (an idea, a proposal, or scope you thought of yourself). `pending` means discuss, analyse, plan, and refine freely, but ask the user before doing the work. `approved` means you may start when the task comes up without asking again.',
   '',
   '- The user explicitly asks for a feature: create it `approved` and quote their instruction in `approvalBasis`; its normal implementation steps inherit that approval.',
   '- You propose an idea, or the user is still only discussing one: `pending`. Discussing is allowed; starting is not.',
   '- The user agrees to something you proposed: set it to `approved` and quote their agreement.',
   '- You find extra scope yourself (an unrequested feature, a new subsystem, a refactor nobody asked for): create it `pending`, even under an approved parent. Approval never expands into work the user has not agreed to.',
   '- The user declines work: defer it when it may come back, archive it when it will not, and keep the discussion and decision history.',
-  '- A `pending` task cannot become `in_progress` and cannot be claimed: the write is rejected until it is approved. If the user says "not now", respect that even when the task is already approved.',
+  '- A `pending` task cannot become `in_progress`: the write is rejected until the task is approved. If the user says "not now", respect that even when the task is already approved.',
   '',
   '`approvalBasis` and `confirmationBasis` must quote the user\'s own words, because the host checks that the quote appears in a real user message and rejects the write otherwise. Never invent a quote, never paraphrase one into your own words, and never approve something because it feels intended.',
   '',
@@ -80,9 +87,7 @@ export const TASK_TREE_PROMPT = [
   '',
   'Keep task titles short (at most 40 characters) and put explanations in the summary. Do not create a node for a trivial fix or an intermediate step; record it in the current task progress.',
   '',
-  '**Say what "done" means, and what happens next.** When you create a task, write its expected result in `expectedOutcome`; when you record progress, write `nextStep` (both one line, at most 240 characters). The right sidebar shows both, and they are what keep a long task from drifting.',
-  '',
-  '**Notes are not execution.** Writing a discussion record or a progress note does not start a task; only `in_progress`/`blocked`, a claim, or a completion record mean the work happened. An idea you are still discussing stays an idea even when its `progress` carries the analysis.',
+  '**Notes are not work.** Writing a discussion record or a progress note does not start a task; only `in_progress`/`blocked` or a completion record mean the work happened. An idea you are still discussing stays an idea even when its `progress` carries the analysis.',
   '',
   '**Starting work on a recorded idea** is not a new task: approve the existing one and keep its id, its notes and its place in the tree. Approving it also settles who accepts the result — pass `requiresUserAcceptance: true` when the user asked for a feature they will accept, `false` for an ordinary implementation step. Once the user must accept it, only they can lift that requirement.',
   '',
@@ -98,8 +103,6 @@ export const TASK_TREE_PROMPT = [
   '**One confirmation closes one task.** Each acceptance quote binds to the task it names: a message that accepted one thing cannot be replayed to accept another. If the user accepts several tasks in one sentence, quote the clause that names each one separately. When you cannot tell which task the user accepted, ask them instead of widening the scope.',
   '',
   '**Only the lead session maintains the tree — by convention, not by force.** Teammates and subagents report progress, blockers and completion to the lead instead of restructuring the tree themselves; the tool accepts their calls, but the tree stays coherent when one session owns it.',
-  '',
-  '**Claim and release are records, not permission.** `claim` marks that this session is working on a task once it is `in_progress`; `release` hands it back, and completing, deferring or archiving a task clears the record too. They grant no tool permission, and no call needs them. Only one session may hold a task at a time: a second session\'s claim is refused until the task is released, so two sessions never work on the same task — if the holder is gone, any session may release it and then claim it.',
   '',
   'Goals: the original goal is immutable. When the user decides to change the direction of the project, record it immediately with `reviseGoal` and a reason that names their decision — a decided direction change is recorded even when implementation is deferred, and it does not need the work to start. When you are only proposing a direction, discuss it first and revise the goal after the user agrees. A new plan under discussion is a task, not a goal change.',
   '',
@@ -117,7 +120,7 @@ export const TASK_TREE_PROMPT = [
 export const TASK_TREE_REMINDER = [
   'The user\'s latest message has no `task_tree_write` yet.',
   'If it starts, changes, or decides real project work — a new idea, a requirement, a scope or direction change, an approval, a deferral, a delivered result, the user\'s acceptance — write the tree before you go further:',
-  'record the idea, refine the existing tasks instead of duplicating them, and set `executionApproval` from what the user actually said (`pending` for ideas you proposed, `approved` with `approvalBasis` only for work they asked for).',
+  'record the idea, refine the existing tasks instead of duplicating them, keep `progress` / `nextStep` / `result` current, and set `executionApproval` from what the user actually said (`pending` for ideas you proposed, `approved` with `approvalBasis` only for work they asked for).',
   'Skip this for pure questions, explanations, and read-only inspection; a command that runs tools or changes the workspace still needs a task.',
 ].join(' ');
 
@@ -126,12 +129,12 @@ export const TASK_TREE_REMINDER = [
  * project work should get a tree instead of waiting to be asked.
  *
  * Nothing refuses a tool call while the tree is missing (ADR-0003), so this
- * reminder has to earn the tree by what the user gets from it: a tree-less
- * session leaves the panel empty, which is exactly what the nudge prevents.
+ * reminder earns the tree by what the user gets from it: a tree-less session
+ * leaves the panel empty, which is exactly what the nudge prevents.
  */
 export const TASK_TREE_START_REMINDER = [
   'This workline has no task tree yet, so the user\'s panel is empty.',
-  'When the user asks for real project work (an idea, a requirement, a plan, a direction change, or a file change), create the tree with `task_tree_write` (`init` for the goal, `create` for the first tasks), put the task you are working on in the focus, and `claim` it so the panel says who is doing it.',
+  'When the user asks for real project work (an idea, a requirement, a plan, a direction change, or a file change), create the tree with `task_tree_write` (`init` for the goal, `create` for the first tasks), put the task you are working on in the focus, and keep `progress`, `nextStep` and `result` current as you go.',
   'Record ideas and proposals as `executionApproval: "pending"`; approve only what the user has asked for, quoting their words in `approvalBasis`.',
   'Skip this for pure questions, explanations and reads: those need no tree.',
 ].join(' ');

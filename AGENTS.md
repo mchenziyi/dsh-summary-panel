@@ -4,7 +4,7 @@ A DSH summary panel: named markdown summaries of a session, plus the agent-maint
 
 ## Where things are
 
-- `docs/implementation-status.md` — what ships in v0.3.7, the module map, test coverage, and the known limits. **Read this before exploring the code**, including the plugin-reload rule after Host changes.
+- `docs/implementation-status.md` — what ships in v0.4.0, the module map, test coverage, and the known limits. **Read this before exploring the code**, including the plugin-reload rule after Host changes.
 - `docs/requirements/REQUIREMENTS.md` — the product's promise, in the repo: what this panel is for (§1.3 "not a goal") and what v1 explicitly does not build (§14). Read this before judging whether a change is worth making; the one-screen summary at the top is enough to orient.
 - `docs/CONTRACT.md` — the Host/Client **interface** contract only. It does not decide what the product does; where the two documents do not overlap, each governs its own area.
 - `GLOSSARY.md` — the project's domain vocabulary. Use its words in names, comments and issues.

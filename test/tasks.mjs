@@ -1170,7 +1170,7 @@ function titles(snapshot) {
 
 
 // ---------------------------------------------------------------------------
-// execution approval: permission is separate from status
+// approval: permission is separate from status
 // ---------------------------------------------------------------------------
 
 {
@@ -1279,7 +1279,7 @@ function titles(snapshot) {
   // Creating a task already in progress is the same gate as updating it.
   assert.throws(
     () => envelopeAfter(base, [{ op: 'create', title: '偷偷开工', status: 'in_progress' }]),
-    /is not approved for execution/,
+    /is not approved/,
   );
 }
 
@@ -1296,11 +1296,11 @@ function titles(snapshot) {
 
   assert.throws(
     () => envelopeAfter(base, [{ op: 'update', id: 't1', status: 'in_progress' }]),
-    /is not approved for execution/,
+    /is not approved/,
   );
   assert.throws(
     () => envelopeAfter(base, [{ op: 'claim', id: 't1' }]),
-    /is not approved for execution/,
+    /is not approved/,
   );
 
   // Recording progress on work that already started is never blocked.
@@ -1529,6 +1529,17 @@ function titles(snapshot) {
   // keeps it, as a convention rather than a refusal (ADR-0003 decision 8).
   assert.equal(TASK_TREE_PROMPT.includes('Only the lead session maintains the tree'), true);
   assert.equal(TASK_TREE_PROMPT.includes('by convention, not by force'), true);
+  // ADR-0003 decision 3: the prompt is about keeping the tree current, and the
+  // reminder says what a missing tree costs the user. The claim apparatus is a
+  // record in the tool schema, not prompt coaching.
+  assert.equal(TASK_TREE_PROMPT.includes('leaves their panel empty'), true);
+  for (const gone of ['claim', 'release', 'execution seat', 'lifetime binding']) {
+    assert.equal(
+      TASK_TREE_PROMPT.includes(gone) || TASK_TREE_START_REMINDER.includes(gone),
+      false,
+      `the prompt must not coach "${gone}" any more (ADR-0003)`,
+    );
+  }
   assert.notEqual(TASK_TREE_REMINDER, TASK_TREE_START_REMINDER);
   assert.equal(TASK_TREE_START_REMINDER.includes('no task tree yet'), true);
   assert.equal(TASK_TREE_REMINDER.includes('task_tree_write'), true);
@@ -1705,7 +1716,7 @@ function titles(snapshot) {
   for (const needle of [
     'take its real id from the tree',
     'before the first file edit or command',
-    '**Focus, status, and claim are three different writes.**',
+    '**Focus and status are different writes.**',
     'replaces the whole focus set rather than adding to it',
     'still needs the `focus` call',
     'attention, not permission',
@@ -1831,7 +1842,7 @@ function titles(snapshot) {
     assert.equal(write.description.includes(needle), true, `tool description should mention: ${needle}`);
   }
   const parentDescription = write.parameters.properties.ops.items.properties.parentId.description;
-  for (const needle of ['Prefer the task that actually owns this work', 'Leave it out only when no existing task owns the work', 'Placement does not grant execution approval', 'does not decide who accepts the result']) {
+  for (const needle of ['Prefer the task that actually owns this work', 'Leave it out only when no existing task owns the work', 'Placement does not grant approval', 'does not decide who accepts the result']) {
     assert.equal(parentDescription.includes(needle), true, `parentId description should mention: ${needle}`);
   }
 }
@@ -2234,7 +2245,7 @@ function titles(snapshot) {
 
 {
   for (const needle of [
-    '**Notes are not execution.**',
+    '**Notes are not work.**',
     'Writing a discussion record or a progress note does not start a task',
     '**Starting work on a recorded idea** is not a new task: approve the existing one and keep its id',
     'Approving it also settles who accepts the result',
@@ -2260,7 +2271,7 @@ function titles(snapshot) {
   mountTaskTree(ctx, { root, logger: { warn() {} }, route: () => {} });
   const write = registeredTools.get('task_tree_write');
   for (const needle of [
-    'Notes are not execution',
+    'Notes are not work',
     'starting work on a recorded idea reuses that task',
     'approving it also decides requiresUserAcceptance',
     'needs userBasis quoting',

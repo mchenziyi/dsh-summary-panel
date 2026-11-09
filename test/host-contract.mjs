@@ -14,13 +14,17 @@
  * 1. Every op named as a call in a model-facing text is a live `TASK_OPS` entry.
  * 2. No model-facing text, and no client code, mentions a surface that ADR-0003
  *    removed. The list shrinks as the teardown lands; it must never grow again.
+ * 3. In `host/`, the word "execution" survives only in comments and in the
+ *    retained `executionApproval` field. Ticket #19 rewrote the prompt around
+ *    maintaining the tree; prose that still talks about executing work is the
+ *    gate's vocabulary leaking back in.
  *
  * Run with `node test/host-contract.mjs`; reads files and registers the tools on
  * a fake context, writes nothing.
  */
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -123,6 +127,33 @@ const modelFacing = {
       );
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// 3. "execution" in host source: comments and the retained approval field only
+// ---------------------------------------------------------------------------
+
+{
+  const HOST = join(ROOT, 'host');
+  const isComment = (line) => /^\s*(\/\/|\*|\/\*)/.test(line);
+  const withoutTrailingComment = (line) => line.replace(/\s*\/\/.*$/, '');
+  let checked = 0;
+  for (const file of readdirSync(HOST).filter((name) => name.endsWith('.js')).sort()) {
+    const lines = readFileSync(join(HOST, file), 'utf8').split('\n');
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (isComment(line)) continue;
+      checked += 1;
+      // `executionApproval` is the retained field; strip it and see what is left.
+      const rest = withoutTrailingComment(line).replace(/execution_?approvals?/gi, '');
+      assert.equal(
+        /execution/i.test(rest),
+        false,
+        `host/${file}:${index + 1} mentions "execution" outside a comment and the executionApproval field: ${line.trim()}`,
+      );
+    }
+  }
+  assert.ok(checked > 0, 'no host source lines checked; the rule would be vacuous');
 }
 
 console.log('host contract ok');

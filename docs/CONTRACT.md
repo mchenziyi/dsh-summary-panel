@@ -50,7 +50,7 @@ WorklineRecord = {
   // 不迁移、不重写，下一次写入时自然消失。
   nextExecution?: number              // @deprecated 旧执行计数器
   executions?: ExecutionRecord[]      // @deprecated 旧执行账本
-  workers?: Record<string, WorkerLifetime>   // @deprecated 旧 Worker 终身绑定
+  workers?: Record<string, WorkerLifetime>   // @deprecated 旧 Worker 绑定表
   conflicts?: ConflictRecord[]        // @deprecated 旧证据冲突
 }
 
@@ -151,7 +151,7 @@ ConflictRecord = {
 
 ## 2. 不变量（Host 端强制，客户端只展示）
 
-Host 只在 `task_tree_write` 的写路径上、对本次要写入的数据执行下列 11 条规则。**没有任何工具调用会在执行前被拒绝**（ADR-0003 宪法第 1 条）：不存在的工具前门禁、没有执行位、没有证据对账，`owner` 是记录而不是凭证，`claim` / `release` 不授予也不收回任何权限。提示词与工具描述里的「只有 Lead 维护这棵树」是约定，不是代码规则。
+Host 只在 `task_tree_write` 的写路径上、对本次要写入的数据执行下列 11 条规则。**没有任何工具调用会在执行前被拒绝**（ADR-0003 宪法第 1 条）：没有工具前的拦截、没有占用校验、没有证据对账，`owner` 是记录而不是凭证，`claim` / `release` 不授予也不收回任何权限。提示词与工具描述里的「只有 Lead 维护这棵树」是约定，不是代码规则。
 
 1. **文本字段**：`title` 去空白后非空、≤40 字、单行；`summary`、`expectedOutcome`、`nextStep` 单行且 ≤240 字，`blockerReason`、`blockerUnblock` 单行且 ≤1000 字；`progress` ≤2000 字多行，`result` ≤500 字；`outline` ≤4000 字，`originalGoal` / `current` 单行 ≤4000 字，`reason` 单行 ≤1000 字；`deferredReason` / `resumeCondition` 单行 ≤500 字。`approvalBasis` / `acceptanceBasis` / `confirmationBasis` / `userBasis` 单行、≤200 字（走校验的路径另有 2 字下限）；前三者的用户原话校验见 9、10，`userBasis` 的校验见 4、5。空字符串表示未填写（`title` 除外）。
 2. **树形**：`parentId` 必须指向同工作线、未归档的现有任务；不能把自己或自己的后代设为父（成环）；`order` 为非负整数，省略时追加到同级末尾；`move` 不能移动已开始且未完成的交付任务。`depth` 由 Host 按树序计算。
@@ -240,7 +240,7 @@ Host 只在 `task_tree_write` 的写路径上、对本次要写入的数据执�
 - `defer` / `resume`：见不变量 4；defer 会清空领取记录与焦点。
 - `archive` / `restore`：见不变量 5；archive 必须带 `reason`，递归归档同一批子树。
 - `focus`：**整体替换**焦点集合（`ids: []` 表示清空）。
-- `claim` / `release`：领取记录，不是权限。`claim` 校验活跃、未暂缓、`in_progress`、已授权，并拒绝第二个会话（compare-and-set）；`release` 直接清空记录，任何会话都可调用。二者都不写执行账本、不发号、不复活任何东西。
+- `claim` / `release`：领取记录，不是权限。`claim` 校验活跃、未暂缓、`in_progress`、已授权，并拒绝第二个会话（compare-and-set）；`release` 直接清空记录，任何会话都可调用。二者都不写任何账本、不发号、不复活任何东西。
 - `complete`：校验子任务全部结束；`requiresUserAcceptance` 的任务必须等用户验收（`confirmedByUser: true` + `confirmationBasis`），其余可自验完成（`completion: "self"`）；已完成但未验收的任务可以补记用户验收。
 - 一次调用内先全量校验再写入；返回 `{ ok: true, worklineId, applied: [{op, id?}] }` 或抛出可读错误（含任务 id 与原因）。
 
