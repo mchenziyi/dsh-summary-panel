@@ -161,8 +161,8 @@ Host 只在 `task_tree_write` 的写路径上、对本次要写入的数据执�
 6. **焦点**：`focus` 整体替换集合，成员必须存在、未归档、未暂缓、未 `done`；设置焦点时若成员为 `pending` 且已授权则改为 `in_progress`，移除焦点不改变状态；完成 / 暂缓 / 归档会自动把任务移出焦点。
 7. **领取记录**：`claim` 要求任务活跃、未暂缓、`in_progress` 且已授权；同一时刻只有一个会话能持有同一任务，第二个会话的 `claim` 被拒（唯一保留的 compare-and-set，理由形如 `task t3 is already claimed by session …`），同会话重复 `claim` 只刷新记录；`release` 任何会话都可调用、不校验持有者；`complete` / `defer` / `archive` 清空记录。记录不授权任何工具调用。
 8. **目标**：`original` 每个工作线只写一次（`init` 只能成功一次）；`reviseGoal` 必须带 `reason`，且 `current` 必须与现值不同，追写一条 `changes`。
-9. **执行授权**：`executionApproval` ∈ { `approved`, `pending` }，与 `status` 独立；`pending` 任务不能变为 `in_progress`、不能 `claim`；显式 `approved` 必须带真实用户原话 `approvalBasis`（Host 在会话日志里核对），只有 `create` 在已批准的直接父任务下可以继承授权；已经开始的任务不能改回 `pending`。
-10. **验收与完成**：`requiresUserAcceptance` 顶层默认 `true`、子任务默认 `false`；需要验收的任务不能由 agent 自行完成，只能在用户验收后以 `confirmedByUser: true` + `confirmationBasis` 完成，该原话必须晚于任务创建/授权，且同一句只能验收一个任务；豁免验收需 `acceptanceBasis` 真实原话。自行完成的实现步骤记 `completion: "self"`。
+9. **执行授权**：`executionApproval` ∈ { `approved`, `pending` }，与 `status` 独立；`pending` 任务不能变为 `in_progress` 或 `done`、不能 `claim`；显式 `approved` 必须带真实用户原话 `approvalBasis`（Host 在会话日志里核对），只有 `create` 在已批准的直接父任务下可以继承授权；已经开始的任务不能改回 `pending`。Agent 根据对话判断用户授权的范围。用户确认新方向并要求先规划时，Agent 更新目标，实施任务保持待授权。
+10. **验收与完成**：`requiresUserAcceptance` 顶层默认 `true`、子任务默认 `false`；需要验收的任务不能由 agent 自行完成，只能在用户验收后以 `confirmedByUser: true` + `confirmationBasis` 完成，该原话必须晚于任务创建/授权，且同一句只能验收一个任务。Agent 根据对话确认用户接受的是哪项已交付任务，遇到歧义时先问清楚。豁免验收需 `acceptanceBasis` 真实原话。自行完成的实现步骤记 `completion: "self"`。
 11. **临时任务**：`temporary` 为布尔；`temporaryFor` 必须指向同工作线、未归档且不是自己的现有任务，打断链不能成环；写非空 `temporaryFor` 会同时把任务标为 `temporary: true`，`temporary: false` 或 `temporaryFor: null` 清空链接，`temporary: true` 而没有来源则拒绝。
 
 ## 3. Agent 工具（Host 注册，模型可见）

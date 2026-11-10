@@ -202,12 +202,12 @@ function approvedParent(state, parentId) {
   return parent.executionApproval === 'approved';
 }
 
-/** Refuse to start executing a task the user has not approved. */
+/** Require approval before recording execution or completion. */
 function assertExecutable(task) {
   if (task.executionApproval === 'approved') return;
   fail(
     `task ${task.id} is not approved: ask the user, then set executionApproval: "approved"`
-    + ' with their words in approvalBasis, and only then start it',
+    + ' with their words in approvalBasis before starting or completing it',
   );
 }
 
@@ -694,6 +694,7 @@ function settledLookup(tasks) {
 
 function finishTask(state, task, now, basis) {
   assertDeliveryComplete(state, task);
+  assertExecutable(task);
   if (basis === null && task.requiresUserAcceptance === true) {
     fail(
       `task ${task.id} needs the user's acceptance before it can be completed: record the delivered work`
@@ -1285,8 +1286,7 @@ function applyOne(state, op, context) {
  * @param ops - the flat op objects from `task_tree_write`.
  * @param context - `{ worklineId, now, actorSessionId, verifyUserQuote }`;
  *   `actorSessionId` is the session a claim records as the one working, and
- *   `verifyUserQuote(quote)` returns `{ ok, reason?, seq? }` and gates every
- *   claim of user approval or user acceptance.
+ *   `verifyUserQuote(quote)` returns `{ ok, reason?, seq?, time? }` for user evidence.
  * @returns `{ envelope, applied }`; throws {@link TaskTreeError} without side effects.
  */
 export function applyOps(envelope, ops, context = {}) {

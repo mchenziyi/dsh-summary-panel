@@ -280,14 +280,12 @@ function titles(snapshot) {
 {
   const base = envelopeAfter(undefined, [
     { op: 'init', originalGoal: 'g' },
-    { op: 'create', title: '父' },
+    { op: 'create', title: '父', executionApproval: 'approved', approvalBasis: '开始吧' },
     { op: 'create', title: '子', parentId: 't1' },
   ]).envelope;
 
-  // A child counts as delivery work once it is approved or has started; an
-  // unapproved idea does not (that rule has its own block further down).
+  // An unfinished child blocks its parent's completion.
   const started = envelopeAfter(base, [
-    { op: 'update', id: 't2', executionApproval: 'approved', approvalBasis: '开始吧' , requiresUserAcceptance: false },
     { op: 'update', id: 't2', status: 'in_progress' },
   ]).envelope;
   assert.throws(
@@ -1514,6 +1512,104 @@ function titles(snapshot) {
   assert.equal(read.tasks[0].approvalBasis, '帮我实现一个 Go 短链接服务');
 }
 
+{
+  // Neither completion operation can turn an unapproved idea into finished work.
+  const root = tempRoot();
+  const registeredTools = new Map();
+  const ctx = {
+    effect: (factory) => factory(),
+    get(name) {
+      if (name === 'sessions') return { get: () => undefined };
+      if (name === 'tools') return { register: (definition) => { registeredTools.set(definition.name, definition); return () => {}; } };
+      return undefined;
+    },
+  };
+  mountTaskTree(ctx, { root, logger: { warn() {} }, route: () => {} });
+  const read = registeredTools.get('task_tree_read');
+  const write = registeredTools.get('task_tree_write');
+  const sessionId = 'session-completion-approval';
+  const events = [
+    { type: 'user/message', seq: 1, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '请实现管理后台' }] } },
+  ];
+  const session = { header: { id: sessionId }, seq: 2, snapshotEvents: () => events };
+  const exec = { agent: { id: sessionId, session } };
+  await write.execute({ ops: [
+    { op: 'init', originalGoal: '短链接管理后台' },
+    { op: 'create', title: '管理后台', executionApproval: 'approved', approvalBasis: '请实现管理后台' },
+    { op: 'create', parentId: 't1', title: 'CSV 导出', executionApproval: 'pending' },
+    { op: 'create', parentId: 't1', title: '管理员登录' },
+  ] }, exec);
+
+  for (const op of [
+    { op: 'complete', id: 't2' },
+    { op: 'update', id: 't2', status: 'done' },
+  ]) {
+    await assert.rejects(() => write.execute({ ops: [op] }, exec), /task t2 is not approved/, op.op);
+    const { tasks } = await read.execute({ details: true }, exec);
+    const exportTask = tasks.find((task) => task.id === 't2');
+    assert.equal(exportTask.approval, 'pending');
+    assert.equal(exportTask.status, 'pending');
+    assert.equal(exportTask.completion, null);
+  }
+
+  await write.execute({ ops: [{ op: 'complete', id: 't3' }] }, exec);
+  const { tasks } = await read.execute({ details: true }, exec);
+  const loginTask = tasks.find((task) => task.id === 't3');
+  assert.equal(loginTask.status, 'done');
+  assert.equal(loginTask.completion, 'self');
+}
+
+{
+  const registeredTools = new Map();
+  const routes = new Map();
+  const ctx = {
+    effect: (factory) => factory(),
+    get(name) {
+      if (name === 'tools') return { register: (definition) => { registeredTools.set(definition.name, definition); return () => {}; } };
+      return undefined;
+    },
+  };
+  mountTaskTree(ctx, { root: tempRoot(), logger: { warn() {} }, route: (_, path, handler) => routes.set(path, handler) });
+  const read = registeredTools.get('task_tree_read');
+  const write = registeredTools.get('task_tree_write');
+  const events = [];
+  const say = (text) => events.push({
+    type: 'user/message', seq: events.length + 1,
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text }] },
+  });
+  const sessionId = 'session-planning-approval';
+  const session = { id: sessionId, header: { id: sessionId }, get seq() { return events.length; }, snapshotEvents: () => events };
+  const exec = { agent: { id: sessionId, session } };
+  const original = '最小短链接 API';
+  const current = '轻量级单管理员短链接管理工具';
+  await write.execute({ ops: [
+    { op: 'init', originalGoal: original },
+    { op: 'create', title: '短链接 Web 管理后台', executionApproval: 'pending', requiresUserAcceptance: true },
+  ] }, exec);
+
+  const direction = '我决定把项目改成轻量级单管理员短链接管理工具';
+  say(direction + '。先规划，暂时不要写代码。多用户和公开注册先不做。');
+  const revise = { op: 'reviseGoal', current, reason: direction };
+  const approve = { op: 'update', id: 't1', executionApproval: 'approved', status: 'in_progress', requiresUserAcceptance: true };
+  await write.execute({ ops: [revise, { op: 'update', id: 't1', progress: '正在规划后台' }] }, exec);
+  const planned = await read.execute({ details: true }, exec);
+  assert.deepEqual(planned.goal, { original, current });
+  assert.equal(planned.tasks[0].approval, 'pending');
+  assert.equal(planned.tasks[0].status, 'pending');
+  assert.equal(planned.tasks[0].approvalBasis, null);
+  const panel = await routes.get('/tasks')(ctx, session);
+  assert.deepEqual(panel.goal.changes.map(({ previous, next, reason }) => ({ previous, next, reason })), [
+    { previous: original, next: current, reason: direction },
+  ]);
+
+  say('我确认开始实现单管理员后台。先做管理员登录、链接列表、搜索、禁用和删除，保留 JSON 存储。请直接开发和测试。');
+  await write.execute({ ops: [{ ...approve, approvalBasis: '请直接开发和测试' }] }, exec);
+  const approved = (await read.execute({ details: true }, exec)).tasks[0];
+  assert.equal(approved.approval, 'approved');
+  assert.equal(approved.status, 'in_progress');
+  assert.equal(approved.approvalBasis, '请直接开发和测试');
+}
+
 // ---------------------------------------------------------------------------
 // the prompt teaches the lifecycle, not just the coding moments
 // ---------------------------------------------------------------------------
@@ -1678,13 +1774,15 @@ function titles(snapshot) {
   assert.equal(http.tasks[0].status, 'done', 'a historic completion is not rewritten');
   assert.equal(http.tasks[0].completion, 'self');
 
-  // The old pending top-level task now waits for acceptance, and the old
-  // pending child may still self-complete.
+  // Legacy pending tasks still need approval before a new completion.
   assert.throws(
     () => envelopeAfter(legacy, [{ op: 'complete', id: 't3' }]),
-    /needs the user's acceptance/,
+    /task t3 is not approved/,
   );
-  const child = envelopeAfter(legacy, [{ op: 'complete', id: 't2' }]).envelope;
+  const child = envelopeAfter(legacy, [
+    { op: 'update', id: 't2', executionApproval: 'approved', approvalBasis: '开始吧', requiresUserAcceptance: false },
+    { op: 'complete', id: 't2' },
+  ]).envelope;
   assert.equal(child.tasks[1].completion, 'self');
 
   // Archive and restore keep working on legacy rows.
@@ -1877,6 +1975,7 @@ function titles(snapshot) {
   // A completed parent keeps its record when follow-up work is attached.
   const done = envelopeAfter(nestedDelivery, [
     { op: 'complete', id: 't2' },
+    { op: 'update', id: 't3', executionApproval: 'approved', approvalBasis: '开始吧', requiresUserAcceptance: false },
     { op: 'complete', id: 't3' },
     { op: 'complete', id: 't4', confirmedByUser: true, confirmationBasis: '审计日志也验收通过了' },
     { op: 'complete', id: 't1', confirmedByUser: true, confirmationBasis: '登录功能我验收通过了' },
@@ -2348,7 +2447,10 @@ function titles(snapshot) {
     /already done/,
   );
   // Finishing the new child restores the parent, without another acceptance.
-  const finished = envelopeAfter(withIdea, [{ op: 'complete', id: 't3' }]).envelope;
+  const finished = envelopeAfter(withIdea, [
+    { op: 'update', id: 't3', executionApproval: 'approved', approvalBasis: '开始吧', requiresUserAcceptance: false },
+    { op: 'complete', id: 't3' },
+  ]).envelope;
   const afterFinish = readSnapshot(finished, CTX.worklineId, false);
   assert.equal(afterFinish.tasks[0].settled, true);
   assert.equal(finished.tasks[0].completedAt, NOW);
@@ -2472,6 +2574,7 @@ function titles(snapshot) {
   assert.equal(closed.tasks[1].parentId, 't1');
   // Finishing it is too.
   const finished = envelopeAfter(base, [
+    { op: 'update', id: 't2', executionApproval: 'approved', approvalBasis: '开始吧', requiresUserAcceptance: true },
     { op: 'complete', id: 't2', confirmedByUser: true, confirmationBasis: '审计日志也验收通过了' },
   ]).envelope;
   const closed2 = envelopeAfter(finished, [

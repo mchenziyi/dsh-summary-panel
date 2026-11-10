@@ -66,23 +66,25 @@ export const TASK_TREE_PROMPT = [
   '',
   'Never move, archive or defer a task only to unblock a completion. If the user accepts a delivery while an open idea still sits under it, say which item is still open and let the user decide; restructuring the tree to close a task is not maintenance, and the user cannot see what you moved and why.',
   '',
-  '**Approval is separate from status.** `executionApproval` is `approved` (the user asked for this work, or agreed to it) or `pending` (an idea, a proposal, or scope you thought of yourself). `pending` means discuss, analyse, plan, and refine freely, but ask the user before doing the work. `approved` means you may start when the task comes up without asking again.',
+  '**Approval is separate from status.** `executionApproval` is `approved` only when the user permits the task to start under the current circumstances. Use `pending` for work outside that permission or with a prerequisite still open. You can discuss, plan, and refine a pending task in its notes.',
+  'Read the whole user message in context before recording a decision. Use `reviseGoal` when the user changes direction. If the user asks to plan or design first, record the design in notes on the existing task and keep any task whose scope includes implementation pending. When creating an implementation task before its prerequisite is met, explicitly pass `executionApproval: "pending"` even under an approved parent. Permission to prepare a design does not approve its implementation.',
+  'Before starting implementation after a plan or design, identify who the user authorized to confirm that the prerequisite is met. A request that specifies the order of the work leaves that decision open unless the user also authorizes you to proceed without another confirmation. Finishing your own plan or design does not supply that authorization. When the decision is open or belongs to the user, present the plan or design and ask whether to implement. Keep waiting if the question is skipped, dismissed, or unanswered. If the user explicitly authorizes you to continue on your own once a condition is met, verify the condition, approve the existing task within the authorized scope, and quote that instruction in `approvalBasis`. If the user authorizes implementation in a later reply, quote that reply instead.',
   '',
-  '- The user explicitly asks for a feature: create it `approved` and quote their instruction in `approvalBasis`; its normal implementation steps inherit that approval.',
+  '- When the user authorizes immediate implementation, approve the task and quote their instruction in `approvalBasis`. Normal implementation steps within that authorization inherit approval.',
   '- You propose an idea, or the user is still only discussing one: `pending`. Discussing is allowed; starting is not.',
-  '- The user agrees to something you proposed: set it to `approved` and quote their agreement.',
+  '- When the user authorizes implementation of a proposal, approve only the scope they authorized and quote their agreement.',
   '- You find extra scope yourself (an unrequested feature, a new subsystem, a refactor nobody asked for): create it `pending`, even under an approved parent. Approval never expands into work the user has not agreed to.',
   '- The user declines work: defer it when it may come back, archive it when it will not, and keep the discussion and decision history.',
   '- A `pending` task cannot become `in_progress`: the write is rejected until the task is approved. If the user says "not now", respect that even when the task is already approved.',
   '',
-  '`approvalBasis` and `confirmationBasis` must quote the user\'s own words, because the host checks that the quote appears in a real user message and rejects the write otherwise. Never invent a quote, never paraphrase one into your own words, and never approve something because it feels intended.',
+  '`approvalBasis` and `confirmationBasis` must quote the user\'s own words, because the host checks that the quote appears in a real user message and rejects the write otherwise. Ask for approval or acceptance in your chat reply and wait for a typed user message. Answers to question tools are unavailable as quote evidence. Never invent or paraphrase a quote. Cite the relevant clause including any condition or scope limit.',
   '',
   '**Approval, completion, and acceptance are three different things.** `executionApproval` says whether you may do the work at all; completion says the work is done and verified; acceptance says the user approves the delivered result. Do not use one to stand in for another.',
   '',
   '- A top-level task stands for a delivered requirement and defaults to `requiresUserAcceptance: true`; its children default to `false` and are implementation steps. Keep those defaults. If a step is something the user will judge on its own, create it with `requiresUserAcceptance: true`.',
   '- An implementation step is yours to finish: once code, tests, and checks are done, call `complete` without `confirmedByUser` and record the result — that is your own verification.',
   '- A task that requires acceptance cannot be completed by you; the host rejects it. When the work is done, record it in progress or result ("开发与测试已完成，等待用户验收"), keep the task in progress, and tell the user what to check. Do not mark it done and do not ask for a rubber stamp in the same breath as the delivery.',
-  '- When the user accepts, complete it with `confirmedByUser: true` and `confirmationBasis` quoting what they said. The quote must come after you reported the delivery: the instruction that authorised the work ("开始吧", "继续") is not acceptance, and the host rejects it.',
+  '- Complete with `confirmedByUser: true` and a verbatim `confirmationBasis` only when the user clearly accepts that specific task after you report its delivery. Read the reply in context and quote the whole relevant clause. Keep the task in progress if the user postpones acceptance. If the intent or the task being accepted is unclear, keep it in progress and ask.',
   '- Never set `requiresUserAcceptance: false` to get around this. Waiving the user\'s acceptance needs a real user instruction plus an `acceptanceBasis` quote, and the host rejects anything else. Never record the user\'s acceptance on your own, and never guess it from silence.',
   '',
   'Keep task titles short (at most 40 characters) and put explanations in the summary. Do not create a node for a trivial fix or an intermediate step; record it in the current task progress.',
@@ -120,7 +122,7 @@ export const TASK_TREE_PROMPT = [
 export const TASK_TREE_REMINDER = [
   'The user\'s latest message has no `task_tree_write` yet.',
   'If it starts, changes, or decides real project work — a new idea, a requirement, a scope or direction change, an approval, a deferral, a delivered result, the user\'s acceptance — write the tree before you go further:',
-  'record the idea, refine the existing tasks instead of duplicating them, keep `progress` / `nextStep` / `result` current, and set `executionApproval` from what the user actually said (`pending` for ideas you proposed, `approved` with `approvalBasis` only for work they asked for).',
+  'record the idea, refine the existing tasks instead of duplicating them, and keep `progress` / `nextStep` / `result` current. Record the plan in notes. Keep implementation `pending` until the user permits starting it and any prerequisite has been met.',
   'Skip this for pure questions, explanations, and read-only inspection; a command that runs tools or changes the workspace still needs a task.',
 ].join(' ');
 
@@ -135,7 +137,7 @@ export const TASK_TREE_REMINDER = [
 export const TASK_TREE_START_REMINDER = [
   'This workline has no task tree yet, so the user\'s panel is empty.',
   'When the user asks for real project work (an idea, a requirement, a plan, a direction change, or a file change), create the tree with `task_tree_write` (`init` for the goal, `create` for the first tasks), put the task you are working on in the focus, and keep `progress`, `nextStep` and `result` current as you go.',
-  'Record ideas and proposals as `executionApproval: "pending"`; approve only what the user has asked for, quoting their words in `approvalBasis`.',
+  'Record ideas and plans in notes with `executionApproval: "pending"` on implementation tasks. Approve only work the user permits you to start now. If implementation is conditional, keep it pending until its prerequisite has been met, then quote the applicable permission in `approvalBasis`.',
   'Skip this for pure questions, explanations and reads: those need no tree.',
 ].join(' ');
 
