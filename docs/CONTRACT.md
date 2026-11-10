@@ -233,7 +233,7 @@ Host 只在 `task_tree_write` 的写路径上、对本次要写入的数据执�
 每个 op 只接受上表列出的字段；未知 op 或多余字段在写入前报错。行为：
 
 - `init`：工作线不存在时创建，写 `originalGoal`/`outline`；已存在则报错（不要覆盖）。
-- `create`：新建子任务，`parentId` 省略为顶层；返回新 id（`t1`…）。同级 order 默认追加。直接建在已批准父任务下的步骤继承授权。创建时写 `expectedOutcome` 说明「怎样算做完」。`done` / `blocked` 不能作为初始状态。
+- `create`：新建子任务，`parentId` 省略为顶层；返回新 id（`t1`…）。同级 order 默认追加。授权继承见不变量 9。创建时写 `expectedOutcome` 说明「怎样算做完」。`done` / `blocked` 不能作为初始状态。
 - `update`：局部更新 title/summary/expectedOutcome/nextStep/status/progress/result/blocker/executionApproval/requiresUserAcceptance；blocker 用两个字段，至少给 reason，两者都空表示清除；`status='done'` 走与 `complete` 相同的完成规则。记录进度时同时写 `nextStep`。
 - 被紧急问题打断：为紧急问题建一条 `temporary: true` + `temporaryFor: <原任务>` 的任务，转移焦点，修完后 resume 原任务（并清空临时任务的焦点）。
 - `move`：改 parentId / order；校验成环；已开始且未完成的交付任务不能移走。
