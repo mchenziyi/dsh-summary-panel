@@ -206,8 +206,8 @@ function approvedParent(state, parentId) {
 function assertExecutable(task) {
   if (task.executionApproval === 'approved') return;
   fail(
-    `task ${task.id} is not approved: ask the user, then set executionApproval: "approved"`
-    + ' with their words in approvalBasis before starting or completing it',
+    `task ${task.id} is not approved: if the user's authorization applies now, set executionApproval: "approved"`
+    + ' with their words in approvalBasis before starting or completing it. Otherwise keep it pending',
   );
 }
 
