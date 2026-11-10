@@ -42,6 +42,12 @@ A few more that cost real time:
 - **Two modules must not hold the same truth.** Before adding a record, find out
   whether something already normalizes it. Two normalizers of one field with
   opposite defaults is how the fail-open above arrived.
+- **Approval and acceptance guidance must agree.** When either rule changes,
+  compare the Agent prompt and reminders, the tool description and field
+  descriptions, the rejection message, and the interface contract. Check when
+  work stays pending, when an existing user quote applies, and when to ask.
+  Keep dialogue decisions in the Agent guidance. Use the contract's invariants
+  for Host checks and refer to them from operation summaries.
 - **A document does not cache a count the repo can report.** The e2e scenario
   count was restated in three docs and drifted (18 → "12 deleted"); the
   environment already answers it (`npm run test:e2e -- --list`). Point at the
